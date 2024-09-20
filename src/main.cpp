@@ -5,9 +5,13 @@
 #include <unordered_map>
 #include <string_view>
 #include <CLI/CLI.hpp>
+#include <charconv>
 #include <toml++/toml.hpp>
 #include <spdlog/spdlog.h>
 #include <opencv2/opencv.hpp>
+#include <sys/types.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 
 #ifndef GIT_REV
 #define GIT_REV "N/A"
@@ -64,17 +68,26 @@ cap_api_t cap_api_from_string(const std::string_view s) {
 	throw invalid_argument(std::format("Invalid API key: `{}`", s));
 }
 
+std::variant<int, std::string> pipeline_or_index(const std::string &s) {
+	int val;
+	if (const auto [ptr, ec] = std::from_chars(s.data(), s.data() + s.size(), val, 10); ec == std::errc{}) {
+		return val;
+	} else {
+		return s;
+	}
+}
+
 struct Config {
-	int index;
+	std::string name;
 	// pipeline or index, depends on API
-	std::string pipeline;
+	std::variant<std::string, int> pipeline;
 	cap_api_t api_preference;
 	std::string zmq_address;
 
 	static Config Default() {
 		// https://github.com/opencv/opencv/blob/f503890c2b2ba73f4f94971c1845ead941143262/modules/videoio/src/cap_gstreamer.cpp#L1318-L1322
 		return {
-			.index          = 0,
+			.name           = "default",
 			.pipeline       = "videotestsrc ! videoconvert ! video/x-raw,format=BGR ! appsink name=sink",
 			.api_preference = cv::CAP_GSTREAMER,
 			.zmq_address    = "ipc:///tmp/0",
@@ -83,13 +96,19 @@ struct Config {
 
 	static Config from_toml(const toml::table &table) {
 		Config config;
-		if (const auto index = table["index"]; index) {
-			config.index = *index.value<int>();
+		if (const auto name = table["name"]; name) {
+			config.name = *name.value<std::string>();
 		} else {
-			throw invalid_argument("index is required");
+			throw invalid_argument("name is required");
 		}
 		if (const auto pipeline = table["pipeline"]; pipeline) {
-			config.pipeline = *pipeline.value<std::string>();
+			if (const auto s = pipeline.value<std::string>(); s) {
+				config.pipeline = *s;
+			} else if (const auto i = pipeline.value<int>(); i) {
+				config.pipeline = *i;
+			} else {
+				throw invalid_argument("pipeline must be string or integer");
+			}
 		} else {
 			throw invalid_argument("pipeline is required");
 		}
@@ -110,11 +129,15 @@ struct Config {
 	std::string to_toml() const {
 		auto ss  = std::stringstream{};
 		auto tbl = toml::table{
-			{"index", index},
-			{"pipeline", pipeline},
+			{"name", name},
 			{"api", cap_api_to_string(api_preference)},
 			{"zmq_address", zmq_address},
 		};
+		if (std::holds_alternative<int>(pipeline)) {
+			tbl.insert_or_assign("pipeline", std::get<int>(pipeline));
+		} else {
+			tbl.insert_or_assign("pipeline", std::get<std::string>(pipeline));
+		}
 		ss << tbl << "\n\n";
 		return ss.str();
 	}
@@ -179,5 +202,31 @@ int main(int argc, char **argv) {
 	}
 
 	std::cout << "Config: " << config.to_toml() << std::endl;
+	cv::VideoCapture cap;
+	// https://gstreamer.freedesktop.org/documentation/shm/shmsink.html?gi-language=c
+	if (std::holds_alternative<int>(config.pipeline)) {
+		const auto index = std::get<int>(config.pipeline);
+		spdlog::info("Open video source index (int): {}", index);
+		cap.open(index, config.api_preference);
+	} else {
+		const auto pipeline = std::get<std::string>(config.pipeline);
+		spdlog::info("Open video source pipeline (string): {}", pipeline);
+		cap.open(pipeline, config.api_preference);
+	}
+	if (not cap.isOpened()) {
+		spdlog::error("Failed to open video source. Check OpenCV VideoCapture API support if you're sure the source is correct.");
+		std::cout << cv::getBuildInformation() << std::endl;
+		return 1;
+	}
+	for (;;) {
+		cv::Mat frame;
+		cap >> frame;
+		if (frame.empty()) {
+			spdlog::error("Failed to capture frame");
+			break;
+		} else {
+			spdlog::info("Frame: {}x{}", frame.cols, frame.rows);
+		}
+	}
 	return 0;
 }
