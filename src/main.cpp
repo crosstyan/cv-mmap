@@ -1,11 +1,11 @@
 #include <iostream>
 #include <filesystem>
 #include <format>
-#include <map>
 #include <unordered_map>
 #include <string_view>
-#include <CLI/CLI.hpp>
+#include <string>
 #include <charconv>
+#include <CLI/CLI.hpp>
 #include <toml++/toml.hpp>
 #include <spdlog/spdlog.h>
 #include <opencv2/opencv.hpp>
@@ -40,7 +40,7 @@ constexpr std::string_view trim(std::string_view s) {
 
 using cap_api_t = decltype(cv::CAP_ANY);
 
-static const std::map<std::string, cap_api_t> api_map = {
+static const std::unordered_map<std::string, cap_api_t> api_map = {
 	{"any", cv::CAP_ANY},
 	{"v4l", cv::CAP_V4L},
 	{"v4l2", cv::CAP_V4L2},
@@ -68,15 +68,6 @@ cap_api_t cap_api_from_string(const std::string_view s) {
 	throw invalid_argument(std::format("Invalid API key: `{}`", s));
 }
 
-std::variant<int, std::string> pipeline_or_index(const std::string &s) {
-	int val;
-	if (const auto [ptr, ec] = std::from_chars(s.data(), s.data() + s.size(), val, 10); ec == std::errc{}) {
-		return val;
-	} else {
-		return s;
-	}
-}
-
 struct Config {
 	std::string name;
 	// pipeline or index, depends on API
@@ -85,10 +76,12 @@ struct Config {
 	std::string zmq_address;
 
 	static Config Default() {
-		// https://github.com/opencv/opencv/blob/f503890c2b2ba73f4f94971c1845ead941143262/modules/videoio/src/cap_gstreamer.cpp#L1318-L1322
+		// https://github.com/opencv/opencv/blob/f503890c2b2ba73f4f94971c1845ead941143262/modules/videoio/src/cap_gstreamer.cpp#L1535
+		// https://github.com/opencv/opencv/blob/f503890c2b2ba73f4f94971c1845ead941143262/modules/videoio/src/cap_gstreamer.cpp#L1503
+		// an appsink called `opencvsink`
 		return {
 			.name           = "default",
-			.pipeline       = "videotestsrc ! videoconvert ! video/x-raw,format=BGR ! appsink name=sink",
+			.pipeline       = "videotestsrc ! videoconvert ! video/x-raw,format=BGR ! appsink name=opencvsink",
 			.api_preference = cv::CAP_GSTREAMER,
 			.zmq_address    = "ipc:///tmp/0",
 		};
