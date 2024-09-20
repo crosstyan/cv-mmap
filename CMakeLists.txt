@@ -1,0 +1,11 @@
+cmake_minimum_required(VERSION 3.10)
+project(cv-mmap)
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED True)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+find_package(OpenCV REQUIRED)
+# brew install cppzmq apt-get install libzmq3-dev
+find_package(cppzmq)
+add_executable(cv-mmap src/main.cpp)
+target_include_directories(cv-mmap PUBLIC ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(cv-mmap ${OpenCV_LIBS} cppzmq)
