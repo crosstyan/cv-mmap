@@ -9,6 +9,7 @@
 #include <toml++/toml.hpp>
 #include <spdlog/spdlog.h>
 #include <opencv2/opencv.hpp>
+#include <zmq_addon.hpp>
 #include <sys/types.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
@@ -56,7 +57,7 @@ std::string_view cap_api_to_string(const cap_api_t api) {
 			return key;
 		}
 	}
-	throw invalid_argument(std::format("Invalid API value: `{}`", static_cast<int>(api)));
+	throw invalid_argument(std::format("invalid API value: `{}`", static_cast<int>(api)));
 }
 
 cap_api_t cap_api_from_string(const std::string_view s) {
@@ -65,7 +66,7 @@ cap_api_t cap_api_from_string(const std::string_view s) {
 			return value;
 		}
 	}
-	throw invalid_argument(std::format("Invalid API key: `{}`", s));
+	throw invalid_argument(std::format("invalid API key: `{}`", s));
 }
 
 struct Config {
@@ -131,7 +132,7 @@ struct Config {
 		} else {
 			tbl.insert_or_assign("pipeline", std::get<std::string>(pipeline));
 		}
-		ss << tbl << "\n\n";
+		ss << tbl << "\r\n";
 		return ss.str();
 	}
 };
@@ -146,10 +147,10 @@ constexpr auto branch            = STR(GIT_BRANCH);
 constexpr auto compile_timestamp = STR(COMPILE_TIMESTAMP);
 
 void print_version() {
-	if (constexpr auto t = std::string_view{tag}; t.empty()) {
-		std::cout << "Version: " << revision << " (" << branch << ")\n";
+	if constexpr (constexpr auto t = std::string_view{tag}; t.empty()) {
+		std::cout << "version: " << revision << " (" << branch << ")\n";
 	} else {
-		std::cout << "Version: " << tag << " (" << revision << ")\n";
+		std::cout << "version: " << tag << " (" << revision << ")\n";
 	}
 }
 }
@@ -183,34 +184,47 @@ int main(int argc, char **argv) {
 	try {
 		config_tbl = toml::parse_file(config_file);
 	} catch (const toml::parse_error &e) {
-		spdlog::error("Failed to parse config file: {}", e.what());
+		spdlog::error("failed to parse config file: {}", e.what());
 		return 1;
 	}
 	app::Config config;
 	try {
 		config = app::Config::from_toml(config_tbl);
 	} catch (const app::invalid_argument &e) {
-		spdlog::error("Invalid config: {}", e.what());
+		spdlog::error("invalid config: {}", e.what());
 		return 1;
 	}
 
-	std::cout << "Config: " << config.to_toml() << std::endl;
+	// https://libzmq.readthedocs.io/en/latest/zmq_ipc.html
+	// https://libzmq.readthedocs.io/en/latest/zmq_inproc.html
+	zmq::context_t ctx;
+	zmq::socket_t sock(ctx, zmq::socket_type::push);
+	try {
+		sock.connect(config.zmq_address);
+	} catch (const zmq::error_t &e) {
+		spdlog::error("failed to connect to ZMQ address: {}", e.what());
+		return 1;
+	}
+	spdlog::info("connected to ZMQ address: {}", config.zmq_address);
+
+	std::cout << "Config Used: " << config.to_toml() << std::endl;
 	cv::VideoCapture cap;
 	// https://gstreamer.freedesktop.org/documentation/shm/shmsink.html?gi-language=c
 	if (std::holds_alternative<int>(config.pipeline)) {
 		const auto index = std::get<int>(config.pipeline);
-		spdlog::info("Open video source index (int): {}", index);
+		spdlog::info("open video source index (int): {}", index);
 		cap.open(index, config.api_preference);
 	} else {
 		const auto pipeline = std::get<std::string>(config.pipeline);
-		spdlog::info("Open video source pipeline (string): {}", pipeline);
+		spdlog::info("open video source pipeline (string): {}", pipeline);
 		cap.open(pipeline, config.api_preference);
 	}
 	if (not cap.isOpened()) {
-		spdlog::error("Failed to open video source. Check OpenCV VideoCapture API support if you're sure the source is correct.");
+		spdlog::error("failed to open video source. check OpenCV VideoCapture API support if you're sure the source is correct.");
 		std::cout << cv::getBuildInformation() << std::endl;
 		return 1;
 	}
+	static size_t frame_count = 0;
 	for (;;) {
 		cv::Mat frame;
 		cap >> frame;
@@ -218,8 +232,15 @@ int main(int argc, char **argv) {
 			spdlog::error("Failed to capture frame");
 			break;
 		} else {
-			spdlog::info("Frame: {}x{}", frame.cols, frame.rows);
+			spdlog::info("frame@{} {}x{}", frame_count, frame.cols, frame.rows);
+			try {
+				static const int dummy[] = {0, 0, 0, 0};
+				sock.send(zmq::buffer(dummy, std::size(dummy)), zmq::send_flags::dontwait);
+			} catch (const zmq::error_t &e) {
+				spdlog::error("failed to send frame@{}; reason: {}", frame_count, e.what());
+			}
 		}
+		frame_count += 1;
 	}
 	return 0;
 }
