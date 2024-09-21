@@ -200,12 +200,12 @@ int main(int argc, char **argv) {
 	zmq::context_t ctx;
 	zmq::socket_t sock(ctx, zmq::socket_type::push);
 	try {
-		sock.connect(config.zmq_address);
+		sock.bind(config.zmq_address);
 	} catch (const zmq::error_t &e) {
-		spdlog::error("failed to connect to ZMQ address: {}", e.what());
+		spdlog::error("failed to bind to ZMQ address: `{}`", e.what());
 		return 1;
 	}
-	spdlog::info("connected to ZMQ address: {}", config.zmq_address);
+	spdlog::info("bind to ZMQ address: `{}`", config.zmq_address);
 
 	std::cout << "Config Used: " << config.to_toml() << std::endl;
 	cv::VideoCapture cap;
@@ -234,7 +234,9 @@ int main(int argc, char **argv) {
 		} else {
 			spdlog::info("frame@{} {}x{}", frame_count, frame.cols, frame.rows);
 			try {
-				static const int dummy[] = {0, 0, 0, 0};
+				constexpr auto N    = sizeof(size_t);
+				static int dummy[N] = {};
+				memcpy(dummy, &frame_count, N);
 				sock.send(zmq::buffer(dummy, std::size(dummy)), zmq::send_flags::dontwait);
 			} catch (const zmq::error_t &e) {
 				spdlog::error("failed to send frame@{}; reason: {}", frame_count, e.what());
