@@ -1,18 +1,24 @@
+#include <atomic>
 #include <iostream>
 #include <filesystem>
 #include <format>
+#include <csignal>
 #include <unordered_map>
 #include <string_view>
 #include <string>
 #include <charconv>
+#include <expected>
 #include <CLI/CLI.hpp>
 #include <toml++/toml.hpp>
 #include <spdlog/spdlog.h>
-#include <opencv2/opencv.hpp>
+#include <opencv2/videoio.hpp>
 #include <zmq_addon.hpp>
 #include <sys/types.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 #ifndef GIT_REV
 #define GIT_REV "N/A"
@@ -70,10 +76,13 @@ cap_api_t cap_api_from_string(const std::string_view s) {
 }
 
 struct Config {
+	/// name of shared memory (with `shm_open` and `shm_unlink`)
 	std::string name;
-	// pipeline or index, depends on API
+	/// pipeline or index, depends on API
 	std::variant<std::string, int> pipeline;
-	cap_api_t api_preference;
+	/// API preference used by OpenCV
+	cap_api_t api_preference = cv::CAP_ANY;
+	/// ZMQ address for synchronization
 	std::string zmq_address;
 
 	static Config Default() {
@@ -136,6 +145,29 @@ struct Config {
 		return ss.str();
 	}
 };
+
+std::string depth_to_string(const int depth) {
+	switch (depth) {
+	case CV_8U:
+		return "CV_8U";
+	case CV_8S:
+		return "CV_8S";
+	case CV_16U:
+		return "CV_16U";
+	case CV_16S:
+		return "CV_16S";
+	case CV_16F:
+		return "CV_16F";
+	case CV_32S:
+		return "CV_32S";
+	case CV_32F:
+		return "CV_32F";
+	case CV_64F:
+		return "CV_64F";
+	default:
+		return "unknown";
+	}
+}
 }
 
 
@@ -161,11 +193,22 @@ int main(int argc, char **argv) {
 	CLI::App app{"Video Stream mmap adapter"};
 	argv = app.ensure_utf8(argv);
 	// default config file name is config.toml in cwd
-	std::string config_file = "config.toml";
+	static std::string config_file = "config.toml";
 	app.add_option("-c,--config", config_file, "Config file path");
-	bool use_default = false;
+	static bool use_default = false;
 	app.add_flag("--default", use_default, "Use default config");
+	static bool use_debug = false;
+	app.add_flag("-d,--debug", use_debug, "Enable debug log");
+	static bool use_trace = false;
+	app.add_flag("--trace", use_trace, "Enable trace log");
 	CLI11_PARSE(app, argc, argv);
+	if (use_debug) {
+		spdlog::set_level(spdlog::level::debug);
+	} else if (use_trace) {
+		spdlog::set_level(spdlog::level::trace);
+	} else {
+		spdlog::set_level(spdlog::level::info);
+	}
 
 	const std::filesystem::path config_path = config_file;
 	if (not std::filesystem::exists(config_path)) {
@@ -225,14 +268,151 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 	static size_t frame_count = 0;
-	for (;;) {
-		cv::Mat frame;
+	static std::atomic_bool is_running{true};
+	constexpr auto sigint_handler = [](int) {
+		spdlog::info("SIGINT received, stopping...");
+		is_running.store(false, std::memory_order::relaxed);
+	};
+	std::signal(SIGINT, sigint_handler);
+
+retry_shm:
+	int shm_fd = shm_open(config.name.c_str(), O_CREAT | O_RDWR, 775);
+	if (shm_fd == -1) {
+		spdlog::error("failed to create shared memory `{}`. {} ({})", config.name, strerror(errno), errno);
+		if (errno == EACCES || errno == EEXIST) {
+			// `ipcrm -M <name>` could be used to remove the shared memory
+			auto err = shm_unlink(config.name.c_str());
+			if (err == -1) {
+				spdlog::error("failed to unlink shared memory `{}`. {} ({})", config.name, strerror(errno), errno);
+				return 1;
+			} else {
+				spdlog::warn("unlink shared memory `{}`", config.name);
+				goto retry_shm;
+			}
+		}
+		return 1;
+	}
+	// defer at exit
+	const auto shm_close_fn = [shm_fd, name = config.name]() {
+		auto err = close(shm_fd);
+		if (err == -1) {
+			spdlog::error("failed to close shared memory `{}`. reason: {}", name, strerror(errno));
+			return err;
+		}
+		err = shm_unlink(name.c_str());
+		if (err == -1) {
+			spdlog::error("failed to unlink shared memory `{}`. reason: {}", name, strerror(errno));
+			return err;
+		}
+		return 0;
+	};
+	// https://docs.opencv.org/4.x/d3/d63/classcv_1_1Mat.html
+	// See `Detailed Description`
+	// stride is for every dimension
+	struct frame_info_t {
+		int width;
+		int height;
+		/// CV_8U, CV_8S, CV_16U, CV_16S, CV_16F, CV_32S, CV_32F, CV_64F
+		int depth;
+		size_t bufferSize;
+
+		[[nodiscard]]
+		int pixelWidth() const {
+			switch (depth) {
+			case CV_8U:
+			case CV_8S:
+				return 1;
+			case CV_16U:
+			case CV_16S:
+			case CV_16F:
+				return 2;
+			case CV_32S:
+			case CV_32F:
+				return 4;
+			case CV_64F:
+				return 8;
+			default:
+				throw app::invalid_argument(std::format("invalid depth value `{}`", depth));
+			}
+		}
+	};
+
+	cv::Mat frame;
+	using start_ret_t = std::tuple<void *, frame_info_t>;
+	// https://gist.github.com/yangcha/38f2fa30e223a8546f9b48ebbb3e61a
+	const auto at_first_frame = [shm_fd, &cap, &frame] -> std::expected<start_ret_t, int> {
+		using ue_t = std::unexpected<int>;
+		cap >> frame;
+		if (frame.empty()) {
+			spdlog::error("failed to capture first frame");
+			return ue_t{-1};
+		}
+		frame_info_t info{
+			.width      = frame.cols,
+			.height     = frame.rows,
+			.depth      = frame.depth(),
+			.bufferSize = frame.total() * frame.elemSize(),
+		};
+
+		spdlog::info("first frame info: {}x{}x{}; depth={}({}); stride[0]={}; stride[1]={}; total={}; elemSize={}; bufferSize={}",
+					 frame.cols,
+					 frame.rows,
+					 frame.channels(),
+					 app::depth_to_string(frame.depth()),
+					 frame.depth(),
+					 frame.step[0],
+					 frame.step[1],
+					 frame.total(),
+					 frame.elemSize(),
+					 frame.total() * frame.elemSize());
+
+		const auto size = frame.total() * frame.elemSize();
+		auto ptr        = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+		if (ptr == MAP_FAILED) {
+			spdlog::error("failed to mmap shared memory. reason: {}", strerror(errno));
+			return ue_t{-1};
+		}
+		if (ftruncate(shm_fd, size) == -1) {
+			spdlog::error("failed to truncate shared memory. reason: {}", strerror(errno));
+			return ue_t{-1};
+		}
+		memcpy(ptr, frame.data, size);
+		return std::make_tuple(ptr, info);
+	};
+
+	start_ret_t tmp_ret;
+	if (auto ret = at_first_frame(); ret) {
+		tmp_ret = *ret;
+	} else {
+		return 1;
+	}
+	auto [ptr, info]     = tmp_ret;
+	const auto unmap_ptr = [ptr, size = frame.total() * frame.elemSize()]() {
+		auto err = munmap(ptr, size);
+		if (err == -1) {
+			spdlog::error("failed to unmap shared memory. reason: {}", strerror(errno));
+			return err;
+		}
+		return 0;
+	};
+
+	const auto set_frame = [ptr, bufferSize = info.bufferSize](const cv::Mat &frame) {
+		const auto size = frame.total() * frame.elemSize();
+		if (size != bufferSize) {
+			spdlog::error("frame size mismatch: {} != {}", size, bufferSize);
+			return;
+		}
+		memcpy(ptr, frame.data, size);
+	};
+
+	while (is_running.load(std::memory_order::relaxed)) {
 		cap >> frame;
 		if (frame.empty()) {
 			spdlog::error("Failed to capture frame");
 			break;
 		} else {
-			spdlog::info("frame@{} {}x{}", frame_count, frame.cols, frame.rows);
+			set_frame(frame);
+			spdlog::debug("frame@{} {}x{}", frame_count, frame.cols, frame.rows);
 			try {
 				constexpr auto N    = sizeof(size_t);
 				static int dummy[N] = {};
@@ -244,5 +424,9 @@ int main(int argc, char **argv) {
 		}
 		frame_count += 1;
 	}
+
+	unmap_ptr();
+	shm_close_fn();
+	spdlog::info("normally exit");
 	return 0;
 }

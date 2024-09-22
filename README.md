@@ -52,3 +52,21 @@ cmake .. -DOPENCV_EXTRA_MODULES_PATH=/Volumes/External/Code/opencv_contrib/modul
 ```bash
 HOMEBREW_DEVELOPER=1 brew install --build-from-source -v --formula ./opencv.rb
 ```
+
+## Dependencies
+
+### Arch Linux
+
+```bash
+sudo pacman -S opencv \
+    gst-plugins-base  \
+    gst-plugins-good  \
+    gst-plugins-bad  \
+    gst-plugins-ugly  \
+    gstreamer  \
+    cppzmq  \
+    spdlog \
+    vtk \
+    glew \
+    hdf5
+```
