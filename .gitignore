@@ -36,3 +36,4 @@ cmake-*
 
 config.toml
 .cache
+output

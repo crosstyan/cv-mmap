@@ -92,7 +92,7 @@ struct Config {
 		// an appsink called `opencvsink`
 		return {
 			.name           = "default",
-			.pipeline       = "videotestsrc ! videoconvert ! video/x-raw,format=BGR ! appsink name=opencvsink",
+			.pipeline       = "videotestsrc ! timeoverlay ! videoconvert ! video/x-raw,format=BGR ! appsink name=opencvsink",
 			.api_preference = cv::CAP_GSTREAMER,
 			.zmq_address    = "ipc:///tmp/0",
 		};
@@ -199,9 +199,10 @@ inline int cv_depth_to_size(int depth) {
 struct __attribute__((packed)) frame_info_t {
 	uint16_t width;
 	uint16_t height;
+	uint8_t channels;
 	/// CV_8U, CV_8S, CV_16U, CV_16S, CV_16F, CV_32S, CV_32F, CV_64F
 	uint8_t depth;
-	uint32_t bufferSize;
+	uint32_t buffer_size;
 
 	[[nodiscard]]
 	int pixelWidth() const {
@@ -357,7 +358,7 @@ int main(int argc, char **argv) {
 	std::signal(SIGINT, sigint_handler);
 
 retry_shm:
-	int shm_fd = shm_open(config.name.c_str(), O_CREAT | O_RDWR, 775);
+	int shm_fd = shm_open(config.name.c_str(), O_CREAT | O_RDWR, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
 	if (shm_fd == -1) {
 		spdlog::error("failed to create shared memory `{}`. {} ({})", config.name, strerror(errno), errno);
 		if (errno == EACCES || errno == EEXIST) {
@@ -373,6 +374,7 @@ retry_shm:
 		}
 		return 1;
 	}
+	spdlog::debug("created shared memory `{}` (fd={})", config.name, shm_fd);
 	// defer at exit
 	const auto shm_close_fn = [shm_fd, name = config.name]() {
 		auto err = close(shm_fd);
@@ -398,10 +400,11 @@ retry_shm:
 			return ue_t{-1};
 		}
 		frame_info_t info{
-			.width      = static_cast<uint16_t>(frame.cols),
-			.height     = static_cast<uint16_t>(frame.rows),
-			.depth      = static_cast<uint8_t>(frame.depth()),
-			.bufferSize = static_cast<uint32_t>(frame.total() * frame.elemSize()),
+			.width       = static_cast<uint16_t>(frame.cols),
+			.height      = static_cast<uint16_t>(frame.rows),
+			.channels    = static_cast<uint8_t>(frame.channels()),
+			.depth       = static_cast<uint8_t>(frame.depth()),
+			.buffer_size = static_cast<uint32_t>(frame.total() * frame.elemSize()),
 		};
 
 		spdlog::info("first frame info: {}x{}x{}; depth={}({}); stride[0]={}; stride[1]={}; total={}; elemSize={}; bufferSize={}",
@@ -446,10 +449,25 @@ retry_shm:
 		return 0;
 	};
 
-	const auto set_frame = [ptr, bufferSize = info.bufferSize](const cv::Mat &frame) {
+	const auto set_frame = [ptr, bufferSize = info.buffer_size](const cv::Mat &frame) {
+		// TODO: check frame size
 		memcpy(ptr, frame.data, bufferSize);
 	};
 
+	const auto send_sync_msg = [&sock, &info] {
+		try {
+			const auto msg = sync_message_t{
+				.frame_count = static_cast<uint32_t>(frame_count),
+				.info        = info,
+			};
+			sock.send(zmq::buffer(reinterpret_cast<const uint8_t *>(&msg), sizeof(sync_message_t)), zmq::send_flags::dontwait);
+		} catch (const zmq::error_t &e) {
+			spdlog::error("failed to send synchronization message for frame@{}; {}", frame_count, e.what());
+		}
+	};
+
+	// for the first frame
+	send_sync_msg();
 	while (is_running.load(std::memory_order::relaxed)) {
 		cap >> frame;
 		if (frame.empty()) {
@@ -458,15 +476,7 @@ retry_shm:
 		} else {
 			set_frame(frame);
 			spdlog::debug("frame@{}", frame_count);
-			try {
-				const auto msg = sync_message_t{
-					.frame_count = static_cast<uint32_t>(frame_count),
-					.info        = info,
-				};
-				sock.send(zmq::buffer(reinterpret_cast<const uint8_t *>(&msg), sizeof(sync_message_t)), zmq::send_flags::dontwait);
-			} catch (const zmq::error_t &e) {
-				spdlog::error("failed to send synchronization message for frame@{}; {}", frame_count, e.what());
-			}
+			send_sync_msg();
 		}
 		frame_count += 1;
 	}
