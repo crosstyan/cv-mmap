@@ -8,6 +8,7 @@
 #include <string>
 #include <charconv>
 #include <expected>
+#include <span>
 #include <CLI/CLI.hpp>
 #include <toml++/toml.hpp>
 #include <spdlog/spdlog.h>
@@ -168,6 +169,85 @@ std::string depth_to_string(const int depth) {
 		return "unknown";
 	}
 }
+
+// https://gist.github.com/yangcha/38f2fa630e223a8546f9b48ebbb3e61a
+inline int cv_depth_to_size(int depth) {
+	switch (depth) {
+	case CV_8U:
+	case CV_8S:
+		return 1;
+	case CV_16U:
+	case CV_16S:
+	case CV_16F:
+		return 2;
+	case CV_32S:
+	case CV_32F:
+		return 4;
+	case CV_64F:
+		return 8;
+	default:
+		throw app::invalid_argument(std::format("invalid depth value `{}`", depth));
+	}
+}
+
+// https://docs.opencv.org/4.x/d3/d63/classcv_1_1Mat.html
+// See `Detailed Description`
+// strides for each dimension
+// stride[0]=channel
+// stride[1]=channel*cols
+// stride[2]=channel*cols*rows
+struct __attribute__((packed)) frame_info_t {
+	uint16_t width;
+	uint16_t height;
+	/// CV_8U, CV_8S, CV_16U, CV_16S, CV_16F, CV_32S, CV_32F, CV_64F
+	uint8_t depth;
+	uint32_t bufferSize;
+
+	[[nodiscard]]
+	int pixelWidth() const {
+		return cv_depth_to_size(depth);
+	}
+
+	int marshal(std::span<uint8_t> buf) const {
+		if (buf.size() < sizeof(frame_info_t)) {
+			return -1;
+		}
+		memcpy(buf.data(), this, sizeof(frame_info_t));
+		return sizeof(frame_info_t);
+	}
+
+	static std::optional<frame_info_t> unmarshal(const std::span<uint8_t> buf) {
+		if (buf.size() < sizeof(frame_info_t)) {
+			return std::nullopt;
+		}
+		frame_info_t info;
+		memcpy(&info, buf.data(), sizeof(frame_info_t));
+		return info;
+	}
+};
+
+struct __attribute__((packed)) sync_message_t {
+	uint32_t frame_count;
+	frame_info_t info;
+	// NOTE: I don't need the `name` field
+	// as long as we don't share same IPC socket for different video sources.
+	int marshal(std::span<uint8_t> buf) const {
+		if (buf.size() < sizeof(sync_message_t)) {
+			return -1;
+		}
+		memcpy(buf.data(), this, sizeof(sync_message_t));
+		return sizeof(sync_message_t);
+	}
+
+	static std::optional<sync_message_t> unmarshal(const std::span<uint8_t> buf) {
+		if (buf.size() < sizeof(sync_message_t)) {
+			return std::nullopt;
+		}
+		sync_message_t msg;
+		memcpy(&msg, buf.data(), sizeof(sync_message_t));
+		return msg;
+	}
+};
 }
 
 
@@ -188,6 +268,7 @@ void print_version() {
 }
 
 int main(int argc, char **argv) {
+	using namespace app;
 	app::version::print_version();
 
 	CLI::App app{"Video Stream mmap adapter"};
@@ -306,40 +387,9 @@ retry_shm:
 		}
 		return 0;
 	};
-	// https://docs.opencv.org/4.x/d3/d63/classcv_1_1Mat.html
-	// See `Detailed Description`
-	// stride is for every dimension
-	struct frame_info_t {
-		int width;
-		int height;
-		/// CV_8U, CV_8S, CV_16U, CV_16S, CV_16F, CV_32S, CV_32F, CV_64F
-		int depth;
-		size_t bufferSize;
-
-		[[nodiscard]]
-		int pixelWidth() const {
-			switch (depth) {
-			case CV_8U:
-			case CV_8S:
-				return 1;
-			case CV_16U:
-			case CV_16S:
-			case CV_16F:
-				return 2;
-			case CV_32S:
-			case CV_32F:
-				return 4;
-			case CV_64F:
-				return 8;
-			default:
-				throw app::invalid_argument(std::format("invalid depth value `{}`", depth));
-			}
-		}
-	};
 
 	cv::Mat frame;
-	using start_ret_t = std::tuple<void *, frame_info_t>;
-	// https://gist.github.com/yangcha/38f2fa30e223a8546f9b48ebbb3e61a
+	using start_ret_t         = std::tuple<void *, frame_info_t>;
 	const auto at_first_frame = [shm_fd, &cap, &frame] -> std::expected<start_ret_t, int> {
 		using ue_t = std::unexpected<int>;
 		cap >> frame;
@@ -348,10 +398,10 @@ retry_shm:
 			return ue_t{-1};
 		}
 		frame_info_t info{
-			.width      = frame.cols,
-			.height     = frame.rows,
-			.depth      = frame.depth(),
-			.bufferSize = frame.total() * frame.elemSize(),
+			.width      = static_cast<uint16_t>(frame.cols),
+			.height     = static_cast<uint16_t>(frame.rows),
+			.depth      = static_cast<uint8_t>(frame.depth()),
+			.bufferSize = static_cast<uint32_t>(frame.total() * frame.elemSize()),
 		};
 
 		spdlog::info("first frame info: {}x{}x{}; depth={}({}); stride[0]={}; stride[1]={}; total={}; elemSize={}; bufferSize={}",
@@ -369,11 +419,11 @@ retry_shm:
 		const auto size = frame.total() * frame.elemSize();
 		auto ptr        = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
 		if (ptr == MAP_FAILED) {
-			spdlog::error("failed to mmap shared memory. reason: {}", strerror(errno));
+			spdlog::error("failed to mmap shared memory. {}", strerror(errno));
 			return ue_t{-1};
 		}
 		if (ftruncate(shm_fd, size) == -1) {
-			spdlog::error("failed to truncate shared memory. reason: {}", strerror(errno));
+			spdlog::error("failed to truncate shared memory. {}", strerror(errno));
 			return ue_t{-1};
 		}
 		memcpy(ptr, frame.data, size);
@@ -397,29 +447,25 @@ retry_shm:
 	};
 
 	const auto set_frame = [ptr, bufferSize = info.bufferSize](const cv::Mat &frame) {
-		const auto size = frame.total() * frame.elemSize();
-		if (size != bufferSize) {
-			spdlog::error("frame size mismatch: {} != {}", size, bufferSize);
-			return;
-		}
-		memcpy(ptr, frame.data, size);
+		memcpy(ptr, frame.data, bufferSize);
 	};
 
 	while (is_running.load(std::memory_order::relaxed)) {
 		cap >> frame;
 		if (frame.empty()) {
-			spdlog::error("Failed to capture frame");
+			spdlog::error("failed to capture frame");
 			break;
 		} else {
 			set_frame(frame);
-			spdlog::debug("frame@{} {}x{}", frame_count, frame.cols, frame.rows);
+			spdlog::debug("frame@{}", frame_count);
 			try {
-				constexpr auto N    = sizeof(size_t);
-				static int dummy[N] = {};
-				memcpy(dummy, &frame_count, N);
-				sock.send(zmq::buffer(dummy, std::size(dummy)), zmq::send_flags::dontwait);
+				const auto msg = sync_message_t{
+					.frame_count = static_cast<uint32_t>(frame_count),
+					.info        = info,
+				};
+				sock.send(zmq::buffer(reinterpret_cast<const uint8_t *>(&msg), sizeof(sync_message_t)), zmq::send_flags::dontwait);
 			} catch (const zmq::error_t &e) {
-				spdlog::error("failed to send frame@{}; reason: {}", frame_count, e.what());
+				spdlog::error("failed to send synchronization message for frame@{}; {}", frame_count, e.what());
 			}
 		}
 		frame_count += 1;
