@@ -21,6 +21,14 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
+#if defined(__APPLE__) && defined(__MACH__)
+#define __APP_MACOS__
+#endif
+#ifdef __APP_MACOS__
+// https://en.wikipedia.org/wiki/Unistd.h
+#include <unistd.h>
+#endif
+
 #ifndef GIT_REV
 #define GIT_REV "N/A"
 #endif
@@ -420,13 +428,16 @@ retry_shm:
 					 frame.total() * frame.elemSize());
 
 		const auto size = frame.total() * frame.elemSize();
-		auto ptr        = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-		if (ptr == MAP_FAILED) {
-			spdlog::error("failed to mmap shared memory. {}", strerror(errno));
+		// https://www.deepanseeralan.com/tech/playing-with-shared-memory/
+		// ftruncate first, then mmap
+		if (ftruncate(shm_fd, size) == -1) {
+			spdlog::error("failed to truncate shared memory; {} ({})", strerror(errno), errno);
 			return ue_t{-1};
 		}
-		if (ftruncate(shm_fd, size) == -1) {
-			spdlog::error("failed to truncate shared memory. {}", strerror(errno));
+		auto ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+		if (ptr == MAP_FAILED) {
+			// https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/mmap.2.html
+			spdlog::error("failed to mmap shared memory; {} ({})", strerror(errno), errno);
 			return ue_t{-1};
 		}
 		memcpy(ptr, frame.data, size);
