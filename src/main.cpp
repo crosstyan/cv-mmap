@@ -542,22 +542,14 @@ retry_shm:
 				break;
 			}
 		} else {
-			const auto current = get_video_position();
 			set_frame(frame);
 			send_sync_msg();
 			if (finite_source_info) {
+				const auto current = get_video_position();
 				spdlog::debug("frame@{} ({}/{})", frame_count, current, finite_source_info->frame_count);
 				std::this_thread::sleep_for(std::chrono::milliseconds(*frame_interval_ms));
 			} else {
 				spdlog::debug("frame@{}", frame_count);
-			}
-			if (finite_source_info and current >= finite_source_info->frame_count) {
-				if (config.is_loop) {
-					reset_video_position();
-				} else {
-					spdlog::info("reached end of video source");
-					break;
-				}
 			}
 		}
 		frame_count += 1;
