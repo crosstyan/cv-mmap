@@ -26,12 +26,12 @@ else:
         __lock = threading.Lock()
 
         def __init__(
-            self,
-            name: str | None = None,
-            create: bool = False,
-            size: int = 0,
-            *,
-            track: bool = True,
+                self,
+                name: str | None = None,
+                create: bool = False,
+                size: int = 0,
+                *,
+                track: bool = True,
         ) -> None:
             self._track = track
 
@@ -84,7 +84,7 @@ class SyncMessage:
 
     @staticmethod
     def unmarshal(data: bytes) -> "SyncMessage":
-        frame_count, width, height, channels,depth, buffer_size = struct.unpack("=IHHBBI", data)
+        frame_count, width, height, channels, depth, buffer_size = struct.unpack("=IHHBBI", data)
         return SyncMessage(
             frame_count=frame_count,
             width=width,
@@ -99,6 +99,7 @@ URL = "ipc:///tmp/0"
 # note that python would add `/psm_` prefix to the name
 SHM_NAME = "psm_default"
 OUTPUT_DIR = Path("output")
+
 
 # https://docs.python.org/3/library/multiprocessing.shared_memory.html
 

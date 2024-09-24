@@ -93,6 +93,8 @@ struct Config {
 	cap_api_t api_preference = cv::CAP_ANY;
 	/// ZMQ address for synchronization
 	std::string zmq_address;
+	/// whether the video source is looped, when it's a finite source
+	bool is_loop = false;
 
 	static Config Default() {
 		// https://github.com/opencv/opencv/blob/f503890c2b2ba73f4f94971c1845ead941143262/modules/videoio/src/cap_gstreamer.cpp#L1535
@@ -103,6 +105,7 @@ struct Config {
 			.pipeline       = "videotestsrc ! timeoverlay ! videoconvert ! video/x-raw,format=BGR ! appsink name=opencvsink",
 			.api_preference = cv::CAP_GSTREAMER,
 			.zmq_address    = "ipc:///tmp/0",
+			.is_loop        = false,
 		};
 	}
 
@@ -134,6 +137,11 @@ struct Config {
 		} else {
 			throw invalid_argument("zmq_address is required");
 		}
+		if (const auto is_loop = table["is_loop"]; is_loop) {
+			config.is_loop = *is_loop.value<bool>();
+		} else {
+			config.is_loop = false;
+		}
 		return config;
 	}
 
@@ -144,13 +152,14 @@ struct Config {
 			{"name", name},
 			{"api", cap_api_to_string(api_preference)},
 			{"zmq_address", zmq_address},
+			{"is_loop", is_loop},
 		};
 		if (std::holds_alternative<int>(pipeline)) {
 			tbl.insert_or_assign("pipeline", std::get<int>(pipeline));
 		} else {
 			tbl.insert_or_assign("pipeline", std::get<std::string>(pipeline));
 		}
-		ss << tbl << "\r\n";
+		ss << tbl << "\n\n";
 		return ss.str();
 	}
 };
@@ -357,6 +366,31 @@ int main(int argc, char **argv) {
 		std::cout << cv::getBuildInformation() << std::endl;
 		return 1;
 	}
+
+	struct finite_source_info_t {
+		double fps;
+		uint32_t frame_count;
+	};
+	const auto check_finite_source = [&cap] -> std::optional<finite_source_info_t> {
+		const auto fps         = cap.get(cv::CAP_PROP_FPS);
+		const auto frame_count = cap.get(cv::CAP_PROP_FRAME_COUNT);
+		if (fps > 0 and frame_count > 0) {
+			return finite_source_info_t{
+				.fps         = fps,
+				.frame_count = static_cast<uint32_t>(frame_count),
+			};
+		}
+		return std::nullopt;
+	};
+
+	const auto reset_video_position = [&cap] {
+		cap.set(cv::CAP_PROP_POS_FRAMES, 0);
+	};
+	const auto get_video_position = [&cap] -> int {
+		return static_cast<int>(cap.get(cv::CAP_PROP_POS_FRAMES));
+	};
+
+
 	static size_t frame_count = 0;
 	static std::atomic_bool is_running{true};
 	constexpr auto sigint_handler = [](int) {
@@ -364,6 +398,20 @@ int main(int argc, char **argv) {
 		is_running.store(false, std::memory_order::relaxed);
 	};
 	std::signal(SIGINT, sigint_handler);
+	const auto finite_source_info = check_finite_source();
+	const auto frame_interval_ms  = [finite_source_info] -> std::optional<int> {
+        if (finite_source_info) {
+            return static_cast<int>(1000.0 / finite_source_info->fps);
+        } else {
+            return std::nullopt;
+        }
+	}();
+	if (finite_source_info) {
+		spdlog::info("detected finite source; fps={} ({}ms), frame_count={}, is_loop={}",
+					 finite_source_info->fps, *frame_interval_ms, finite_source_info->frame_count, config.is_loop);
+	} else {
+		spdlog::info("infinite source detected (live stream)");
+	}
 
 retry_shm:
 	int shm_fd = shm_open(config.name.c_str(), O_CREAT | O_RDWR, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
@@ -448,10 +496,11 @@ retry_shm:
 	if (auto ret = at_first_frame(); ret) {
 		tmp_ret = *ret;
 	} else {
+		shm_close_fn();
 		return 1;
 	}
 	auto [ptr, info]     = tmp_ret;
-	const auto unmap_ptr = [ptr, size = frame.total() * frame.elemSize()]() {
+	const auto unmap_ptr = [ptr, size = frame.total() * frame.elemSize()] {
 		auto err = munmap(ptr, size);
 		if (err == -1) {
 			spdlog::error("failed to unmap shared memory. reason: {}", strerror(errno));
@@ -477,17 +526,39 @@ retry_shm:
 		}
 	};
 
-	// for the first frame
 	send_sync_msg();
 	while (is_running.load(std::memory_order::relaxed)) {
 		cap >> frame;
 		if (frame.empty()) {
-			spdlog::error("failed to capture frame");
-			break;
+			if (finite_source_info) {
+				spdlog::info("reached end of finite video source");
+				if (config.is_loop) {
+					reset_video_position();
+				} else {
+					break;
+				}
+			} else {
+				spdlog::warn("live source empty frame captured");
+				break;
+			}
 		} else {
+			const auto current = get_video_position();
 			set_frame(frame);
-			spdlog::debug("frame@{}", frame_count);
 			send_sync_msg();
+			if (finite_source_info) {
+				spdlog::debug("frame@{} ({}/{})", frame_count, current, finite_source_info->frame_count);
+				std::this_thread::sleep_for(std::chrono::milliseconds(*frame_interval_ms));
+			} else {
+				spdlog::debug("frame@{}", frame_count);
+			}
+			if (finite_source_info and current >= finite_source_info->frame_count) {
+				if (config.is_loop) {
+					reset_video_position();
+				} else {
+					spdlog::info("reached end of video source");
+					break;
+				}
+			}
 		}
 		frame_count += 1;
 	}

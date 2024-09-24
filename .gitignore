@@ -35,5 +35,7 @@ build
 cmake-*
 
 config.toml
+config_*.toml
 .cache
 output
+*.mkv
