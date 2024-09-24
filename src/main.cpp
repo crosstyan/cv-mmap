@@ -499,9 +499,12 @@ retry_shm:
 		shm_close_fn();
 		return 1;
 	}
-	auto [ptr, info]     = tmp_ret;
-	const auto unmap_ptr = [ptr, size = frame.total() * frame.elemSize()] {
-		auto err = munmap(ptr, size);
+
+	const auto [ptr, info] = tmp_ret;
+
+	const auto unmap_ptr = [ptr, bufferSize = info.buffer_size] {
+		int err;
+		err = munmap(ptr, bufferSize);
 		if (err == -1) {
 			spdlog::error("failed to unmap shared memory. reason: {}", strerror(errno));
 			return err;
