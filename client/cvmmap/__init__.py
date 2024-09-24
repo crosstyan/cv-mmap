@@ -1,14 +1,15 @@
-from .shm import SharedMemory
-from .msg import SyncMessage
-from loguru import logger
-from zmq.asyncio import Context, Poller
-from zmq import Socket
-from typing import AsyncGenerator, cast, Optional
 from pathlib import Path
-from typing import AsyncContextManager
 from struct import error as StructError
+from typing import AsyncContextManager, AsyncGenerator, Generator, Optional, cast
+
 import numpy as np
 import zmq
+from logging import getLogger
+from zmq import Socket
+from zmq.asyncio import Context, Poller
+
+from .msg import SyncMessage
+from .shm import SharedMemory
 
 NDArray = np.ndarray
 
@@ -30,6 +31,7 @@ class CvMmapClient:
 
         self._ctx = Context.instance()
         self._sock = self._ctx.socket(zmq.PULL)
+        self._sock.connect(self._zmq_addr)
         self._poller = Poller()
         self._poller.register(self._sock, zmq.POLLIN)
 
@@ -50,13 +52,10 @@ class CvMmapClient:
         else:
             raise ValueError("Shared memory already initialized")
 
-    async def polling(self) -> AsyncGenerator[NDArray, None]:
+    async def __aiter__(self) -> AsyncGenerator[NDArray, None]:
         """
-        Polling for new image data.
-
-        Return an async generator that yields numpy array of image data.
+        Asynchronous generator that yields numpy array of image.
         """
-        self._sock.connect(self._zmq_addr)
         while True:
             events = await self._poller.poll()
             for socket, event in events:
@@ -80,4 +79,5 @@ class CvMmapClient:
                             )
                         yield self._image_buffer
                     except StructError as e:
-                        logger.exception(e)
+                        getLogger(__name__).exception(e)
+                        continue

@@ -10,7 +10,7 @@ ZMQ_ADDR = "ipc:///tmp/0"
 
 async def main():
     client = CvMmapClient(SHM_NAME, ZMQ_ADDR)
-    async for im in client.polling():
+    async for im in client:
         cv2.imshow("image", im)
         cv2.waitKey(1)
 
