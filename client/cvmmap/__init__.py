@@ -12,6 +12,7 @@ from .msg import SyncMessage
 from .shm import SharedMemory
 
 NDArray = np.ndarray
+FRAME_TOPIC_MAGIC = 0x7d
 
 
 class CvMmapClient:
@@ -30,8 +31,9 @@ class CvMmapClient:
         self._zmq_addr = zmq_addr
 
         self._ctx = Context.instance()
-        self._sock = self._ctx.socket(zmq.PULL)
+        self._sock = self._ctx.socket(zmq.SUB)
         self._sock.connect(self._zmq_addr)
+        self._sock.subscribe(bytes([FRAME_TOPIC_MAGIC]))
         self._poller = Poller()
         self._poller.register(self._sock, zmq.POLLIN)
 
@@ -62,6 +64,9 @@ class CvMmapClient:
                 if event & zmq.POLLIN:
                     message = await socket.recv()
                     message = cast(bytes, message)
+                    # it's the frame topic, ignore it
+                    if len(message) == 1:
+                        continue
 
                     try:
                         sync_message = SyncMessage.unmarshal(message)
