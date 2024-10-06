@@ -525,8 +525,8 @@ retry_shm:
 				.info        = info,
 			};
 			constexpr auto magic_payload = std::array<uint8_t, 1>{FRAME_TOPIC_MAGIC};
-			sock.send(zmq::buffer(magic_payload), zmq::send_flags::sndmore | zmq::send_flags::dontwait);
-			sock.send(zmq::buffer(reinterpret_cast<const uint8_t *>(&msg), sizeof(sync_message_t)), zmq::send_flags::dontwait);
+			sock.send(zmq::buffer(magic_payload), zmq::send_flags::sndmore);
+			sock.send(zmq::buffer(reinterpret_cast<const uint8_t *>(&msg), sizeof(sync_message_t)), zmq::send_flags::none);
 		} catch (const zmq::error_t &e) {
 			spdlog::error("failed to send synchronization message for frame@{}; {}", frame_count, e.what());
 		}
