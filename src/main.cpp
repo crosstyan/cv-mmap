@@ -54,7 +54,8 @@ constexpr std::string_view trim(std::string_view s) {
 	return s;
 }
 
-using cap_api_t = decltype(cv::CAP_ANY);
+constexpr auto FRAME_TOPIC_MAGIC = 0x7d;
+using cap_api_t                  = decltype(cv::CAP_ANY);
 
 static const std::unordered_map<std::string, cap_api_t> api_map = {
 	{"any", cv::CAP_ANY},
@@ -340,7 +341,7 @@ int main(int argc, char **argv) {
 	// https://libzmq.readthedocs.io/en/latest/zmq_ipc.html
 	// https://libzmq.readthedocs.io/en/latest/zmq_inproc.html
 	zmq::context_t ctx;
-	zmq::socket_t sock(ctx, zmq::socket_type::push);
+	zmq::socket_t sock(ctx, zmq::socket_type::pub);
 	try {
 		sock.bind(config.zmq_address);
 	} catch (const zmq::error_t &e) {
@@ -523,6 +524,8 @@ retry_shm:
 				.frame_count = static_cast<uint32_t>(frame_count),
 				.info        = info,
 			};
+			constexpr auto magic_payload = std::array<uint8_t, 1>{FRAME_TOPIC_MAGIC};
+			sock.send(zmq::buffer(magic_payload), zmq::send_flags::sndmore | zmq::send_flags::dontwait);
 			sock.send(zmq::buffer(reinterpret_cast<const uint8_t *>(&msg), sizeof(sync_message_t)), zmq::send_flags::dontwait);
 		} catch (const zmq::error_t &e) {
 			spdlog::error("failed to send synchronization message for frame@{}; {}", frame_count, e.what());
