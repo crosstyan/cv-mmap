@@ -342,8 +342,30 @@ int main(int argc, char **argv) {
 	// https://libzmq.readthedocs.io/en/latest/zmq_inproc.html
 	zmq::context_t ctx;
 	zmq::socket_t sock(ctx, zmq::socket_type::pub);
+	const auto close_zmq = [&sock, &ctx] {
+		sock.close();
+		ctx.close();
+	};
 	try {
+		// https://zguide.zeromq.org/docs/chapter2/
+		// The inter-process ipc transport is disconnected, like tcp. It has one
+		// limitation: it does not yet work on Windows. By convention we use
+		// endpoint names with an “.ipc” extension to avoid potential conflict
+		// with other file names. On UNIX systems, if you use ipc endpoints you
+		// need to create these with appropriate permissions otherwise they may
+		// not be shareable between processes running under different user IDs.
+		// You must also make sure all processes can access the files, e.g., by
+		// running in the same working directory.
 		sock.bind(config.zmq_address);
+		constexpr auto ipc_prefix = "ipc://";
+		if (config.zmq_address.starts_with(ipc_prefix)) {
+			const auto path = config.zmq_address.substr(std::string_view(ipc_prefix).size());
+			constexpr auto mode_777 = S_IRWXU | S_IRWXG | S_IRWXO;
+			auto ok = chmod(path.c_str(), mode_777);
+			if (ok == -1) {
+				spdlog::warn("failed to chmod ZMQ address `{}` because of `{}`", path, strerror(errno));
+			}
+		}
 	} catch (const zmq::error_t &e) {
 		spdlog::error("failed to bind to ZMQ address: `{}`", e.what());
 		return 1;
@@ -563,6 +585,7 @@ retry_shm:
 
 	unmap_ptr();
 	shm_close_fn();
+	close_zmq();
 	spdlog::info("normally exit");
 	return 0;
 }
