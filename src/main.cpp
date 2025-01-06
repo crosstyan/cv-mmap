@@ -289,6 +289,7 @@ void print_version() {
 
 int main(int argc, char **argv) {
 	using namespace app;
+	constexpr auto ipc_prefix = "ipc://";
 	app::version::print_version();
 
 	CLI::App app{"Video Stream mmap adapter"};
@@ -343,9 +344,16 @@ int main(int argc, char **argv) {
 	// https://libzmq.readthedocs.io/en/latest/zmq_inproc.html
 	zmq::context_t ctx;
 	zmq::socket_t sock(ctx, zmq::socket_type::pub);
-	const auto close_zmq = [&sock, &ctx] {
+	const auto close_zmq = [&sock, &ctx, zmq_address = config.zmq_address] {
 		sock.close();
 		ctx.close();
+		if (zmq_address.starts_with(ipc_prefix)) {
+			const auto path = zmq_address.substr(std::string_view(ipc_prefix).size());
+			const auto err  = unlink(path.c_str());
+			if (err == -1) {
+				spdlog::warn("failed to unlink ZMQ address `{}` because of `{} ()`", path, strerror(errno), errno);
+			}
+		}
 	};
 	try {
 		// https://zguide.zeromq.org/docs/chapter2/
@@ -358,7 +366,6 @@ int main(int argc, char **argv) {
 		// You must also make sure all processes can access the files, e.g., by
 		// running in the same working directory.
 		sock.bind(config.zmq_address);
-		constexpr auto ipc_prefix = "ipc://";
 		if (config.zmq_address.starts_with(ipc_prefix)) {
 			const auto path         = config.zmq_address.substr(std::string_view(ipc_prefix).size());
 			constexpr auto mode_777 = S_IRWXU | S_IRWXG | S_IRWXO;
