@@ -7,6 +7,7 @@
 #include <string_view>
 #include <string>
 #include <charconv>
+#include <regex>
 #include <expected>
 #include <span>
 #include <CLI/CLI.hpp>
@@ -359,9 +360,9 @@ int main(int argc, char **argv) {
 		sock.bind(config.zmq_address);
 		constexpr auto ipc_prefix = "ipc://";
 		if (config.zmq_address.starts_with(ipc_prefix)) {
-			const auto path = config.zmq_address.substr(std::string_view(ipc_prefix).size());
+			const auto path         = config.zmq_address.substr(std::string_view(ipc_prefix).size());
 			constexpr auto mode_777 = S_IRWXU | S_IRWXG | S_IRWXO;
-			auto ok = chmod(path.c_str(), mode_777);
+			const auto ok           = chmod(path.c_str(), mode_777);
 			if (ok == -1) {
 				spdlog::warn("failed to chmod ZMQ address `{}` because of `{}`", path, strerror(errno));
 			}
@@ -371,8 +372,6 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 	spdlog::info("bind to ZMQ address: `{}`", config.zmq_address);
-
-	std::cout << "Config Used: " << config.to_toml() << std::endl;
 	cv::VideoCapture cap;
 	// https://gstreamer.freedesktop.org/documentation/shm/shmsink.html?gi-language=c
 	if (std::holds_alternative<int>(config.pipeline)) {
@@ -380,7 +379,20 @@ int main(int argc, char **argv) {
 		spdlog::info("open video source index (int): {}", index);
 		cap.open(index, config.api_preference);
 	} else {
-		const auto pipeline = std::get<std::string>(config.pipeline);
+		const auto pipeline               = std::get<std::string>(config.pipeline);
+		constexpr auto check_gst_pipeline = [](std::string pipeline) {
+			std::regex re(R"(\,\s+)");
+			std::smatch m;
+			if (std::regex_search(pipeline, m, re)) {
+				spdlog::warn("extra spaces found in the pipeline string: `{}`. "
+							 "GStreamer won't happy about extra space in caps. "
+							 "please remove them, otherwise it may cause unexpected behavior.",
+							 pipeline);
+			}
+		};
+		if (config.api_preference == cv::CAP_GSTREAMER) {
+			check_gst_pipeline(pipeline);
+		}
 		spdlog::info("open video source pipeline (string): {}", pipeline);
 		cap.open(pipeline, config.api_preference);
 	}
@@ -520,6 +532,7 @@ retry_shm:
 		tmp_ret = *ret;
 	} else {
 		shm_close_fn();
+		close_zmq();
 		return 1;
 	}
 
