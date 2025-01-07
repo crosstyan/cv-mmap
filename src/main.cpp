@@ -8,7 +8,6 @@
 #include <unordered_map>
 #include <string_view>
 #include <string>
-#include <charconv>
 #include <regex>
 #include <expected>
 #include <span>
@@ -323,8 +322,11 @@ struct __attribute__((packed)) frame_info_t {
 };
 
 struct __attribute__((packed)) sync_message_t {
+	/// this field SHOULD NOT be modified
+	uint8_t magic = FRAME_TOPIC_MAGIC;
 	uint32_t frame_count;
 	frame_info_t info;
+
 	// NOTE: I don't need the `name` field
 	// as long as we don't share same IPC socket for different video sources.
 	int marshal(std::span<uint8_t> buf) const {
@@ -653,8 +655,6 @@ retry_shm:
 				.frame_count = static_cast<uint32_t>(frame_count),
 				.info        = info,
 			};
-			constexpr auto magic_payload = std::array<uint8_t, 1>{FRAME_TOPIC_MAGIC};
-			sock.send(zmq::buffer(magic_payload), zmq::send_flags::sndmore);
 			sock.send(zmq::buffer(reinterpret_cast<const uint8_t *>(&msg), sizeof(sync_message_t)), zmq::send_flags::none);
 		} catch (const zmq::error_t &e) {
 			spdlog::error("failed to send synchronization message for frame@{}; {}", frame_count, e.what());

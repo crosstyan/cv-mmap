@@ -12,7 +12,7 @@ from .msg import SyncMessage
 from .shm import SharedMemory
 
 NDArray = np.ndarray
-FRAME_TOPIC_MAGIC = 0x7d
+FRAME_TOPIC_MAGIC = 0x7D
 
 
 class CvMmapClient:
@@ -65,9 +65,6 @@ class CvMmapClient:
                     message = await socket.recv()
                     message = cast(bytes, message)
                     # it's the frame topic, ignore it
-                    if len(message) == 1:
-                        continue
-
                     try:
                         sync_message = SyncMessage.unmarshal(message)
                         if self._image_buffer is None:

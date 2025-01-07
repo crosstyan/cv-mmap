@@ -2,6 +2,8 @@ from dataclasses import dataclass
 import struct
 from enum import Enum, auto
 
+from client.cvmmap import FRAME_TOPIC_MAGIC
+
 
 class PixelFormat(Enum):
     RGB = 0
@@ -58,6 +60,7 @@ class SyncMessage:
     @staticmethod
     def unmarshal(data: bytes) -> "SyncMessage":
         (
+            magic,
             frame_count,
             width,
             height,
@@ -65,7 +68,8 @@ class SyncMessage:
             depth_raw,
             buffer_size,
             pixel_format_raw,
-        ) = struct.unpack("=IHHBBIB", data)
+        ) = struct.unpack("=BIHHBBIB", data)
+        assert magic == FRAME_TOPIC_MAGIC
         depth = Depth(depth_raw)
         pixel_format = PixelFormat(pixel_format_raw)
         return SyncMessage(
