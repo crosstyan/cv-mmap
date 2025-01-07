@@ -4,7 +4,7 @@ from enum import Enum, auto
 
 
 class PixelFormat(Enum):
-    RGB = auto()
+    RGB = 0
     BGR = auto()
     RGBA = auto()
     BGRA = auto()
@@ -14,7 +14,7 @@ class PixelFormat(Enum):
 
 
 class Depth(Enum):
-    U8 = auto()
+    U8 = 0
     S8 = auto()
     U16 = auto()
     S16 = auto()
