@@ -1,18 +1,24 @@
+from logging import getLogger
 from pathlib import Path
 from struct import error as StructError
-from typing import AsyncContextManager, AsyncGenerator, Generator, Optional, cast
+from typing import (
+    AsyncContextManager,
+    AsyncGenerator,
+    Generator,
+    Optional,
+    cast,
+    TypedDict,
+)
 
 import numpy as np
 import zmq
-from logging import getLogger
 from zmq import Socket
 from zmq.asyncio import Context, Poller
 
-from .msg import SyncMessage
+from .msg import SyncMessage, FRAME_TOPIC_MAGIC
 from .shm import SharedMemory
 
 NDArray = np.ndarray
-FRAME_TOPIC_MAGIC = 0x7D
 
 
 class CvMmapClient:
@@ -26,6 +32,21 @@ class CvMmapClient:
     _image_buffer: Optional[NDArray] = None
     _shm: Optional[SharedMemory] = None
 
+    def _subscribe(self):
+        """
+        manually trigger the subscription to the topic.
+
+        https://github.com/zeromq/libzmq/issues/1688
+        https://stackoverflow.com/questions/57901180/only-keep-latest-multipart-message-in-subscriber-with-pyzmq-pub-sub-socket
+        """
+        self._sock.subscribe(bytes([FRAME_TOPIC_MAGIC]))
+
+    def _unsubscribe(self):
+        """
+        manually trigger the un-subscription to the topic.
+        """
+        self._sock.unsubscribe(bytes([FRAME_TOPIC_MAGIC]))
+
     def __init__(self, shm_name: str, zmq_addr: str):
         self._shm_name = shm_name
         self._zmq_addr = zmq_addr
@@ -33,7 +54,8 @@ class CvMmapClient:
         self._ctx = Context.instance()
         self._sock = self._ctx.socket(zmq.SUB)
         self._sock.connect(self._zmq_addr)
-        self._sock.subscribe(bytes([FRAME_TOPIC_MAGIC]))
+        self._sock.setsockopt(zmq.CONFLATE, 1)
+        self._subscribe()
         self._poller = Poller()
         self._poller.register(self._sock, zmq.POLLIN)
 
@@ -54,7 +76,7 @@ class CvMmapClient:
         else:
             raise ValueError("Shared memory already initialized")
 
-    async def __aiter__(self) -> AsyncGenerator[NDArray, None]:
+    async def __aiter__(self) -> AsyncGenerator[tuple[NDArray, SyncMessage], None]:
         """
         Asynchronous generator that yields numpy array of image.
         """
@@ -79,7 +101,12 @@ class CvMmapClient:
                                 dtype=np.uint8,
                                 buffer=self._shm.buf,
                             )
-                        yield self._image_buffer
+                        yield self._image_buffer, sync_message
                     except StructError as e:
                         getLogger(__name__).exception(e)
                         continue
+
+
+class CvMmapConfig(TypedDict):
+    name: str
+    zmq_address: str

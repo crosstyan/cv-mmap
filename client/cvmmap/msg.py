@@ -1,8 +1,8 @@
-from dataclasses import dataclass
 import struct
+from dataclasses import dataclass
 from enum import Enum, auto
 
-from client.cvmmap import FRAME_TOPIC_MAGIC
+FRAME_TOPIC_MAGIC = 0x7D
 
 
 class PixelFormat(Enum):
