@@ -53,8 +53,9 @@ class CvMmapClient:
 
         self._ctx = Context.instance()
         self._sock = self._ctx.socket(zmq.SUB)
-        self._sock.connect(self._zmq_addr)
+        # In Python, you set the CONFLATE option before you connect to the socket
         self._sock.setsockopt(zmq.CONFLATE, 1)
+        self._sock.connect(self._zmq_addr)
         self._subscribe()
         self._poller = Poller()
         self._poller.register(self._sock, zmq.POLLIN)
