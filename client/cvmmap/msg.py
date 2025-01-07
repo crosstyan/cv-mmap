@@ -1,5 +1,27 @@
 from dataclasses import dataclass
 import struct
+from enum import Enum, auto
+
+
+class PixelFormat(Enum):
+    RGB = auto()
+    BGR = auto()
+    RGBA = auto()
+    BGRA = auto()
+    GRAY = auto()
+    YUV = auto()
+    YUYV = auto()
+
+
+class Depth(Enum):
+    U8 = auto()
+    S8 = auto()
+    U16 = auto()
+    S16 = auto()
+    S32 = auto()
+    F32 = auto()
+    F64 = auto()
+    F16 = auto()
 
 
 @dataclass
@@ -20,7 +42,7 @@ class SyncMessage:
     """
     `uint8_t`
     """
-    depth: int
+    depth: Depth
     """
     `uint8_t`
 
@@ -31,12 +53,21 @@ class SyncMessage:
     """
     `uint32_t`
     """
+    pixel_format: PixelFormat
 
     @staticmethod
     def unmarshal(data: bytes) -> "SyncMessage":
-        frame_count, width, height, channels, depth, buffer_size = struct.unpack(
-            "=IHHBBI", data
-        )
+        (
+            frame_count,
+            width,
+            height,
+            channels,
+            depth_raw,
+            buffer_size,
+            pixel_format_raw,
+        ) = struct.unpack("=IHHBBIB", data)
+        depth = Depth(depth_raw)
+        pixel_format = PixelFormat(pixel_format_raw)
         return SyncMessage(
             frame_count=frame_count,
             width=width,
@@ -44,4 +75,5 @@ class SyncMessage:
             channels=channels,
             depth=depth,
             buffer_size=buffer_size,
+            pixel_format=pixel_format,
         )
