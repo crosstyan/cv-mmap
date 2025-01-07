@@ -1,5 +1,13 @@
 {
-    "python.analysis.typeCheckingMode": "standard",
-    "python.analysis.diagnosticMode": "workspace",
-    "python.analysis.autoImportCompletions": true,
+  "python.analysis.typeCheckingMode": "standard",
+  "python.analysis.diagnosticMode": "workspace",
+  "python.analysis.autoImportCompletions": true,
+  "cSpell.words": [
+    "AVFOUNDATION",
+    "GSTREAMER",
+    "ipcrm",
+    "opencvsink",
+    "spdlog",
+    "STRR"
+  ]
 }

@@ -1,8 +1,10 @@
 #include <atomic>
+#include <cstdint>
 #include <iostream>
 #include <filesystem>
 #include <format>
 #include <csignal>
+#include <opencv2/core/hal/interface.h>
 #include <unordered_map>
 #include <string_view>
 #include <string>
@@ -47,6 +49,32 @@
 #define STR(X)  STRR(X)
 
 namespace app {
+/// @note use with `pixel_format` field in `frame_info_t`
+enum class PixelFormat : uint8_t {
+	/// usually 24bit RGB (8bit per channel, depth=U8)
+	RGB = 0,
+	BGR,
+	RGBA,
+	BGRA,
+	/// channel=1
+	GRAY,
+	YUV,
+	YUYV,
+};
+
+/// @note use with `depth` field in `frame_info_t`
+enum class Depth : uint8_t {
+	U8  = CV_8U,
+	S8  = CV_8S,
+	U16 = CV_16U,
+	S16 = CV_16S,
+	S32 = CV_32S,
+	F32 = CV_32F,
+	F64 = CV_64F,
+	F16 = CV_16F,
+};
+
+
 using invalid_argument = std::invalid_argument;
 
 constexpr std::string_view trim(std::string_view s) {
@@ -166,48 +194,94 @@ struct Config {
 	}
 };
 
-std::string depth_to_string(const int depth) {
+
+const char *depth_to_string(const Depth depth) {
 	switch (depth) {
-	case CV_8U:
-		return "CV_8U";
-	case CV_8S:
-		return "CV_8S";
-	case CV_16U:
-		return "CV_16U";
-	case CV_16S:
-		return "CV_16S";
-	case CV_16F:
-		return "CV_16F";
-	case CV_32S:
-		return "CV_32S";
-	case CV_32F:
-		return "CV_32F";
-	case CV_64F:
-		return "CV_64F";
+	case Depth::U8:
+		return "U8";
+	case Depth::S8:
+		return "S8";
+	case Depth::U16:
+		return "U16";
+	case Depth::S16:
+		return "S16";
+	case Depth::F16:
+		return "F16";
+	case Depth::S32:
+		return "S32";
+	case Depth::F32:
+		return "F32";
+	case Depth::F64:
+		return "F64";
 	default:
 		return "unknown";
 	}
 }
 
-// https://gist.github.com/yangcha/38f2fa630e223a8546f9b48ebbb3e61a
-inline int cv_depth_to_size(int depth) {
-	switch (depth) {
-	case CV_8U:
-	case CV_8S:
-		return 1;
-	case CV_16U:
-	case CV_16S:
-	case CV_16F:
-		return 2;
-	case CV_32S:
-	case CV_32F:
-		return 4;
-	case CV_64F:
-		return 8;
+const char *cv_depth_to_string(const int depth) {
+	return depth_to_string(static_cast<Depth>(depth));
+}
+
+const char *pixel_format_to_string(const PixelFormat fmt) {
+	switch (fmt) {
+	case PixelFormat::RGB:
+		return "RGB";
+	case PixelFormat::BGR:
+		return "BGR";
+	case PixelFormat::RGBA:
+		return "RGBA";
+	case PixelFormat::BGRA:
+		return "BGRA";
+	case PixelFormat::GRAY:
+		return "GRAY";
+	case PixelFormat::YUV:
+		return "YUV";
+	case PixelFormat::YUYV:
+		return "YUYV";
 	default:
-		throw app::invalid_argument(std::format("invalid depth value `{}`", depth));
+		return "unknown";
 	}
 }
+
+/// @brief convert color depth to size in bytes
+/// @sa https://gist.github.com/yangcha/38f2fa630e223a8546f9b48ebbb3e61a
+inline int depth_to_size(Depth depth) {
+	switch (depth) {
+	case Depth::U8:
+	case Depth::S8:
+		return 1;
+	case Depth::U16:
+	case Depth::S16:
+	case Depth::F16:
+		return 2;
+	case Depth::S32:
+	case Depth::F32:
+		return 4;
+	case Depth::F64:
+		return 8;
+	default:
+		throw app::invalid_argument(std::format("invalid depth value `{}`", static_cast<int>(depth)));
+	}
+}
+
+inline int cv_depth_to_size(int depth) {
+	return depth_to_size(static_cast<Depth>(depth));
+}
+
+
+PixelFormat guess_pixel_format(const int channels) {
+	switch (channels) {
+	case 1:
+		return PixelFormat::GRAY;
+	case 3:
+		return PixelFormat::BGR;
+	case 4:
+		return PixelFormat::BGRA;
+	default:
+		throw invalid_argument(std::format("invalid channel count: `{}`", channels));
+	}
+};
+
 
 // https://docs.opencv.org/4.x/d3/d63/classcv_1_1Mat.html
 // See `Detailed Description`
@@ -220,12 +294,14 @@ struct __attribute__((packed)) frame_info_t {
 	uint16_t height;
 	uint8_t channels;
 	/// CV_8U, CV_8S, CV_16U, CV_16S, CV_16F, CV_32S, CV_32F, CV_64F
-	uint8_t depth;
+	Depth depth;
 	uint32_t buffer_size;
+	PixelFormat pixel_format = PixelFormat::BGR;
 
+	/// @brief pixel size in bytes
 	[[nodiscard]]
-	int pixelWidth() const {
-		return cv_depth_to_size(depth);
+	int pixelSize() const {
+		return cv_depth_to_size(static_cast<int>(depth)) * channels;
 	}
 
 	int marshal(std::span<uint8_t> buf) const {
@@ -488,6 +564,7 @@ retry_shm:
 		return 0;
 	};
 
+
 	cv::Mat frame;
 	using start_ret_t         = std::tuple<void *, frame_info_t>;
 	const auto at_first_frame = [shm_fd, &cap, &frame] -> std::expected<start_ret_t, int> {
@@ -497,25 +574,35 @@ retry_shm:
 			spdlog::error("failed to capture first frame");
 			return ue_t{-1};
 		}
+		const auto pixel_format = guess_pixel_format(frame.channels());
 		frame_info_t info{
-			.width       = static_cast<uint16_t>(frame.cols),
-			.height      = static_cast<uint16_t>(frame.rows),
-			.channels    = static_cast<uint8_t>(frame.channels()),
-			.depth       = static_cast<uint8_t>(frame.depth()),
-			.buffer_size = static_cast<uint32_t>(frame.total() * frame.elemSize()),
+			.width        = static_cast<uint16_t>(frame.cols),
+			.height       = static_cast<uint16_t>(frame.rows),
+			.channels     = static_cast<uint8_t>(frame.channels()),
+			.depth        = static_cast<Depth>(frame.depth()),
+			.buffer_size  = static_cast<uint32_t>(frame.total() * frame.elemSize()),
+			.pixel_format = pixel_format,
 		};
 
-		spdlog::info("first frame info: {}x{}x{}; depth={}({}); stride[0]={}; stride[1]={}; total={}; elemSize={}; bufferSize={}",
+		spdlog::info("first frame info: {}x{}x{}; "
+					 "depth={}({}); "
+					 "stride[0]={}; "
+					 "stride[1]={}; "
+					 "total={}; "
+					 "elemSize={}; "
+					 "bufferSize={}; "
+					 "pixelFormat={};",
 					 frame.cols,
 					 frame.rows,
 					 frame.channels(),
-					 app::depth_to_string(frame.depth()),
+					 app::cv_depth_to_string(frame.depth()),
 					 frame.depth(),
 					 frame.step[0],
 					 frame.step[1],
 					 frame.total(),
 					 frame.elemSize(),
-					 frame.total() * frame.elemSize());
+					 frame.total() * frame.elemSize(),
+					 app::pixel_format_to_string(pixel_format));
 
 		const auto size = frame.total() * frame.elemSize();
 		// https://www.deepanseeralan.com/tech/playing-with-shared-memory/
