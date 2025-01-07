@@ -300,7 +300,7 @@ struct __attribute__((packed)) frame_info_t {
 	/// @brief pixel size in bytes
 	[[nodiscard]]
 	int pixelSize() const {
-		return cv_depth_to_size(static_cast<int>(depth)) * channels;
+		return depth_to_size(depth) * channels;
 	}
 
 	int marshal(std::span<uint8_t> buf) const {
