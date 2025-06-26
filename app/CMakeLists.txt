@@ -32,13 +32,16 @@ else ()
     string(STRIP "${GIT_TAG}" GIT_TAG)
     string(STRIP "${GIT_BRANCH}" GIT_BRANCH)
 endif ()
-string(TIMESTAMP COMPILE_TIMESTAMP "%Y-%m-%dT%H:%M:%S")
+string(TIMESTAMP COMPILE_TIMESTAMP_LOCAL "%Y-%m-%dT%H:%M:%S%z")
+string(TIMESTAMP COMPILE_TIMESTAMP_UTC "%Y-%m-%dT%H:%M:%SZ" UTC)
 target_compile_definitions(app_version
         PRIVATE
         GIT_REV=${GIT_REV}
         GIT_TAG=${GIT_TAG}
         GIT_BRANCH=${GIT_BRANCH}
-        COMPILE_TIMESTAMP=${COMPILE_TIMESTAMP}
+        GIT_DIFF=${GIT_DIFF}
+        COMPILE_TIMESTAMP_LOCAL=${COMPILE_TIMESTAMP_LOCAL}
+        COMPILE_TIMESTAMP_UTC=${COMPILE_TIMESTAMP_UTC}
 )
 
 add_library(app INTERFACE)
