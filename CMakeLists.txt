@@ -1,9 +1,19 @@
-cmake_minimum_required(VERSION 3.20)
-project(cv-mmap)
+cmake_minimum_required(VERSION 4.0)
+# https://github.com/Kitware/CMake/blob/v4.0.3/Help/dev/experimental.rst
+# In order to activate support for import std in C++23 and newer targets, set
+# variable CMAKE_EXPERIMENTAL_CXX_IMPORT_STD 
+#
+# This specific value changes as experimental support evolves. See
+# `Help/dev/experimental.rst` in the CMake source corresponding to
+# your CMake build for the exact value to use.
+set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD "d0edc3af-4c50-42ea-a356-e2862fe7a444")
 set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_CXX_STANDARD_REQUIRED True)
+set(CMAKE_CXX_STANDARD_REQUIRED OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+project(cv-mmap VERSION 0.1.0 LANGUAGES CXX)
 find_package(OpenCV REQUIRED)
+# currently `clangd` only work with `clang++`
+# so toolchain kit need to be set to `clang`
 
 # brew install cppzmq
 # or
@@ -25,11 +35,22 @@ if (NOT TARGET spdlog)
     find_package(spdlog REQUIRED)
 endif ()
 
-add_executable(cv-mmap src/main.cpp)
+add_executable(cv-mmap)
+target_sources(cv-mmap PUBLIC src/main.cpp)
+# https://cmake.org/cmake/help/latest/command/target_sources.html
+target_sources(cv-mmap 
+        PUBLIC 
+                FILE_SET app_module 
+                TYPE CXX_MODULES 
+                FILES 
+                        src/app/app.cxx
+                        src/app/app-types.cxx
+                        src/app/app-utils.cxx)
 target_include_directories(cv-mmap PUBLIC ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(cv-mmap ${OpenCV_LIBS} cppzmq)
 target_link_libraries(cv-mmap CLI11::CLI11 tomlplusplus::tomlplusplus spdlog)
 target_link_options(cv-mmap PRIVATE "LINKER:--copy-dt-needed-entries")
+set_target_properties(cv-mmap PROPERTIES CXX_MODULE_STD ON)
 
 
 # https://www.mattkeeter.com/blog/2018-01-06-versioning/

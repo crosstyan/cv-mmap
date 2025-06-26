@@ -1,3 +1,5 @@
+import app;
+
 #include <atomic>
 #include <cstdint>
 #include <iostream>
@@ -48,30 +50,6 @@
 #define STR(X)  STRR(X)
 
 namespace app {
-/// @note use with `pixel_format` field in `frame_info_t`
-enum class PixelFormat : uint8_t {
-	/// usually 24bit RGB (8bit per channel, depth=U8)
-	RGB = 0,
-	BGR,
-	RGBA,
-	BGRA,
-	/// channel=1
-	GRAY,
-	YUV,
-	YUYV,
-};
-
-/// @note use with `depth` field in `frame_info_t`
-enum class Depth : uint8_t {
-	U8  = CV_8U,
-	S8  = CV_8S,
-	U16 = CV_16U,
-	S16 = CV_16S,
-	S32 = CV_32S,
-	F32 = CV_32F,
-	F64 = CV_64F,
-	F16 = CV_16F,
-};
 
 
 using invalid_argument = std::invalid_argument;

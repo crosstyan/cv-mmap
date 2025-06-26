@@ -1,13 +1,19 @@
 {
-  "python.analysis.typeCheckingMode": "standard",
-  "python.analysis.diagnosticMode": "workspace",
+  "python.analysis.typeCheckingMode": "basic",
+  "python.analysis.diagnosticMode": "openFilesOnly",
   "python.analysis.autoImportCompletions": true,
+  "cmake.generator": "Ninja",
   "cSpell.words": [
     "AVFOUNDATION",
+    "clangd",
     "GSTREAMER",
     "ipcrm",
     "opencvsink",
     "spdlog",
     "STRR"
+  ],
+  "clangd.arguments": [
+    "--experimental-modules-support",
+    "--compile-commands-dir=build"
   ]
 }
