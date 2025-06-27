@@ -68,7 +68,7 @@ struct __attribute__((packed)) frame_info_t {
 	/// @brief pixel size in bytes
 	[[nodiscard]]
 	int pixelSize() const {
-		return depth_to_size(depth) * channels;
+		return size_of(depth) * channels;
 	}
 
 	int marshal(std::span<uint8_t> buf) const {
@@ -175,7 +175,7 @@ int main(int argc, char **argv) {
 			const auto path = zmq_address.substr(std::string_view(ipc_prefix).size());
 			const auto err  = unlink(path.c_str());
 			if (err == -1) {
-				spdlog::warn("failed to unlink ZMQ address `{}` because of `{} ()`", path, strerror(errno), errno);
+				spdlog::warn("unlink ZMQ address `{}` because of `{} ({})`", path, strerror(errno), errno);
 			}
 		}
 	};
@@ -195,11 +195,11 @@ int main(int argc, char **argv) {
 			constexpr auto mode_777 = S_IRWXU | S_IRWXG | S_IRWXO;
 			const auto ok           = chmod(path.c_str(), mode_777);
 			if (ok == -1) {
-				spdlog::warn("failed to chmod ZMQ address `{}` because of `{}`", path, strerror(errno));
+				spdlog::warn("chmod ZMQ address `{}` because of `{}`", path, strerror(errno));
 			}
 		}
 	} catch (const zmq::error_t &e) {
-		spdlog::error("failed to bind to ZMQ address: `{}`", e.what());
+		spdlog::error("bind to ZMQ address: `{}`", e.what());
 		return 1;
 	}
 	spdlog::info("bind to ZMQ address: `{}`", config.zmq_address);
@@ -221,14 +221,14 @@ int main(int argc, char **argv) {
 							 pipeline);
 			}
 		};
-		if (config.api_preference == cv::CAP_GSTREAMER) {
+		if (static_cast<cv::VideoCaptureAPIs>(config.api_preference) == cv::CAP_GSTREAMER) {
 			check_gst_pipeline(pipeline);
 		}
 		spdlog::info("open video source pipeline (string): {}", pipeline);
 		cap.open(pipeline, config.api_preference);
 	}
 	if (not cap.isOpened()) {
-		spdlog::error("failed to open video source. check OpenCV VideoCapture API support if you're sure the source is correct.");
+		spdlog::error("open video source. check OpenCV VideoCapture API support if you're sure the source is correct.");
 		std::cout << cv::getBuildInformation() << std::endl;
 		return 1;
 	}
@@ -282,12 +282,12 @@ int main(int argc, char **argv) {
 retry_shm:
 	int shm_fd = shm_open(config.name.c_str(), O_CREAT | O_RDWR, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
 	if (shm_fd == -1) {
-		spdlog::error("failed to create shared memory `{}`. {} ({})", config.name, strerror(errno), errno);
+		spdlog::error("create shared memory `{}`. {} ({})", config.name, strerror(errno), errno);
 		if (errno == EACCES || errno == EEXIST) {
 			// `ipcrm -M <name>` could be used to remove the shared memory
 			auto err = shm_unlink(config.name.c_str());
 			if (err == -1) {
-				spdlog::error("failed to unlink shared memory `{}`. {} ({})", config.name, strerror(errno), errno);
+				spdlog::error("unlink shared memory `{}`. {} ({})", config.name, strerror(errno), errno);
 				return 1;
 			} else {
 				spdlog::warn("unlink shared memory `{}`", config.name);
@@ -301,12 +301,12 @@ retry_shm:
 	const auto shm_close_fn = [shm_fd, name = config.name]() {
 		auto err = close(shm_fd);
 		if (err == -1) {
-			spdlog::error("failed to close shared memory `{}`. reason: {}", name, strerror(errno));
+			spdlog::error("close shared memory `{}`. reason: {}", name, strerror(errno));
 			return err;
 		}
 		err = shm_unlink(name.c_str());
 		if (err == -1) {
-			spdlog::error("failed to unlink shared memory `{}`. reason: {}", name, strerror(errno));
+			spdlog::error("unlink shared memory `{}`. reason: {}", name, strerror(errno));
 			return err;
 		}
 		return 0;
@@ -319,7 +319,7 @@ retry_shm:
 		using ue_t = std::unexpected<int>;
 		cap >> frame;
 		if (frame.empty()) {
-			spdlog::error("failed to capture first frame");
+			spdlog::error("capture first frame");
 			return ue_t{-1};
 		}
 		const auto pixel_format = guess_pixel_format(frame.channels());
@@ -332,7 +332,7 @@ retry_shm:
 			.pixel_format = pixel_format,
 		};
 
-		spdlog::info("first frame info: {}x{}x{}; "
+		spdlog::info("initial frame info: {}x{}x{}; "
 					 "depth={}({}); "
 					 "stride[0]={}; "
 					 "stride[1]={}; "
@@ -343,7 +343,7 @@ retry_shm:
 					 frame.cols,
 					 frame.rows,
 					 frame.channels(),
-					 app::to_str(frame.depth()),
+					 app::to_str(static_cast<app::Depth>(frame.depth())),
 					 frame.depth(),
 					 frame.step[0],
 					 frame.step[1],
@@ -356,13 +356,13 @@ retry_shm:
 		// https://www.deepanseeralan.com/tech/playing-with-shared-memory/
 		// ftruncate first, then mmap
 		if (ftruncate(shm_fd, size) == -1) {
-			spdlog::error("failed to truncate shared memory; {} ({})", strerror(errno), errno);
+			spdlog::error("truncate shared memory; {} ({})", strerror(errno), errno);
 			return ue_t{-1};
 		}
 		auto ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
 		if (ptr == MAP_FAILED) {
 			// https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/mmap.2.html
-			spdlog::error("failed to mmap shared memory; {} ({})", strerror(errno), errno);
+			spdlog::error("mmap shared memory; {} ({})", strerror(errno), errno);
 			return ue_t{-1};
 		}
 		memcpy(ptr, frame.data, size);
@@ -384,7 +384,7 @@ retry_shm:
 		int err;
 		err = munmap(ptr, bufferSize);
 		if (err == -1) {
-			spdlog::error("failed to unmap shared memory. reason: {}", strerror(errno));
+			spdlog::error("unmap shared memory. reason: {}", strerror(errno));
 			return err;
 		}
 		return 0;
@@ -403,7 +403,7 @@ retry_shm:
 			};
 			sock.send(zmq::buffer(reinterpret_cast<const uint8_t *>(&msg), sizeof(sync_message_t)), zmq::send_flags::none);
 		} catch (const zmq::error_t &e) {
-			spdlog::error("failed to send synchronization message for frame@{}; {}", frame_count, e.what());
+			spdlog::error("send synchronization message for frame@{}; {}", frame_count, e.what());
 		}
 	};
 

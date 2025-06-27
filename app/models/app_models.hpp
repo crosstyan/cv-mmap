@@ -1,9 +1,6 @@
 #pragma once
 #include <cstdint>
 #include <string_view>
-#include <stdexcept>
-#include <format>
-#include <unordered_map>
 
 namespace app {
 /// @note use with `pixel_format` field in `frame_info_t`
@@ -88,8 +85,9 @@ enum VideoCaptureAPIs {
 
 const char *to_str(const PixelFormat fmt);
 const char *to_str(const Depth depth);
-const char *to_str(int depth);
-int depth_to_size(Depth depth);
+/// @brief convert color depth to size in bytes
+/// @sa https://gist.github.com/yangcha/38f2fa630e223a8546f9b48ebbb3e61a
+int size_of(Depth depth);
 std::string_view to_string(const VideoCaptureAPIs api);
 VideoCaptureAPIs from_string(std::string_view s);
 }

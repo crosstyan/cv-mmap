@@ -1,4 +1,7 @@
 #include <app_models.hpp>
+#include <stdexcept>
+#include <format>
+#include <unordered_map>
 
 namespace app {
 using invalid_argument = std::invalid_argument;
@@ -25,10 +28,6 @@ const char *to_str(const Depth depth) {
 	}
 }
 
-const char *to_str(const int depth) {
-	return to_str(static_cast<Depth>(depth));
-}
-
 const char *to_str(const PixelFormat fmt) {
 	switch (fmt) {
 	case PixelFormat::RGB:
@@ -50,9 +49,7 @@ const char *to_str(const PixelFormat fmt) {
 	}
 }
 
-/// @brief convert color depth to size in bytes
-/// @sa https://gist.github.com/yangcha/38f2fa630e223a8546f9b48ebbb3e61a
-inline int depth_to_size(Depth depth) {
+int size_of(Depth depth) {
 	switch (depth) {
 	case Depth::U8:
 	case Depth::S8:
