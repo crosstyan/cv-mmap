@@ -1,3 +1,28 @@
+set(APP_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/lib)
+
+####### SPDLOG #######
+# TODO: consider using structured logging
+# https://news.ycombinator.com/item?id=28760166
+option(BUILD_SPDLOG "Build spdlog" OFF)
+if (BUILD_SPDLOG)
+    set(SPDLOG_USE_STD_FORMAT ON)
+    add_subdirectory(lib/spdlog)
+endif ()
+if (NOT TARGET spdlog)
+    find_package(spdlog REQUIRED)
+endif ()
+
+####### MODELS #######
+add_library(app_models STATIC models/app_models.cpp)
+target_include_directories(app_models PUBLIC models)
+
+####### CONFIG #######
+add_library(app_config STATIC config/app_config.cpp)
+target_include_directories(app_config PUBLIC config)
+add_subdirectory(${APP_LIB_DIR}/tomlplusplus)
+target_link_libraries(app_config PUBLIC app_models tomlplusplus::tomlplusplus)
+
+####### VERSION #######
 add_library(app_version STATIC version/app_version.cpp)
 target_include_directories(app_version PUBLIC version)
 
@@ -46,4 +71,4 @@ target_compile_definitions(app_version
 
 add_library(app INTERFACE)
 target_include_directories(app INTERFACE .)
-target_link_libraries(app INTERFACE app_version)
+target_link_libraries(app INTERFACE app_version app_models app_config)

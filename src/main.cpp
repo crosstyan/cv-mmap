@@ -4,15 +4,12 @@
 #include <filesystem>
 #include <format>
 #include <csignal>
-#include <opencv2/core/hal/interface.h>
-#include <unordered_map>
 #include <string_view>
 #include <string>
 #include <regex>
 #include <expected>
 #include <span>
 #include <CLI/CLI.hpp>
-#include <toml++/toml.hpp>
 #include <spdlog/spdlog.h>
 #include <opencv2/videoio.hpp>
 #include <zmq_addon.hpp>
@@ -23,6 +20,9 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include "version/app_version.hpp"
+#include "config/app_config.hpp"
+#include <app_models.hpp>
+#include <stdexcept>
 
 #if defined(__APPLE__) && defined(__MACH__)
 #define __APP_MACOS__
@@ -34,221 +34,8 @@
 
 
 namespace app {
-/// @note use with `pixel_format` field in `frame_info_t`
-enum class PixelFormat : uint8_t {
-	/// usually 24bit RGB (8bit per channel, depth=U8)
-	RGB = 0,
-	BGR,
-	RGBA,
-	BGRA,
-	/// channel=1
-	GRAY,
-	YUV,
-	YUYV,
-};
-
-/// @note use with `depth` field in `frame_info_t`
-enum class Depth : uint8_t {
-	U8  = CV_8U,
-	S8  = CV_8S,
-	U16 = CV_16U,
-	S16 = CV_16S,
-	S32 = CV_32S,
-	F32 = CV_32F,
-	F64 = CV_64F,
-	F16 = CV_16F,
-};
-
-
-using invalid_argument = std::invalid_argument;
-
-
+using invalid_argument           = std::invalid_argument;
 constexpr auto FRAME_TOPIC_MAGIC = 0x7d;
-using cap_api_t                  = decltype(cv::CAP_ANY);
-
-static const std::unordered_map<std::string, cap_api_t> api_map = {
-	{"any", cv::CAP_ANY},
-	{"v4l", cv::CAP_V4L},
-	{"v4l2", cv::CAP_V4L2},
-	{"gstreamer", cv::CAP_GSTREAMER},
-	{"dshow", cv::CAP_DSHOW},
-	{"avfoundation", cv::CAP_AVFOUNDATION},
-	{"ffmpeg", cv::CAP_FFMPEG},
-};
-
-std::string_view cap_api_to_string(const cap_api_t api) {
-	for (const auto &[key, value] : api_map) {
-		if (value == api) {
-			return key;
-		}
-	}
-	throw invalid_argument(std::format("invalid API value: `{}`", static_cast<int>(api)));
-}
-
-cap_api_t cap_api_from_string(const std::string_view s) {
-	for (const auto &[key, value] : api_map) {
-		if (key == s) {
-			return value;
-		}
-	}
-	throw invalid_argument(std::format("invalid API key: `{}`", s));
-}
-
-struct Config {
-	/// name of shared memory (with `shm_open` and `shm_unlink`)
-	std::string name;
-	/// pipeline or index, depends on API
-	std::variant<std::string, int> pipeline;
-	/// API preference used by OpenCV
-	cap_api_t api_preference = cv::CAP_ANY;
-	/// ZMQ address for synchronization
-	std::string zmq_address;
-	/// whether the video source is looped, when it's a finite source
-	bool is_loop = false;
-
-	static Config Default() {
-		// https://github.com/opencv/opencv/blob/f503890c2b2ba73f4f94971c1845ead941143262/modules/videoio/src/cap_gstreamer.cpp#L1535
-		// https://github.com/opencv/opencv/blob/f503890c2b2ba73f4f94971c1845ead941143262/modules/videoio/src/cap_gstreamer.cpp#L1503
-		// an appsink called `opencvsink`
-		return {
-			.name           = "default",
-			.pipeline       = "videotestsrc ! timeoverlay ! videoconvert ! video/x-raw,format=BGR ! appsink name=opencvsink",
-			.api_preference = cv::CAP_GSTREAMER,
-			.zmq_address    = "ipc:///tmp/0",
-			.is_loop        = false,
-		};
-	}
-
-	static Config from_toml(const toml::table &table) {
-		Config config;
-		if (const auto name = table["name"]; name) {
-			config.name = *name.value<std::string>();
-		} else {
-			throw invalid_argument("name is required");
-		}
-		if (const auto pipeline = table["pipeline"]; pipeline) {
-			if (const auto s = pipeline.value<std::string>(); s) {
-				config.pipeline = *s;
-			} else if (const auto i = pipeline.value<int>(); i) {
-				config.pipeline = *i;
-			} else {
-				throw invalid_argument("pipeline must be string or integer");
-			}
-		} else {
-			throw invalid_argument("pipeline is required");
-		}
-		if (const auto api = table["api"]; api) {
-			config.api_preference = cap_api_from_string(*api.value<std::string>());
-		} else {
-			throw invalid_argument("api is required");
-		}
-		if (const auto zmq_address = table["zmq_address"]; zmq_address) {
-			config.zmq_address = *zmq_address.value<std::string>();
-		} else {
-			throw invalid_argument("zmq_address is required");
-		}
-		if (const auto is_loop = table["is_loop"]; is_loop) {
-			config.is_loop = *is_loop.value<bool>();
-		} else {
-			config.is_loop = false;
-		}
-		return config;
-	}
-
-	[[nodiscard]]
-	std::string to_toml() const {
-		auto ss  = std::stringstream{};
-		auto tbl = toml::table{
-			{"name", name},
-			{"api", cap_api_to_string(api_preference)},
-			{"zmq_address", zmq_address},
-			{"is_loop", is_loop},
-		};
-		if (std::holds_alternative<int>(pipeline)) {
-			tbl.insert_or_assign("pipeline", std::get<int>(pipeline));
-		} else {
-			tbl.insert_or_assign("pipeline", std::get<std::string>(pipeline));
-		}
-		ss << tbl << "\n\n";
-		return ss.str();
-	}
-};
-
-
-const char *depth_to_string(const Depth depth) {
-	switch (depth) {
-	case Depth::U8:
-		return "U8";
-	case Depth::S8:
-		return "S8";
-	case Depth::U16:
-		return "U16";
-	case Depth::S16:
-		return "S16";
-	case Depth::F16:
-		return "F16";
-	case Depth::S32:
-		return "S32";
-	case Depth::F32:
-		return "F32";
-	case Depth::F64:
-		return "F64";
-	default:
-		return "unknown";
-	}
-}
-
-const char *cv_depth_to_string(const int depth) {
-	return depth_to_string(static_cast<Depth>(depth));
-}
-
-const char *pixel_format_to_string(const PixelFormat fmt) {
-	switch (fmt) {
-	case PixelFormat::RGB:
-		return "RGB";
-	case PixelFormat::BGR:
-		return "BGR";
-	case PixelFormat::RGBA:
-		return "RGBA";
-	case PixelFormat::BGRA:
-		return "BGRA";
-	case PixelFormat::GRAY:
-		return "GRAY";
-	case PixelFormat::YUV:
-		return "YUV";
-	case PixelFormat::YUYV:
-		return "YUYV";
-	default:
-		return "unknown";
-	}
-}
-
-/// @brief convert color depth to size in bytes
-/// @sa https://gist.github.com/yangcha/38f2fa630e223a8546f9b48ebbb3e61a
-inline int depth_to_size(Depth depth) {
-	switch (depth) {
-	case Depth::U8:
-	case Depth::S8:
-		return 1;
-	case Depth::U16:
-	case Depth::S16:
-	case Depth::F16:
-		return 2;
-	case Depth::S32:
-	case Depth::F32:
-		return 4;
-	case Depth::F64:
-		return 8;
-	default:
-		throw app::invalid_argument(std::format("invalid depth value `{}`", static_cast<int>(depth)));
-	}
-}
-
-inline int cv_depth_to_size(int depth) {
-	return depth_to_size(static_cast<Depth>(depth));
-}
-
-
 PixelFormat guess_pixel_format(const int channels) {
 	switch (channels) {
 	case 1:
@@ -368,18 +155,12 @@ int main(int argc, char **argv) {
 			return 1;
 		}
 	}
-	toml::table config_tbl;
-	try {
-		config_tbl = toml::parse_file(config_file);
-	} catch (const toml::parse_error &e) {
-		spdlog::error("failed to parse config file: {}", e.what());
-		return 1;
-	}
+
 	app::Config config;
 	try {
-		config = app::Config::from_toml(config_tbl);
-	} catch (const app::invalid_argument &e) {
-		spdlog::error("invalid config: {}", e.what());
+		config = app::Config::from_toml(config_path);
+	} catch (const std::exception &e) {
+		spdlog::error("Failed to load config: {}", e.what());
 		return 1;
 	}
 
@@ -402,7 +183,7 @@ int main(int argc, char **argv) {
 		// https://zguide.zeromq.org/docs/chapter2/
 		// The inter-process ipc transport is disconnected, like tcp. It has one
 		// limitation: it does not yet work on Windows. By convention we use
-		// endpoint names with an “.ipc” extension to avoid potential conflict
+		// endpoint names with an "extension to avoid potential conflict
 		// with other file names. On UNIX systems, if you use ipc endpoints you
 		// need to create these with appropriate permissions otherwise they may
 		// not be shareable between processes running under different user IDs.
@@ -562,14 +343,14 @@ retry_shm:
 					 frame.cols,
 					 frame.rows,
 					 frame.channels(),
-					 app::cv_depth_to_string(frame.depth()),
+					 app::to_str(frame.depth()),
 					 frame.depth(),
 					 frame.step[0],
 					 frame.step[1],
 					 frame.total(),
 					 frame.elemSize(),
 					 frame.total() * frame.elemSize(),
-					 app::pixel_format_to_string(pixel_format));
+					 app::to_str(pixel_format));
 
 		const auto size = frame.total() * frame.elemSize();
 		// https://www.deepanseeralan.com/tech/playing-with-shared-memory/

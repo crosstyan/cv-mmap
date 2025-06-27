@@ -6,8 +6,11 @@
     "AVFOUNDATION",
     "GSTREAMER",
     "ipcrm",
+    "opencv",
     "opencvsink",
     "spdlog",
-    "STRR"
+    "STREQUAL",
+    "STRR",
+    "tomlplusplus"
   ]
 }
