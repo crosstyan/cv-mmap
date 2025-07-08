@@ -4,12 +4,11 @@ from loguru import logger
 import cv2
 
 # note that no beginning slash is needed
-SHM_NAME = "psm_default"
-ZMQ_ADDR = "ipc:///tmp/0"
+NAME = "default"
 
 
 async def main():
-    client = CvMmapClient(SHM_NAME, ZMQ_ADDR)
+    client = CvMmapClient(NAME)
     async for im, msg in client:
         cv2.imshow("image", im)
         cv2.waitKey(1)

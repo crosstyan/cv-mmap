@@ -10,7 +10,6 @@ Config Config::Default() {
 		.name           = "default",
 		.pipeline       = "videotestsrc ! timeoverlay ! videoconvert ! video/x-raw,format=BGR ! appsink name=opencvsink",
 		.api_preference = CAP_GSTREAMER,
-		.zmq_address    = "ipc:///tmp/0",
 		.is_loop        = false,
 	};
 }
@@ -52,13 +51,6 @@ Config Config::from_toml(const std::filesystem::path &path) {
 		config.api_preference = CAP_ANY;
 	}
 
-	// zmq address
-	if (auto val = tbl["zmq_address"].value<std::string>(); val) {
-		config.zmq_address = *val;
-	} else {
-		throw invalid_argument("zmq_address is required");
-	}
-
 	// is_loop
 	config.is_loop = tbl["is_loop"].value_or(false);
 
@@ -76,7 +68,6 @@ std::string Config::to_toml() {
 	}
 	ss << "\n";
 	ss << "api = \"" << to_string(api_preference) << "\"\n";
-	ss << "zmq_address = \"" << zmq_address << "\"\n";
 	ss << "is_loop = " << (is_loop ? "true" : "false") << "\n";
 	return ss.str();
 }

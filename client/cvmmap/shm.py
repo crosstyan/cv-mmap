@@ -53,9 +53,7 @@ else:
             return
 
         def unlink(self) -> None:
-            if _mpshm._USE_POSIX and self._name:  # pylint: disable=protected-access
-                _mpshm._posixshmem.shm_unlink(
-                    self._name
-                )  # pylint: disable=protected-access
+            if _mpshm._USE_POSIX and self._name:  # type: ignore
+                _mpshm._posixshmem.shm_unlink(self._name)  # type: ignore
                 if self._track:
-                    _mprt.unregister(self._name, "shared_memory")
+                    _mprt.unregister(self._name, "shared_memory")  # type: ignore

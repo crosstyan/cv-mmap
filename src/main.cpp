@@ -32,6 +32,12 @@
 #include <unistd.h>
 #endif
 
+constexpr auto NAME_MAX_LEN = 24;
+/**
+ * @brief offset of the shared memory payload
+ * @note the first 256 bytes are reserved for the frame info and other useful metadata
+ */
+constexpr auto SHM_PAYLOAD_OFFSET = 256;
 
 namespace app {
 using invalid_argument           = std::invalid_argument;
@@ -49,7 +55,6 @@ PixelFormat guess_pixel_format(const int channels) {
 	}
 };
 
-
 // https://docs.opencv.org/4.x/d3/d63/classcv_1_1Mat.html
 // See `Detailed Description`
 // strides for each dimension
@@ -57,6 +62,7 @@ PixelFormat guess_pixel_format(const int channels) {
 // stride[1]=channel*cols
 // stride[2]=channel*cols*rows
 struct __attribute__((packed)) frame_info_t {
+	/** properties */
 	uint16_t width;
 	uint16_t height;
 	uint8_t channels;
@@ -64,6 +70,7 @@ struct __attribute__((packed)) frame_info_t {
 	Depth depth;
 	uint32_t buffer_size;
 	PixelFormat pixel_format = PixelFormat::BGR;
+	/** end of properties */
 
 	/// @brief pixel size in bytes
 	[[nodiscard]]
@@ -89,31 +96,64 @@ struct __attribute__((packed)) frame_info_t {
 	}
 };
 
+using label_t = uint8_t[NAME_MAX_LEN];
 struct __attribute__((packed)) sync_message_t {
-	/// this field SHOULD NOT be modified
-	uint8_t magic = FRAME_TOPIC_MAGIC;
-	uint32_t frame_count;
-	frame_info_t info;
+public:
+	static constexpr auto LABEL_LEN_MAX = NAME_MAX_LEN;
+	sync_message_t(const std::string_view &label, uint32_t frame_count) : _frame_count(frame_count) {
+		if (label.size() > LABEL_LEN_MAX) {
+			throw invalid_argument(std::format("label is too long: `{}`", label));
+		}
+		std::copy(label.begin(), label.end(), _label);
+		std::fill(_label + label.size(), _label + LABEL_LEN_MAX, '\0');
+	}
 
-	// NOTE: I don't need the `name` field
-	// as long as we don't share same IPC socket for different video sources.
+	sync_message_t &set_frame_count(uint32_t frame_count) {
+		_frame_count = frame_count;
+		return *this;
+	}
+
 	int marshal(std::span<uint8_t> buf) const {
 		if (buf.size() < sizeof(sync_message_t)) {
 			return -1;
 		}
-		memcpy(buf.data(), this, sizeof(sync_message_t));
+		const auto self = std::span<const uint8_t>{
+			reinterpret_cast<const uint8_t *>(this), sizeof(sync_message_t)};
+		std::copy(self.begin(), self.end(), buf.begin());
 		return sizeof(sync_message_t);
 	}
 
-	static std::optional<sync_message_t> unmarshal(const std::span<uint8_t> buf) {
-		if (buf.size() < sizeof(sync_message_t)) {
-			return std::nullopt;
-		}
-		sync_message_t msg;
-		memcpy(&msg, buf.data(), sizeof(sync_message_t));
-		return msg;
-	}
+private:
+	uint8_t _magic = FRAME_TOPIC_MAGIC;
+	/**
+	 * @brief label of the video source
+	 * @note C string, null-terminated
+	 */
+	label_t _label;
+	uint32_t _frame_count;
 };
+
+struct __attribute__((packed)) frame_metadata_t {
+	static constexpr auto CV_MMAP_MAGIC =
+		std::array<char, 8>{'C', 'V', '-', 'M', 'M', 'A', 'P', '\0'};
+
+	int marshal(std::span<uint8_t> buf) const {
+		// the first 8 bytes should be CV_MMAP_MAGIC
+		constexpr auto REQUIRED_SIZE = CV_MMAP_MAGIC.size() + sizeof(frame_info_t);
+		if (buf.size() < REQUIRED_SIZE) {
+			return -1;
+		}
+		std::copy(CV_MMAP_MAGIC.begin(), CV_MMAP_MAGIC.end(), buf.begin());
+		std::copy(
+			reinterpret_cast<const uint8_t *>(&info), reinterpret_cast<const uint8_t *>(&info) + sizeof(frame_info_t), buf.begin() + CV_MMAP_MAGIC.size());
+		return CV_MMAP_MAGIC.size() + sizeof(frame_info_t);
+	}
+
+	/** properties */
+	uint32_t frame_count;
+	frame_info_t info;
+};
+
 }
 
 
@@ -134,10 +174,10 @@ int main(int argc, char **argv) {
 	static bool use_trace = false;
 	app.add_flag("--trace", use_trace, "Enable trace log");
 	CLI11_PARSE(app, argc, argv);
-	if (use_debug) {
-		spdlog::set_level(spdlog::level::debug);
-	} else if (use_trace) {
+	if (use_trace) {
 		spdlog::set_level(spdlog::level::trace);
+	} else if (use_debug) {
+		spdlog::set_level(spdlog::level::debug);
 	} else {
 		spdlog::set_level(spdlog::level::info);
 	}
@@ -166,16 +206,15 @@ int main(int argc, char **argv) {
 
 	// https://libzmq.readthedocs.io/en/latest/zmq_ipc.html
 	// https://libzmq.readthedocs.io/en/latest/zmq_inproc.html
+	// note that `zmq::socket_t` is RAII aware already
 	zmq::context_t ctx;
 	zmq::socket_t sock(ctx, zmq::socket_type::pub);
-	const auto close_zmq = [&sock, &ctx, zmq_address = config.zmq_address] {
-		sock.close();
-		ctx.close();
+	const auto close_zmq = [&sock, &ctx, zmq_address = config.zmq_address()] {
 		if (zmq_address.starts_with(ipc_prefix)) {
 			const auto path = zmq_address.substr(std::string_view(ipc_prefix).size());
 			const auto err  = unlink(path.c_str());
 			if (err == -1) {
-				spdlog::warn("unlink ZMQ address `{}` because of `{} ({})`", path, strerror(errno), errno);
+				spdlog::error("unlink ZMQ address `{}` because of `{} ({})`", path, strerror(errno), errno);
 			}
 		}
 	};
@@ -189,9 +228,9 @@ int main(int argc, char **argv) {
 		// not be shareable between processes running under different user IDs.
 		// You must also make sure all processes can access the files, e.g., by
 		// running in the same working directory.
-		sock.bind(config.zmq_address);
-		if (config.zmq_address.starts_with(ipc_prefix)) {
-			const auto path         = config.zmq_address.substr(std::string_view(ipc_prefix).size());
+		sock.bind(config.zmq_address());
+		if (config.zmq_address().starts_with(ipc_prefix)) {
+			const auto path         = config.zmq_address().substr(std::string_view(ipc_prefix).size());
 			constexpr auto mode_777 = S_IRWXU | S_IRWXG | S_IRWXO;
 			const auto ok           = chmod(path.c_str(), mode_777);
 			if (ok == -1) {
@@ -202,7 +241,7 @@ int main(int argc, char **argv) {
 		spdlog::error("bind to ZMQ address: `{}`", e.what());
 		return 1;
 	}
-	spdlog::info("bind to ZMQ address: `{}`", config.zmq_address);
+	spdlog::info("bind to ZMQ address: `{}`", config.zmq_address());
 	cv::VideoCapture cap;
 	// https://gstreamer.freedesktop.org/documentation/shm/shmsink.html?gi-language=c
 	if (std::holds_alternative<int>(config.pipeline)) {
@@ -236,6 +275,10 @@ int main(int argc, char **argv) {
 	struct finite_source_info_t {
 		double fps;
 		uint32_t frame_count;
+
+		std::chrono::milliseconds frame_interval() const {
+			return std::chrono::milliseconds(static_cast<std::chrono::milliseconds::rep>(1000.0 / fps));
+		}
 	};
 	const auto check_finite_source = [&cap] -> std::optional<finite_source_info_t> {
 		const auto fps         = cap.get(cv::CAP_PROP_FPS);
@@ -257,65 +300,151 @@ int main(int argc, char **argv) {
 	};
 
 
-	static size_t frame_count = 0;
-	static std::atomic_bool is_running{true};
+	static uint32_t frame_count = 0;
+	static auto is_running      = std::atomic_bool{true};
+
+	/**
+	 * @brief signal handler for SIGINT
+	 */
 	constexpr auto sigint_handler = [](int) {
 		spdlog::info("SIGINT received, stopping...");
 		is_running.store(false, std::memory_order::relaxed);
 	};
 	std::signal(SIGINT, sigint_handler);
+
 	const auto finite_source_info = check_finite_source();
-	const auto frame_interval_ms  = [finite_source_info] -> std::optional<int> {
-        if (finite_source_info) {
-            return static_cast<int>(1000.0 / finite_source_info->fps);
-        } else {
-            return std::nullopt;
-        }
-	}();
 	if (finite_source_info) {
 		spdlog::info("detected finite source; fps={} ({}ms), frame_count={}, is_loop={}",
-					 finite_source_info->fps, *frame_interval_ms, finite_source_info->frame_count, config.is_loop);
+					 finite_source_info->fps, finite_source_info->frame_interval().count(), finite_source_info->frame_count, config.is_loop);
 	} else {
 		spdlog::info("infinite source detected (live stream)");
 	}
 
-retry_shm:
-	int shm_fd = shm_open(config.name.c_str(), O_CREAT | O_RDWR, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
-	if (shm_fd == -1) {
-		spdlog::error("create shared memory `{}`. {} ({})", config.name, strerror(errno), errno);
-		if (errno == EACCES || errno == EEXIST) {
-			// `ipcrm -M <name>` could be used to remove the shared memory
-			auto err = shm_unlink(config.name.c_str());
-			if (err == -1) {
-				spdlog::error("unlink shared memory `{}`. {} ({})", config.name, strerror(errno), errno);
-				return 1;
-			} else {
-				spdlog::warn("unlink shared memory `{}`", config.name);
-				goto retry_shm;
+	/**
+	 * @brief a simple RAII wrapper for shared memory
+	 */
+	struct shm_state_t {
+		shm_state_t(const std::string &name, int shm_fd) : _name(name), _shm_fd(shm_fd) {}
+		~shm_state_t() {
+			close(_shm_fd);
+			shm_unlink(_name.c_str());
+		}
+		shm_state_t(const shm_state_t &)            = delete;
+		shm_state_t &operator=(const shm_state_t &) = delete;
+		shm_state_t(shm_state_t &&)                 = default;
+		shm_state_t &operator=(shm_state_t &&)      = default;
+
+		static std::expected<shm_state_t, int> open(const std::string &name) {
+			using ue_t = std::unexpected<int>;
+			int shm_fd = shm_open(name.c_str(), O_CREAT | O_RDWR, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
+			if (shm_fd == -1) {
+				// `ipcrm -M <name>` could be used to remove the shared memory as well
+				if (errno == EACCES || errno == EEXIST) {
+					auto err = shm_unlink(name.c_str());
+					if (err == -1) {
+						spdlog::error("unlinking shared memory `{}`. reason: {}", name, strerror(errno));
+						return ue_t{errno};
+					} else {
+						spdlog::warn("unlinked shared memory `{}`", name);
+						return shm_state_t::open(name);
+					}
+				}
+				return ue_t{errno};
 			}
+			return shm_state_t(name, shm_fd);
 		}
-		return 1;
-	}
-	spdlog::debug("created shared memory `{}` (fd={})", config.name, shm_fd);
-	// defer at exit
-	const auto shm_close_fn = [shm_fd, name = config.name]() {
-		auto err = close(shm_fd);
-		if (err == -1) {
-			spdlog::error("close shared memory `{}`. reason: {}", name, strerror(errno));
-			return err;
+
+		int fd() const {
+			return _shm_fd;
 		}
-		err = shm_unlink(name.c_str());
-		if (err == -1) {
-			spdlog::error("unlink shared memory `{}`. reason: {}", name, strerror(errno));
-			return err;
+
+		const std::string_view name() const {
+			return _name;
 		}
-		return 0;
+
+	private:
+		std::string _name;
+		int _shm_fd;
 	};
 
+	auto shm_state_ = shm_state_t::open(config.shm_name());
+	if (not shm_state_) {
+		spdlog::error("failed to open shared memory `{}`. reason: {}", config.shm_name(), shm_state_.error());
+		return 1;
+	}
+	auto shm_state = std::move(*shm_state_);
+	spdlog::debug("created shared memory `{}` (fd={})", config.shm_name(), shm_state.fd());
+
+	/**
+	 * @brief a simple RAII wrapper for memory mapped frame state
+	 */
+	struct frame_state_t {
+		frame_state_t(std::span<uint8_t> buf) : _mmap_ptr(buf.data()), _metadata_buffer(buf.subspan(0, SHM_PAYLOAD_OFFSET)), _image_buffer(buf.subspan(SHM_PAYLOAD_OFFSET, buf.size() - SHM_PAYLOAD_OFFSET)) {}
+		frame_state_t(const frame_state_t &)            = delete;
+		frame_state_t &operator=(const frame_state_t &) = delete;
+		frame_state_t(frame_state_t &&)                 = default;
+		frame_state_t &operator=(frame_state_t &&)      = default;
+
+		const std::span<uint8_t> metadata_buffer() const {
+			return _metadata_buffer;
+		}
+		const std::span<uint8_t> image_buffer() const {
+			return _image_buffer;
+		}
+
+		size_t total_buffer_size() const {
+			return _metadata_buffer.size() + _image_buffer.size() + SHM_PAYLOAD_OFFSET;
+		}
+
+		frame_metadata_t &get_metadata() {
+			return *reinterpret_cast<frame_metadata_t *>(_mmap_ptr);
+		}
+
+		static std::expected<frame_state_t, int> open(int shm_fd, size_t size) {
+			using ue_t = std::unexpected<int>;
+			// https://www.deepanseeralan.com/tech/playing-with-shared-memory/
+			// ftruncate first, then mmap
+			if (ftruncate(shm_fd, size) == -1) {
+				spdlog::error("truncate shared memory; {} ({})", strerror(errno), errno);
+				return ue_t{-1};
+			}
+			auto ptr = static_cast<uint8_t *>(mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0));
+			if (ptr == MAP_FAILED) {
+				// https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/mmap.2.html
+				spdlog::error("mmap shared memory; {} ({})", strerror(errno), errno);
+				return ue_t{-1};
+			}
+			return frame_state_t(std::span<uint8_t>(ptr, size));
+		}
+
+		/**
+		 * @brief set the frame to the image buffer
+		 * @note the frame size must be the same as the image buffer size
+		 */
+		void set_frame(const cv::Mat &frame) {
+			const auto picture_buffer_size = frame.total() * frame.elemSize();
+			assert(picture_buffer_size == _image_buffer.size());
+			std::copy(frame.data, frame.data + picture_buffer_size, _image_buffer.begin());
+		}
+
+		void set_frame_count(uint32_t frame_count) {
+			get_metadata().frame_count = frame_count;
+		}
+
+		~frame_state_t() {
+			munmap(_mmap_ptr, total_buffer_size());
+		}
+
+	private:
+		uint8_t *_mmap_ptr;
+		/** 0-SHM_PAYLOAD_OFFSET (metadata) */
+		std::span<uint8_t> _metadata_buffer;
+		/** SHM_PAYLOAD_OFFSET-total_buffer_size */
+		std::span<uint8_t> _image_buffer;
+	};
 
 	cv::Mat frame;
-	using start_ret_t         = std::tuple<void *, frame_info_t>;
-	const auto at_first_frame = [shm_fd, &cap, &frame] -> std::expected<start_ret_t, int> {
+	const auto on_initial_frame = [&shm_state, &cap, &frame] -> std::expected<frame_state_t, int> {
 		using ue_t = std::unexpected<int>;
 		cap >> frame;
 		if (frame.empty()) {
@@ -352,56 +481,30 @@ retry_shm:
 					 frame.total() * frame.elemSize(),
 					 app::to_str(pixel_format));
 
-		const auto size = frame.total() * frame.elemSize();
-		// https://www.deepanseeralan.com/tech/playing-with-shared-memory/
-		// ftruncate first, then mmap
-		if (ftruncate(shm_fd, size) == -1) {
-			spdlog::error("truncate shared memory; {} ({})", strerror(errno), errno);
-			return ue_t{-1};
+		const auto picture_buffer_size = frame.total() * frame.elemSize();
+		const auto total_buffer_size   = SHM_PAYLOAD_OFFSET + picture_buffer_size;
+
+		auto frame_state = frame_state_t::open(shm_state.fd(), total_buffer_size);
+		if (not frame_state) {
+			spdlog::error("failed to open frame state; {}", frame_state.error());
+			return ue_t{frame_state.error()};
 		}
-		auto ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-		if (ptr == MAP_FAILED) {
-			// https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/mmap.2.html
-			spdlog::error("mmap shared memory; {} ({})", strerror(errno), errno);
-			return ue_t{-1};
-		}
-		memcpy(ptr, frame.data, size);
-		return std::make_tuple(ptr, info);
+		frame_state->get_metadata().frame_count = 0;
+		frame_state->get_metadata().info        = info;
+		return frame_state;
 	};
 
-	start_ret_t tmp_ret;
-	if (auto ret = at_first_frame(); ret) {
-		tmp_ret = *ret;
-	} else {
-		shm_close_fn();
-		close_zmq();
+	auto frame_state_ = on_initial_frame();
+	if (not frame_state_) {
+		spdlog::error("failed to open frame state; {}", frame_state_.error());
 		return 1;
 	}
-
-	const auto [ptr, info] = tmp_ret;
-
-	const auto unmap_ptr = [ptr, bufferSize = info.buffer_size] {
-		int err;
-		err = munmap(ptr, bufferSize);
-		if (err == -1) {
-			spdlog::error("unmap shared memory. reason: {}", strerror(errno));
-			return err;
-		}
-		return 0;
-	};
-
-	const auto set_frame = [ptr, bufferSize = info.buffer_size](const cv::Mat &frame) {
-		// TODO: check frame size
-		memcpy(ptr, frame.data, bufferSize);
-	};
-
-	const auto send_sync_msg = [&sock, &info] {
+	auto frame_state         = std::move(*frame_state_);
+	auto sync_msg            = sync_message_t(config.name, frame_count);
+	const auto send_sync_msg = [&sync_msg, &sock] {
 		try {
-			const auto msg = sync_message_t{
-				.frame_count = static_cast<uint32_t>(frame_count),
-				.info        = info,
-			};
-			sock.send(zmq::buffer(reinterpret_cast<const uint8_t *>(&msg), sizeof(sync_message_t)), zmq::send_flags::none);
+			sync_msg.set_frame_count(frame_count);
+			sock.send(zmq::buffer(reinterpret_cast<const uint8_t *>(&sync_msg), sizeof(sync_message_t)), zmq::send_flags::none);
 		} catch (const zmq::error_t &e) {
 			spdlog::error("send synchronization message for frame@{}; {}", frame_count, e.what());
 		}
@@ -423,12 +526,13 @@ retry_shm:
 				break;
 			}
 		} else {
-			set_frame(frame);
+			frame_state.set_frame(frame);
+			frame_state.set_frame_count(frame_count);
 			send_sync_msg();
 			if (finite_source_info) {
 				const auto current = get_video_position();
 				spdlog::debug("frame@{} ({}/{})", frame_count, current, finite_source_info->frame_count);
-				std::this_thread::sleep_for(std::chrono::milliseconds(*frame_interval_ms));
+				std::this_thread::sleep_for(finite_source_info->frame_interval());
 			} else {
 				spdlog::debug("frame@{}", frame_count);
 			}
@@ -436,8 +540,6 @@ retry_shm:
 		frame_count += 1;
 	}
 
-	unmap_ptr();
-	shm_close_fn();
 	close_zmq();
 	spdlog::info("normally exit");
 	return 0;

@@ -1,10 +1,7 @@
 from logging import getLogger
-from pathlib import Path
 from struct import error as StructError
 from typing import (
-    AsyncContextManager,
     AsyncGenerator,
-    Generator,
     Optional,
     cast,
     TypedDict,
@@ -22,6 +19,7 @@ NDArray = np.ndarray
 
 
 class CvMmapClient:
+    _name: str
     _shm_name: str
     _zmq_addr: str
 
@@ -47,9 +45,30 @@ class CvMmapClient:
         """
         self._sock.unsubscribe(bytes([FRAME_TOPIC_MAGIC]))
 
-    def __init__(self, shm_name: str, zmq_addr: str):
-        self._shm_name = shm_name
-        self._zmq_addr = zmq_addr
+    def __init__(
+        self,
+        name: str,
+        *,
+        shm_name: Optional[str] = None,
+        zmq_addr: Optional[str] = None,
+    ):
+        """Create a CvMmapClient.
+
+        Parameters
+        ----------
+        name
+            Base name of the video source (e.g. "default"). The shared-memory
+            segment is assumed to be ``cvmmap_{name}`` and the ZMQ publisher
+            address ``ipc:///tmp/{shm_name}``.
+        shm_name, zmq_addr
+            Override the derived shared-memory name or ZMQ address if you need
+            a non-standard layout.
+        """
+
+        self._name = name
+        # Derive resource names following the C++ producer convention.
+        self._shm_name = shm_name or f"cvmmap_{name}"
+        self._zmq_addr = zmq_addr or f"ipc:///tmp/{self._shm_name}"
 
         self._ctx = Context.instance()
         self._sock = self._ctx.socket(zmq.SUB)
@@ -65,7 +84,7 @@ class CvMmapClient:
 
     def _init_shm(self, size: int):
         """
-        Interal use only.
+        Internal use only.
 
         Initialize shared memory buffer.
         """
@@ -110,4 +129,6 @@ class CvMmapClient:
 
 class CvMmapConfig(TypedDict):
     name: str
-    zmq_address: str
+    # Optional overrides for non-standard setups
+    shm_name: Optional[str]
+    zmq_addr: Optional[str]
