@@ -28,10 +28,26 @@ class Depth(Enum):
 
 @dataclass
 class SyncMessage:
+    label: str
     frame_count: int
-    """
-    `uint32_t`
-    """
+
+    @staticmethod
+    def unmarshal(data: bytes) -> "SyncMessage":
+        LABEL_LEN = 24
+        fmt = f"=B{LABEL_LEN}sI"
+        magic, label_raw, frame_count = struct.unpack(fmt, data[: struct.calcsize(fmt)])
+        assert magic == FRAME_TOPIC_MAGIC, "Invalid topic magic"
+        label = label_raw.split(b"\0", 1)[0].decode()
+        return SyncMessage(label=label, frame_count=frame_count)
+
+
+# --------------------
+# Shared-memory metadata
+# --------------------
+
+
+@dataclass
+class FrameInfo:
     width: int
     """
     `uint16_t`
@@ -57,10 +73,47 @@ class SyncMessage:
     """
     pixel_format: PixelFormat
 
+    PACK_FMT = "=HHBBIB"  # width, height, channels, depth, buffer_size, pixel_format
+
     @staticmethod
-    def unmarshal(data: bytes) -> "SyncMessage":
+    def size() -> int:
+        return struct.calcsize(FrameInfo.PACK_FMT)
+
+    @staticmethod
+    def unmarshal(data: bytes) -> "FrameInfo":
         (
-            magic,
+            width,
+            height,
+            channels,
+            depth_raw,
+            buffer_size,
+            pixel_format_raw,
+        ) = struct.unpack(FrameInfo.PACK_FMT, data[: FrameInfo.size()])
+        return FrameInfo(
+            width=width,
+            height=height,
+            channels=channels,
+            depth=Depth(depth_raw),
+            buffer_size=buffer_size,
+            pixel_format=PixelFormat(pixel_format_raw),
+        )
+
+
+@dataclass
+class FrameMetadata:
+    PACK_FMT = "=I" + FrameInfo.PACK_FMT
+
+    # properties
+    frame_count: int
+    info: FrameInfo
+
+    @staticmethod
+    def size() -> int:
+        return struct.calcsize(FrameMetadata.PACK_FMT)
+
+    @staticmethod
+    def unmarshal(data: bytes) -> "FrameMetadata":
+        (
             frame_count,
             width,
             height,
@@ -68,16 +121,15 @@ class SyncMessage:
             depth_raw,
             buffer_size,
             pixel_format_raw,
-        ) = struct.unpack("=BIHHBBIB", data)
-        assert magic == FRAME_TOPIC_MAGIC
-        depth = Depth(depth_raw)
-        pixel_format = PixelFormat(pixel_format_raw)
-        return SyncMessage(
+        ) = struct.unpack(FrameMetadata.PACK_FMT, data[: FrameMetadata.size()])
+        return FrameMetadata(
             frame_count=frame_count,
-            width=width,
-            height=height,
-            channels=channels,
-            depth=depth,
-            buffer_size=buffer_size,
-            pixel_format=pixel_format,
+            info=FrameInfo(
+                width=width,
+                height=height,
+                channels=channels,
+                depth=Depth(depth_raw),
+                buffer_size=buffer_size,
+                pixel_format=PixelFormat(pixel_format_raw),
+            ),
         )

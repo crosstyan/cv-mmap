@@ -9,7 +9,7 @@ NAME = "default"
 
 async def main():
     client = CvMmapClient(NAME)
-    async for im, msg in client:
+    async for im, meta in client:
         cv2.imshow("image", im)
         cv2.waitKey(1)
 

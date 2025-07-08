@@ -4,9 +4,11 @@
   "python.analysis.autoImportCompletions": true,
   "cSpell.words": [
     "AVFOUNDATION",
+    "calcsize",
     "cvmmap",
     "GSTREAMER",
     "ipcrm",
+    "ndarray",
     "opencv",
     "opencvsink",
     "spdlog",

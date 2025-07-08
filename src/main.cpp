@@ -379,7 +379,11 @@ int main(int argc, char **argv) {
 	 * @brief a simple RAII wrapper for memory mapped frame state
 	 */
 	struct frame_state_t {
-		frame_state_t(std::span<uint8_t> buf) : _mmap_ptr(buf.data()), _metadata_buffer(buf.subspan(0, SHM_PAYLOAD_OFFSET)), _image_buffer(buf.subspan(SHM_PAYLOAD_OFFSET, buf.size() - SHM_PAYLOAD_OFFSET)) {}
+		frame_state_t(std::span<uint8_t> buf) : _mmap_ptr(buf.data()),
+												_metadata_buffer(buf.subspan(0, SHM_PAYLOAD_OFFSET)),
+												_image_buffer(buf.subspan(SHM_PAYLOAD_OFFSET, buf.size() - SHM_PAYLOAD_OFFSET)) {
+			assert(total_buffer_size() == buf.size());
+		}
 		frame_state_t(const frame_state_t &)            = delete;
 		frame_state_t &operator=(const frame_state_t &) = delete;
 		frame_state_t(frame_state_t &&)                 = default;
@@ -393,11 +397,11 @@ int main(int argc, char **argv) {
 		}
 
 		size_t total_buffer_size() const {
-			return _metadata_buffer.size() + _image_buffer.size() + SHM_PAYLOAD_OFFSET;
+			return _metadata_buffer.size() + _image_buffer.size();
 		}
 
-		frame_metadata_t &get_metadata() {
-			return *reinterpret_cast<frame_metadata_t *>(_mmap_ptr);
+		frame_metadata_t &metadata() {
+			return *reinterpret_cast<frame_metadata_t *>(_metadata_buffer.data());
 		}
 
 		static std::expected<frame_state_t, int> open(int shm_fd, size_t size) {
@@ -428,7 +432,7 @@ int main(int argc, char **argv) {
 		}
 
 		void set_frame_count(uint32_t frame_count) {
-			get_metadata().frame_count = frame_count;
+			metadata().frame_count = frame_count;
 		}
 
 		~frame_state_t() {
@@ -489,8 +493,8 @@ int main(int argc, char **argv) {
 			spdlog::error("failed to open frame state; {}", frame_state.error());
 			return ue_t{frame_state.error()};
 		}
-		frame_state->get_metadata().frame_count = 0;
-		frame_state->get_metadata().info        = info;
+		frame_state->metadata().frame_count = 0;
+		frame_state->metadata().info        = info;
 		return frame_state;
 	};
 

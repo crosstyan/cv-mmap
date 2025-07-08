@@ -1,4 +1,5 @@
 from logging import getLogger
+import struct
 from struct import error as StructError
 from typing import (
     AsyncGenerator,
@@ -12,13 +13,17 @@ import zmq
 from zmq import Socket
 from zmq.asyncio import Context, Poller
 
-from .msg import SyncMessage, FRAME_TOPIC_MAGIC
+from .msg import SyncMessage, FrameMetadata, FRAME_TOPIC_MAGIC
 from .shm import SharedMemory
 
 NDArray = np.ndarray
 
 
 class CvMmapClient:
+    """
+    A client for the CvMmap protocol
+    """
+
     _name: str
     _shm_name: str
     _zmq_addr: str
@@ -82,21 +87,37 @@ class CvMmapClient:
         self._image_buffer = None
         self._shm = None
 
-    def _init_shm(self, size: int):
-        """
-        Internal use only.
+    _SHM_PAYLOAD_OFFSET = 256
 
-        Initialize shared memory buffer.
-        """
-        # disable tracking
+    def _read_metadata(self) -> FrameMetadata:
+        assert self._shm is not None, "Shared memory not attached"
+        # Raw bytes are in little-endian layout as produced by C++; Python struct handles endianness.
+
+        return FrameMetadata.unmarshal(self._shm.buf[: FrameMetadata.size()])
+
+    def _ensure_memory(self):
+        """Attach to shared memory and initialize the numpy view if necessary."""
+        if self._shm is not None and self._image_buffer is not None:
+            return
+
         if self._shm is None:
             self._shm = SharedMemory(  # pylint: disable=unexpected-keyword-arg
-                name=self._shm_name, create=False, size=size, track=False
+                name=self._shm_name, create=False, track=False
             )
-        else:
-            raise ValueError("Shared memory already initialized")
 
-    async def __aiter__(self) -> AsyncGenerator[tuple[NDArray, SyncMessage], None]:
+        # Read metadata once and build numpy view if not yet created
+        meta = self._read_metadata()
+        if self._image_buffer is None:
+            start = self._SHM_PAYLOAD_OFFSET
+            end = start + meta.info.buffer_size
+            mv = self._shm.buf[start:end]
+            self._image_buffer = np.ndarray(
+                (meta.info.height, meta.info.width, meta.info.channels),
+                dtype=np.uint8,
+                buffer=mv,
+            )
+
+    async def __aiter__(self) -> AsyncGenerator[tuple[NDArray, FrameMetadata], None]:
         """
         Asynchronous generator that yields numpy array of image.
         """
@@ -106,22 +127,19 @@ class CvMmapClient:
                 if event & zmq.POLLIN:
                     message = await socket.recv()
                     message = cast(bytes, message)
-                    # it's the frame topic, ignore it
+
                     try:
                         sync_message = SyncMessage.unmarshal(message)
-                        if self._image_buffer is None:
-                            self._init_shm(sync_message.buffer_size)
-                            assert self._shm is not None
-                            self._image_buffer = np.ndarray(
-                                (
-                                    sync_message.height,
-                                    sync_message.width,
-                                    sync_message.channels,
-                                ),
-                                dtype=np.uint8,
-                                buffer=self._shm.buf,
+                        self._ensure_memory()
+                        assert self._image_buffer is not None
+
+                        if sync_message.label != self._name:
+                            raise RuntimeError(
+                                f"Label mismatch: expected '{self._name}', got '{sync_message.label}'"
                             )
-                        yield self._image_buffer, sync_message
+
+                        metadata = self._read_metadata()
+                        yield self._image_buffer, metadata
                     except StructError as e:
                         getLogger(__name__).exception(e)
                         continue
