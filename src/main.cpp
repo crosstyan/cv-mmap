@@ -438,6 +438,7 @@ int main(int argc, char **argv) {
 		}
 		~frame_state_t() {
 			if (_mmap_ptr) {
+				spdlog::debug("closing frame state (mmap_ptr={})", static_cast<void *>(_mmap_ptr));
 				munmap(_mmap_ptr, total_buffer_size());
 			}
 		}

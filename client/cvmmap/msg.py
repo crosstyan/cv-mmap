@@ -73,7 +73,8 @@ class FrameInfo:
     """
     pixel_format: PixelFormat
 
-    PACK_FMT = "=HHBBIB"  # width, height, channels, depth, buffer_size, pixel_format
+    # width, height, channels, depth, buffer_size, pixel_format
+    PACK_FMT = "=HHBBIB"
 
     @staticmethod
     def size() -> int:
@@ -101,7 +102,8 @@ class FrameInfo:
 
 @dataclass
 class FrameMetadata:
-    PACK_FMT = "=I" + FrameInfo.PACK_FMT
+    # frame_count + FrameInfo (strip the first endianness indicator)
+    PACK_FMT = "=I" + FrameInfo.PACK_FMT[1:]
 
     # properties
     frame_count: int

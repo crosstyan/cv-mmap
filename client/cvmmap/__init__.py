@@ -53,9 +53,6 @@ class CvMmapClient:
     def __init__(
         self,
         name: str,
-        *,
-        shm_name: Optional[str] = None,
-        zmq_addr: Optional[str] = None,
     ):
         """Create a CvMmapClient.
 
@@ -64,16 +61,13 @@ class CvMmapClient:
         name
             Base name of the video source (e.g. "default"). The shared-memory
             segment is assumed to be ``cvmmap_{name}`` and the ZMQ publisher
-            address ``ipc:///tmp/{shm_name}``.
-        shm_name, zmq_addr
-            Override the derived shared-memory name or ZMQ address if you need
-            a non-standard layout.
+            address ``ipc:///tmp/{shm_name}`` by convention.
         """
 
         self._name = name
-        # Derive resource names following the C++ producer convention.
-        self._shm_name = shm_name or f"cvmmap_{name}"
-        self._zmq_addr = zmq_addr or f"ipc:///tmp/{self._shm_name}"
+        # convention over configuration
+        self._shm_name = f"cvmmap_{name}"
+        self._zmq_addr = f"ipc:///tmp/{self._shm_name}"
 
         self._ctx = Context.instance()
         self._sock = self._ctx.socket(zmq.SUB)
