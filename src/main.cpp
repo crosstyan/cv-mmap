@@ -1,5 +1,6 @@
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <iostream>
 #include <filesystem>
 #include <format>
@@ -204,12 +205,43 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 
+	/**
+	 * @brief a simple RAII helper for `defer` like behavior
+	 */
+	struct deferrer {
+		deferrer(std::move_only_function<void()> &&f) : _f(std::move(f)) {}
+		~deferrer() {
+			if (_f) {
+				_f();
+			}
+		}
+		deferrer(const deferrer &)            = delete;
+		deferrer &operator=(const deferrer &) = delete;
+		deferrer(deferrer &&other) noexcept : _f(std::move(other._f)) {
+			other._f = {};
+		}
+		deferrer &operator=(deferrer &&other) noexcept {
+			if (this != &other) {
+				// call current function before overwriting
+				if (_f) {
+					_f();
+				}
+				_f       = std::move(other._f);
+				other._f = {};
+			}
+			return *this;
+		}
+
+	private:
+		std::move_only_function<void()> _f{};
+	};
+
 	// https://libzmq.readthedocs.io/en/latest/zmq_ipc.html
 	// https://libzmq.readthedocs.io/en/latest/zmq_inproc.html
 	// note that `zmq::socket_t` is RAII aware already
 	zmq::context_t ctx;
 	zmq::socket_t sock(ctx, zmq::socket_type::pub);
-	const auto close_zmq = [&sock, &ctx, zmq_address = config.zmq_address()] {
+	deferrer zmq_deferrer([&sock, &ctx, zmq_address = config.zmq_address()] {
 		if (zmq_address.starts_with(ipc_prefix)) {
 			const auto path = zmq_address.substr(std::string_view(ipc_prefix).size());
 			const auto err  = unlink(path.c_str());
@@ -217,7 +249,8 @@ int main(int argc, char **argv) {
 				spdlog::error("unlink ZMQ address `{}` because of `{} ({})`", path, strerror(errno), errno);
 			}
 		}
-	};
+	});
+
 	try {
 		// https://zguide.zeromq.org/docs/chapter2/
 		// The inter-process ipc transport is disconnected, like tcp. It has one
@@ -326,16 +359,34 @@ int main(int argc, char **argv) {
 	struct shm_state_t {
 		shm_state_t(const std::string &name, int shm_fd) : _name(name), _shm_fd(shm_fd) {}
 		~shm_state_t() {
-			close(_shm_fd);
-			shm_unlink(_name.c_str());
+			if (_shm_fd != -1) {
+				spdlog::debug("closing shared memory `{}` (fd={})", _name, _shm_fd);
+				close(_shm_fd);
+				shm_unlink(_name.c_str());
+			}
 		}
 		shm_state_t(const shm_state_t &)            = delete;
 		shm_state_t &operator=(const shm_state_t &) = delete;
-		shm_state_t(shm_state_t &&)                 = default;
-		shm_state_t &operator=(shm_state_t &&)      = default;
+		shm_state_t(shm_state_t &&other) noexcept : _name(std::move(other._name)), _shm_fd(other._shm_fd) {
+			other._shm_fd = -1;
+		}
+		shm_state_t &operator=(shm_state_t &&other) noexcept {
+			if (this != &other) {
+				// close current if valid
+				if (_shm_fd != -1) {
+					close(_shm_fd);
+					shm_unlink(_name.c_str());
+				}
+				_name         = std::move(other._name);
+				_shm_fd       = other._shm_fd;
+				other._shm_fd = -1;
+			}
+			return *this;
+		}
 
 		static std::expected<shm_state_t, int> open(const std::string &name) {
 			using ue_t = std::unexpected<int>;
+			spdlog::debug("opening shared memory `{}`", name);
 			int shm_fd = shm_open(name.c_str(), O_CREAT | O_RDWR, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
 			if (shm_fd == -1) {
 				// `ipcrm -M <name>` could be used to remove the shared memory as well
@@ -351,6 +402,7 @@ int main(int argc, char **argv) {
 				}
 				return ue_t{errno};
 			}
+			spdlog::debug("opened shared memory `{}` (fd={})", name, shm_fd);
 			return shm_state_t(name, shm_fd);
 		}
 
@@ -384,10 +436,32 @@ int main(int argc, char **argv) {
 												_image_buffer(buf.subspan(SHM_PAYLOAD_OFFSET, buf.size() - SHM_PAYLOAD_OFFSET)) {
 			assert(total_buffer_size() == buf.size());
 		}
+		~frame_state_t() {
+			if (_mmap_ptr) {
+				munmap(_mmap_ptr, total_buffer_size());
+			}
+		}
 		frame_state_t(const frame_state_t &)            = delete;
 		frame_state_t &operator=(const frame_state_t &) = delete;
-		frame_state_t(frame_state_t &&)                 = default;
-		frame_state_t &operator=(frame_state_t &&)      = default;
+		frame_state_t(frame_state_t &&other) noexcept : _mmap_ptr(other._mmap_ptr), _metadata_buffer(other._metadata_buffer), _image_buffer(other._image_buffer) {
+			other._mmap_ptr        = {};
+			other._metadata_buffer = {};
+			other._image_buffer    = {};
+		}
+		frame_state_t &operator=(frame_state_t &&other) noexcept {
+			if (this != &other) {
+				if (_mmap_ptr) {
+					munmap(_mmap_ptr, total_buffer_size());
+				}
+				_mmap_ptr              = other._mmap_ptr;
+				_metadata_buffer       = other._metadata_buffer;
+				_image_buffer          = other._image_buffer;
+				other._mmap_ptr        = {};
+				other._metadata_buffer = {};
+				other._image_buffer    = {};
+			}
+			return *this;
+		}
 
 		const std::span<uint8_t> metadata_buffer() const {
 			return _metadata_buffer;
@@ -409,13 +483,13 @@ int main(int argc, char **argv) {
 			// https://www.deepanseeralan.com/tech/playing-with-shared-memory/
 			// ftruncate first, then mmap
 			if (ftruncate(shm_fd, size) == -1) {
-				spdlog::error("truncate shared memory; {} ({})", strerror(errno), errno);
+				spdlog::error("truncate shared memory; fd={}, errno={} ({})", shm_fd, errno, strerror(errno));
 				return ue_t{-1};
 			}
 			auto ptr = static_cast<uint8_t *>(mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0));
 			if (ptr == MAP_FAILED) {
 				// https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/mmap.2.html
-				spdlog::error("mmap shared memory; {} ({})", strerror(errno), errno);
+				spdlog::error("mmap shared memory; fd={}, errno={} ({})", shm_fd, errno, strerror(errno));
 				return ue_t{-1};
 			}
 			return frame_state_t(std::span<uint8_t>(ptr, size));
@@ -435,9 +509,6 @@ int main(int argc, char **argv) {
 			metadata().frame_count = frame_count;
 		}
 
-		~frame_state_t() {
-			munmap(_mmap_ptr, total_buffer_size());
-		}
 
 	private:
 		uint8_t *_mmap_ptr;
@@ -544,7 +615,6 @@ int main(int argc, char **argv) {
 		frame_count += 1;
 	}
 
-	close_zmq();
 	spdlog::info("normally exit");
 	return 0;
 }
