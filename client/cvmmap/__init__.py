@@ -84,10 +84,44 @@ class CvMmapClient:
     _SHM_PAYLOAD_OFFSET = 256
 
     def _read_metadata(self) -> FrameMetadata:
-        assert self._shm is not None, "Shared memory not attached"
-        # Raw bytes are in little-endian layout as produced by C++; Python struct handles endianness.
+        """Read and decode the `FrameMetadata` structure from shared memory.
 
-        return FrameMetadata.unmarshal(self._shm.buf[: FrameMetadata.size()])
+        The memory layout written by the C++ producer is:
+
+        ```
+        0-7   : "CV-MMAP\0" magic bytes
+        8-…  : FrameMetadata packed struct (frame_count + FrameInfo)
+        ```
+
+        This function validates the magic prefix and then uses the Python
+        struct definitions to unpack the metadata that follows.
+        """
+        assert self._shm is not None, "Shared memory not attached"
+
+        # The shared-memory metadata starts with the 8-byte magic string
+        # "CV-MMAP\0" followed by the packed FrameMetadata bytes.
+        from .msg import CV_MMAP_MAGIC, CV_MMAP_MAGIC_LEN
+
+        # Validate magic
+        magic = bytes(self._shm.buf[:CV_MMAP_MAGIC_LEN])
+        if magic != CV_MMAP_MAGIC:
+            raise RuntimeError(
+                f"Invalid CV_MMAP magic prefix in shared memory: {magic!r} (expected {CV_MMAP_MAGIC!r})"
+            )
+
+        start = CV_MMAP_MAGIC_LEN
+        end = start + FrameMetadata.size()
+        return FrameMetadata.unmarshal(bytes(self._shm.buf[start:end]))
+    
+    def _read_metadata_unchecked(self) -> FrameMetadata:
+        """
+        Read and decode the `FrameMetadata` structure from shared memory directly without checking the magic
+        """
+        assert self._shm is not None, "Shared memory not attached"
+        from .msg import CV_MMAP_MAGIC_LEN
+        start = CV_MMAP_MAGIC_LEN
+        end = start + FrameMetadata.size()
+        return FrameMetadata.unmarshal(bytes(self._shm.buf[start:end]))
 
     def _ensure_memory(self):
         """Attach to shared memory and initialize the numpy view if necessary."""
@@ -99,7 +133,7 @@ class CvMmapClient:
                 name=self._shm_name, create=False, track=False
             )
 
-        # Read metadata once and build numpy view if not yet created
+        # Read metadata once and build numpy view if not yet created (this also validates magic)
         meta = self._read_metadata()
         if self._image_buffer is None:
             start = self._SHM_PAYLOAD_OFFSET
@@ -132,7 +166,7 @@ class CvMmapClient:
                                 f"Label mismatch: expected '{self._name}', got '{sync_message.label}'"
                             )
 
-                        metadata = self._read_metadata()
+                        metadata = self._read_metadata_unchecked()
                         yield self._image_buffer, metadata
                     except StructError as e:
                         getLogger(__name__).exception(e)

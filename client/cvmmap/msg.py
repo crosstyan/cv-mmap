@@ -4,6 +4,15 @@ from enum import Enum, auto
 
 FRAME_TOPIC_MAGIC = 0x7D
 
+# ---------------------------------------------------------------------------
+# Shared memory metadata magic constant (must match C++ implementation)
+# ---------------------------------------------------------------------------
+
+# "CV-MMAP\0" exactly 8 bytes – see `frame_metadata_t::CV_MMAP_MAGIC` in C++
+CV_MMAP_MAGIC: bytes = b"CV-MMAP\0"
+# Convenience length constant so we do not sprinkle magic numbers elsewhere
+CV_MMAP_MAGIC_LEN: int = len(CV_MMAP_MAGIC)
+
 
 class PixelFormat(Enum):
     RGB = 0

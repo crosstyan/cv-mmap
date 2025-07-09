@@ -1,6 +1,5 @@
 from cvmmap import CvMmapClient
 import anyio
-from loguru import logger
 import cv2
 
 # note that no beginning slash is needed

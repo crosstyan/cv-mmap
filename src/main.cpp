@@ -154,16 +154,19 @@ struct __attribute__((packed)) frame_metadata_t {
 	static constexpr auto CV_MMAP_MAGIC =
 		std::array<char, 8>{'C', 'V', '-', 'M', 'M', 'A', 'P', '\0'};
 
-	int marshal(std::span<uint8_t> buf) const {
-		// the first 8 bytes should be CV_MMAP_MAGIC
-		constexpr auto REQUIRED_SIZE = CV_MMAP_MAGIC.size() + sizeof(frame_info_t);
-		if (buf.size() < REQUIRED_SIZE) {
-			return -1;
+	static constexpr auto size() {
+		return CV_MMAP_MAGIC.size() + sizeof(frame_info_t);
+	}
+
+	/**
+	 * @brief ensure the magic is set
+	 */
+	static bool ensure_magic(std::span<uint8_t> buf) {
+		if (buf.size() < CV_MMAP_MAGIC.size()) {
+			return false;
 		}
 		std::copy(CV_MMAP_MAGIC.begin(), CV_MMAP_MAGIC.end(), buf.begin());
-		std::copy(
-			reinterpret_cast<const uint8_t *>(&info), reinterpret_cast<const uint8_t *>(&info) + sizeof(frame_info_t), buf.begin() + CV_MMAP_MAGIC.size());
-		return CV_MMAP_MAGIC.size() + sizeof(frame_info_t);
+		return true;
 	}
 
 	/** properties */
@@ -403,6 +406,10 @@ int main(int argc, char **argv) {
 		static std::expected<shm_state_t, int> open(const std::string &name) {
 			using ue_t = std::unexpected<int>;
 			spdlog::debug("opening shared memory `{}`", name);
+			// mode=0666
+			// shouldn't be 777. It's generally not needed unless you're putting
+			// an ELF binary in the shared memory.
+			// which is not the case here.
 			int shm_fd = shm_open(name.c_str(), O_CREAT | O_RDWR, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
 			if (shm_fd == -1) {
 				// `ipcrm -M <name>` could be used to remove the shared memory as well
@@ -451,6 +458,7 @@ int main(int argc, char **argv) {
 												_metadata_buffer(buf.subspan(0, SHM_PAYLOAD_OFFSET)),
 												_image_buffer(buf.subspan(SHM_PAYLOAD_OFFSET, buf.size() - SHM_PAYLOAD_OFFSET)) {
 			assert(total_buffer_size() == buf.size());
+			assert(frame_metadata_t::ensure_magic(_metadata_buffer));
 		}
 		~frame_state_t() {
 			if (_mmap_ptr) {
@@ -492,7 +500,7 @@ int main(int argc, char **argv) {
 		}
 
 		frame_metadata_t &metadata() {
-			return *reinterpret_cast<frame_metadata_t *>(_metadata_buffer.data());
+			return *reinterpret_cast<frame_metadata_t *>(_metadata_buffer.data() + frame_metadata_t::CV_MMAP_MAGIC.size());
 		}
 
 		static std::expected<frame_state_t, int> open(int shm_fd, size_t size) {
