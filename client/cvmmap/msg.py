@@ -33,11 +33,15 @@ class SyncMessage:
 
     @staticmethod
     def unmarshal(data: bytes) -> "SyncMessage":
-        LABEL_LEN = 24
-        fmt = f"=B{LABEL_LEN}sI"
-        magic, label_raw, frame_count = struct.unpack(fmt, data[: struct.calcsize(fmt)])
+        # C++ format: magic(1) + frame_count(4) + label_len(1) + label_data(variable)
+        magic = int(struct.unpack("=B", data[0:1])[0])
         assert magic == FRAME_TOPIC_MAGIC, "Invalid topic magic"
-        label = label_raw.split(b"\0", 1)[0].decode()
+
+        frame_count = int(struct.unpack("=I", data[1:5])[0])
+        label_len = int(struct.unpack("=B", data[5:6])[0])
+        label_data = data[6 : 6 + label_len]
+        label = label_data.decode()
+
         return SyncMessage(label=label, frame_count=frame_count)
 
 

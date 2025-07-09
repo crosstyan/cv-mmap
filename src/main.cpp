@@ -97,41 +97,60 @@ struct __attribute__((packed)) frame_info_t {
 	}
 };
 
-using label_t = uint8_t[NAME_MAX_LEN];
+struct __attribute__((packed)) label_t {
+	uint8_t len;
+	char data[NAME_MAX_LEN];
+};
 struct __attribute__((packed)) sync_message_t {
 public:
 	static constexpr auto LABEL_LEN_MAX = NAME_MAX_LEN;
-	sync_message_t(const std::string_view &label, uint32_t frame_count) : _frame_count(frame_count) {
+	struct __attribute__((packed)) sync_attribute_t {
+		uint32_t frame_count;
+	};
+
+	sync_message_t(const std::string_view &label, uint32_t frame_count) : _attribute{.frame_count = frame_count} {
 		if (label.size() > LABEL_LEN_MAX) {
 			throw invalid_argument(std::format("label is too long: `{}`", label));
 		}
-		std::copy(label.begin(), label.end(), _label);
-		std::fill(_label + label.size(), _label + LABEL_LEN_MAX, '\0');
+		_label.len = static_cast<uint8_t>(label.size());
+		std::copy(label.begin(), label.end(), _label.data);
+		std::fill(_label.data + label.size(), _label.data + LABEL_LEN_MAX, '\0');
 	}
 
 	sync_message_t &set_frame_count(uint32_t frame_count) {
-		_frame_count = frame_count;
+		_attribute.frame_count = frame_count;
 		return *this;
 	}
 
+	size_t size() const {
+		return sizeof(_magic) + sizeof(_attribute) + sizeof(_label.len) + _label.len;
+	}
+
 	int marshal(std::span<uint8_t> buf) const {
-		if (buf.size() < sizeof(sync_message_t)) {
+		const auto required_size = size();
+		if (buf.size() < required_size) {
 			return -1;
 		}
-		const auto self = std::span<const uint8_t>{
-			reinterpret_cast<const uint8_t *>(this), sizeof(sync_message_t)};
-		std::copy(self.begin(), self.end(), buf.begin());
-		return sizeof(sync_message_t);
+		uint8_t *ptr    = buf.data();
+		*ptr++          = _magic;
+		const auto attr = std::span<const uint8_t>{
+			reinterpret_cast<const uint8_t *>(&_attribute), sizeof(sync_attribute_t)};
+		std::copy(attr.begin(), attr.end(), ptr);
+		ptr += sizeof(sync_attribute_t);
+		*ptr++ = _label.len;
+		std::copy(_label.data, _label.data + _label.len, ptr);
+		ptr += _label.len;
+		return required_size;
 	}
 
 private:
-	uint8_t _magic = FRAME_TOPIC_MAGIC;
+	static constexpr uint8_t _magic = FRAME_TOPIC_MAGIC;
+	sync_attribute_t _attribute;
 	/**
 	 * @brief label of the video source
-	 * @note C string, null-terminated
+	 * @note length-prefixed string (without null-terminator)
 	 */
 	label_t _label;
-	uint32_t _frame_count;
 };
 
 struct __attribute__((packed)) frame_metadata_t {
