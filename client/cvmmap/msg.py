@@ -28,15 +28,36 @@ class Depth(Enum):
 
 @dataclass
 class SyncMessage:
+    LABEL_LEN = 24
+
     label: str
     frame_count: int
 
+    def marshal(self) -> bytes:
+        """Marshal the SyncMessage to bytes matching the C++ format"""
+        # Ensure label fits in the allocated space
+        if len(self.label) > SyncMessage.LABEL_LEN:
+            raise ValueError(
+                f"Label too long: {len(self.label)} > {SyncMessage.LABEL_LEN}"
+            )
+
+        # Pad label to LABEL_LEN bytes and null-terminate
+        label_bytes = self.label.encode("utf-8")[: SyncMessage.LABEL_LEN]
+        label_padded = label_bytes + b"\0" * (SyncMessage.LABEL_LEN - len(label_bytes))
+
+        # Pack: magic (1 byte) + frame_count (4 bytes) + label (24 bytes)
+        fmt = f"=BI{SyncMessage.LABEL_LEN}s"
+        return struct.pack(fmt, FRAME_TOPIC_MAGIC, self.frame_count, label_padded)
+
     @staticmethod
     def unmarshal(data: bytes) -> "SyncMessage":
-        LABEL_LEN = 24
-        fmt = f"=B{LABEL_LEN}sI"
-        magic, label_raw, frame_count = struct.unpack(fmt, data[: struct.calcsize(fmt)])
-        assert magic == FRAME_TOPIC_MAGIC, "Invalid topic magic"
+        # Now using the marshal function: magic (1 byte) + frame_count (4 bytes) + label (24 bytes)
+        # This matches the C++ struct layout: attr _attribute; label _label;
+        fmt = f"=BI{SyncMessage.LABEL_LEN}s"
+        magic, frame_count, label_raw = struct.unpack(fmt, data[: struct.calcsize(fmt)])
+        assert (
+            magic == FRAME_TOPIC_MAGIC
+        ), f"Invalid topic magic: expected {FRAME_TOPIC_MAGIC}, got {magic}"
         label = label_raw.split(b"\0", 1)[0].decode()
         return SyncMessage(label=label, frame_count=frame_count)
 

@@ -97,11 +97,15 @@ struct __attribute__((packed)) frame_info_t {
 	}
 };
 
-using label_t = uint8_t[NAME_MAX_LEN];
 struct __attribute__((packed)) sync_message_t {
 public:
 	static constexpr auto LABEL_LEN_MAX = NAME_MAX_LEN;
-	sync_message_t(const std::string_view &label, uint32_t frame_count) : _frame_count(frame_count) {
+	using label                         = uint8_t[NAME_MAX_LEN];
+	struct __attribute__((packed)) attr {
+		uint32_t frame_count;
+	};
+
+	sync_message_t(const std::string_view &label, uint32_t frame_count) : _attribute{.frame_count = frame_count} {
 		if (label.size() > LABEL_LEN_MAX) {
 			throw invalid_argument(std::format("label is too long: `{}`", label));
 		}
@@ -110,28 +114,40 @@ public:
 	}
 
 	sync_message_t &set_frame_count(uint32_t frame_count) {
-		_frame_count = frame_count;
+		_attribute.frame_count = frame_count;
 		return *this;
 	}
 
+	static constexpr size_t size() {
+		return sizeof(_magic) + sizeof(sync_message_t);
+	}
+
+	/**
+	 * @brief marshal the sync message to the buffer
+	 * @param buf the buffer to marshal the sync message to
+	 * @return the size of the marshaled sync message
+	 * @note the buffer size must be at least `size()`
+	 */
 	int marshal(std::span<uint8_t> buf) const {
-		if (buf.size() < sizeof(sync_message_t)) {
+		if (buf.size() < size()) {
 			return -1;
 		}
+		uint8_t *ptr    = buf.data();
+		*ptr++          = _magic;
 		const auto self = std::span<const uint8_t>{
 			reinterpret_cast<const uint8_t *>(this), sizeof(sync_message_t)};
-		std::copy(self.begin(), self.end(), buf.begin());
-		return sizeof(sync_message_t);
+		std::copy(self.begin(), self.end(), ptr);
+		return size();
 	}
 
 private:
-	uint8_t _magic = FRAME_TOPIC_MAGIC;
+	static constexpr uint8_t _magic = FRAME_TOPIC_MAGIC;
 	/**
 	 * @brief label of the video source
 	 * @note C string, null-terminated
 	 */
-	label_t _label;
-	uint32_t _frame_count;
+	attr _attribute;
+	label _label;
 };
 
 struct __attribute__((packed)) frame_metadata_t {
@@ -580,7 +596,10 @@ int main(int argc, char **argv) {
 	const auto send_sync_msg = [&sync_msg, &sock] {
 		try {
 			sync_msg.set_frame_count(frame_count);
-			sock.send(zmq::buffer(reinterpret_cast<const uint8_t *>(&sync_msg), sizeof(sync_message_t)), zmq::send_flags::none);
+			std::array<uint8_t, sync_message_t::size()> buffer;
+			const auto _ret = sync_msg.marshal(buffer);
+			assert(_ret != -1);
+			sock.send(zmq::buffer(buffer), zmq::send_flags::none);
 		} catch (const zmq::error_t &e) {
 			spdlog::error("send synchronization message for frame@{}; {}", frame_count, e.what());
 		}
