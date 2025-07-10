@@ -170,7 +170,7 @@ struct __attribute__((packed)) frame_metadata_t {
 	}
 
 	/** properties */
-	uint32_t frame_count;
+	std::atomic<uint32_t> frame_count;
 	frame_info_t info;
 };
 
@@ -531,7 +531,7 @@ int main(int argc, char **argv) {
 		}
 
 		void set_frame_count(uint32_t frame_count) {
-			metadata().frame_count = frame_count;
+			metadata().frame_count.store(frame_count, std::memory_order::relaxed);
 		}
 
 
@@ -589,8 +589,8 @@ int main(int argc, char **argv) {
 			spdlog::error("failed to open frame state; {}", frame_state.error());
 			return ue_t{frame_state.error()};
 		}
-		frame_state->metadata().frame_count = 0;
-		frame_state->metadata().info        = info;
+		frame_state->metadata().frame_count.store(0, std::memory_order::relaxed);
+		frame_state->metadata().info = info;
 		return frame_state;
 	};
 
