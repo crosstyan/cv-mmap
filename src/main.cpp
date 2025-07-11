@@ -150,7 +150,10 @@ private:
 	label _label;
 };
 
-struct __attribute__((packed)) frame_metadata_t {
+/**
+ * @note native aligned frame metadata
+ */
+struct frame_metadata_t {
 	static constexpr auto CV_MMAP_MAGIC =
 		std::array<char, 8>{'C', 'V', '-', 'M', 'M', 'A', 'P', '\0'};
 
@@ -169,8 +172,12 @@ struct __attribute__((packed)) frame_metadata_t {
 		return true;
 	}
 
+	std::atomic_ref<uint32_t> frame_count_atomic() {
+		return std::atomic_ref<uint32_t>(frame_count);
+	};
+
 	/** properties */
-	std::atomic<uint32_t> frame_count;
+	uint32_t frame_count;
 	frame_info_t info;
 };
 
@@ -531,7 +538,7 @@ int main(int argc, char **argv) {
 		}
 
 		void set_frame_count(uint32_t frame_count) {
-			metadata().frame_count.store(frame_count, std::memory_order::relaxed);
+			metadata().frame_count_atomic().store(frame_count, std::memory_order::relaxed);
 		}
 
 
@@ -589,7 +596,7 @@ int main(int argc, char **argv) {
 			spdlog::error("failed to open frame state; {}", frame_state.error());
 			return ue_t{frame_state.error()};
 		}
-		frame_state->metadata().frame_count.store(0, std::memory_order::relaxed);
+		frame_state->metadata().frame_count_atomic().store(0, std::memory_order::relaxed);
 		frame_state->metadata().info = info;
 		return frame_state;
 	};
