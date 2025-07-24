@@ -13,7 +13,7 @@
 #include <CLI/CLI.hpp>
 #include <spdlog/spdlog.h>
 #include <opencv2/videoio.hpp>
-#include <zmq_addon.hpp>
+#include <zmq.hpp>
 #include <sys/types.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
@@ -87,7 +87,7 @@ struct __attribute__((packed)) frame_info_t {
 		return sizeof(frame_info_t);
 	}
 
-	static std::optional<frame_info_t> unmarshal(const std::span<uint8_t> buf) {
+	static std::optional<frame_info_t> unmarshal(const std::span<const uint8_t> buf) {
 		if (buf.size() < sizeof(frame_info_t)) {
 			return std::nullopt;
 		}
