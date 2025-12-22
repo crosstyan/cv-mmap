@@ -90,4 +90,5 @@ const char *to_str(const Depth depth);
 int size_of(Depth depth);
 std::string_view to_string(const VideoCaptureAPIs api);
 VideoCaptureAPIs from_string(std::string_view s);
+PixelFormat guess_pixel_format(const int channels);
 }

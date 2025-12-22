@@ -1,7 +1,7 @@
 #pragma once
 #include <string>
 #include <variant>
-#include <app_models.hpp>
+#include <app_enum_models.hpp>
 #include <filesystem>
 
 namespace app {

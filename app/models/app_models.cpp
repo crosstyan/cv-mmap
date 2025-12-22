@@ -1,7 +1,7 @@
-#include <app_models.hpp>
 #include <stdexcept>
 #include <format>
 #include <unordered_map>
+#include "app_enum_models.hpp"
 
 namespace app {
 using invalid_argument = std::invalid_argument;
@@ -95,4 +95,17 @@ VideoCaptureAPIs from_string(const std::string_view s) {
 	}
 	throw invalid_argument(std::format("invalid API key: `{}`", s));
 }
+
+PixelFormat guess_pixel_format(const int channels) {
+	switch (channels) {
+	case 1:
+		return PixelFormat::GRAY;
+	case 3:
+		return PixelFormat::BGR;
+	case 4:
+		return PixelFormat::BGRA;
+	default:
+		throw invalid_argument(std::format("invalid channel count: `{}`", channels));
+	}
+};
 }
