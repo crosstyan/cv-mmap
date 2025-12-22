@@ -315,6 +315,8 @@ int main(int argc, char **argv) {
 												_image_buffer(buf.subspan(SHM_PAYLOAD_OFFSET, buf.size() - SHM_PAYLOAD_OFFSET)) {
 			assert(total_buffer_size() == buf.size());
 			assert(frame_metadata_t::ensure_magic(_metadata_buffer));
+			static_assert(sizeof(frame_metadata_t) < (SHM_PAYLOAD_OFFSET - 0),
+						  "frame_metadata_t size must be less than SHM_PAYLOAD_OFFSET");
 		}
 		~frame_state_t() {
 			if (_mmap_ptr) {
@@ -365,13 +367,13 @@ int main(int argc, char **argv) {
 			// ftruncate first, then mmap
 			if (ftruncate(shm_fd, size) == -1) {
 				spdlog::error("truncate shared memory; fd={}, errno={} ({})", shm_fd, errno, strerror(errno));
-				return ue_t{-1};
+				return ue_t{errno};
 			}
 			auto ptr = static_cast<uint8_t *>(mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0));
 			if (ptr == MAP_FAILED) {
 				// https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/mmap.2.html
 				spdlog::error("mmap shared memory; fd={}, errno={} ({})", shm_fd, errno, strerror(errno));
-				return ue_t{-1};
+				return ue_t{errno};
 			}
 			return frame_state_t(std::span<uint8_t>(ptr, size));
 		}
@@ -393,9 +395,9 @@ int main(int argc, char **argv) {
 
 	private:
 		uint8_t *_mmap_ptr;
-		/** 0-SHM_PAYLOAD_OFFSET (metadata) */
+		/** [0, SHM_PAYLOAD_OFFSET) (metadata) */
 		std::span<uint8_t> _metadata_buffer;
-		/** SHM_PAYLOAD_OFFSET-total_buffer_size */
+		/** [SHM_PAYLOAD_OFFSET, total_buffer_size) */
 		std::span<uint8_t> _image_buffer;
 	};
 
