@@ -7,6 +7,7 @@
     "calcsize",
     "cvmmap",
     "GSTREAMER",
+    "iceoryx",
     "ipcrm",
     "ndarray",
     "opencv",

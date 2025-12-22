@@ -3,7 +3,6 @@
 #include <functional>
 #include <iostream>
 #include <filesystem>
-#include <format>
 #include <csignal>
 #include <string_view>
 #include <string>

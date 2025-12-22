@@ -70,3 +70,9 @@ sudo pacman -S opencv \
     glew \
     hdf5
 ```
+
+## TODO
+
+- [ ] migrate to [iceoryx2](https://github.com/eclipse-iceoryx/iceoryx2)
+- [ ] add unit tests
+- [ ] link to gstreamer directly (have more freedom over the pipeline, like sidecar RTP/NAL packets extraction)
