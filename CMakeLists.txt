@@ -3,7 +3,6 @@ project(cv-mmap)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-find_package(OpenCV REQUIRED)
 
 # brew install cppzmq
 # or

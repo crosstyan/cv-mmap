@@ -7,3 +7,6 @@
 [submodule "lib/spdlog"]
 	path = app/lib/spdlog
 	url = https://github.com/gabime/spdlog
+[submodule "app/lib/proxy"]
+	path = app/lib/proxy
+	url = https://github.com/microsoft/proxy

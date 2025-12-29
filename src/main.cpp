@@ -1,6 +1,5 @@
 #include <atomic>
 #include <cstdint>
-#include <functional>
 #include <iostream>
 #include <filesystem>
 #include <csignal>
@@ -80,37 +79,6 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 
-	/**
-	 * @brief a simple RAII helper for `defer` like behavior
-	 */
-	struct deferrer {
-		deferrer(std::move_only_function<void()> &&f) : _f(std::move(f)) {}
-		~deferrer() {
-			if (_f) {
-				_f();
-			}
-		}
-		deferrer(const deferrer &)            = delete;
-		deferrer &operator=(const deferrer &) = delete;
-		deferrer(deferrer &&other) noexcept : _f(std::move(other._f)) {
-			other._f = {};
-		}
-		deferrer &operator=(deferrer &&other) noexcept {
-			if (this != &other) {
-				// call current function before overwriting
-				if (_f) {
-					_f();
-				}
-				_f       = std::move(other._f);
-				other._f = {};
-			}
-			return *this;
-		}
-
-	private:
-		std::move_only_function<void()> _f{};
-	};
-
 	// https://libzmq.readthedocs.io/en/latest/zmq_ipc.html
 	// https://libzmq.readthedocs.io/en/latest/zmq_inproc.html
 	// note that `zmq::socket_t` is RAII aware already
@@ -138,9 +106,9 @@ int main(int argc, char **argv) {
 		// running in the same working directory.
 		sock.bind(config.zmq_address());
 		if (config.zmq_address().starts_with(IPC_PREFIX)) {
-			const auto path         = config.zmq_address().substr(std::string_view(IPC_PREFIX).size());
-			constexpr auto mode_777 = S_IRWXU | S_IRWXG | S_IRWXO;
-			const auto ok           = chmod(path.c_str(), mode_777);
+			const auto path = config.zmq_address().substr(std::string_view(IPC_PREFIX).size());
+			// 777
+			const auto ok = chmod(path.c_str(), S_IRWXU | S_IRWXG | S_IRWXO);
 			if (ok == -1) {
 				spdlog::warn("chmod ZMQ address `{}` because of `{}`", path, strerror(errno));
 			}
@@ -149,7 +117,7 @@ int main(int argc, char **argv) {
 		spdlog::error("bind to ZMQ address: `{}`", e.what());
 		return 1;
 	}
-	spdlog::info("bind to ZMQ address: `{}`", config.zmq_address());
+	spdlog::info("bond to ZMQ address: `{}`", config.zmq_address());
 	cv::VideoCapture cap;
 	// https://gstreamer.freedesktop.org/documentation/shm/shmsink.html?gi-language=c
 	if (std::holds_alternative<int>(config.pipeline)) {

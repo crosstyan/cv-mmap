@@ -69,6 +69,36 @@ target_compile_definitions(app_version
         COMPILE_TIMESTAMP_UTC=${COMPILE_TIMESTAMP_UTC}
 )
 
+add_subdirectory(lib/proxy)
+
+####### BACKENDS #######
+add_subdirectory(backends)
+add_library(app_video_backends STATIC)
+target_include_directories(app_video_backends PUBLIC backends)
+
+option(WITH_OPENCV_BACKEND "Build with OpenCV support" ON)
+if (WITH_OPENCV_BACKEND)
+        find_package(OpenCV REQUIRED)
+        target_compile_definitions(app_video_backends PRIVATE WITH_OPENCV_BACKEND=1)
+        target_sources(app_video_backends PRIVATE backends/app_backends_opencv.cpp)
+        target_include_directories(app_video_backends PRIVATE ${OpenCV_INCLUDE_DIRS})
+        target_link_libraries(app_video_backends PRIVATE ${OpenCV_LIBS})
+endif()
+
+option(WITH_GSTREAMER_BACKEND "Build with GStreamer support" ON)
+if (WITH_GSTREAMER_BACKEND)
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(GST REQUIRED 
+        gstreamer-1.0>=1.14 
+        gstreamer-video-1.0>=1.14
+        gstreamer-app-1.0>=1.14)
+        target_compile_definitions(app_video_backends PRIVATE WITH_GSTREAMER_BACKEND=1) 
+        target_sources(app_video_backends PRIVATE backends/app_backends_gstreamer.cpp)
+        target_include_directories(app_video_backends PRIVATE ${GST_INCLUDE_DIRS})
+        target_link_libraries(app_video_backends PRIVATE ${GST_LIBRARIES})
+endif()
+target_link_libraries(app_video_backends PUBLIC msft_proxy4::proxy)
+
 add_library(app INTERFACE)
 target_include_directories(app INTERFACE .)
-target_link_libraries(app INTERFACE app_version app_models app_config)
+target_link_libraries(app INTERFACE app_video_backends app_version app_models app_config)

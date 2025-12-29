@@ -4,6 +4,7 @@
 #include <span>
 #include <cstdint>
 #include <format>
+#include <functional>
 
 namespace app {
 /**
@@ -38,6 +39,44 @@ inline std::string hexdump(std::span<const uint8_t> data, size_t bytes_per_line 
 	}
 	return result;
 }
+
+/**
+ * @brief a simple RAII helper for `defer` like behavior
+ */
+struct deferrer {
+#ifdef __cpp_lib_move_only_function
+	using fn_t = std::move_only_function<void()>;
+#else
+	using fn_t = std::function<void()>;
+#endif
+
+	deferrer(fn_t f) : _f(std::move(f)) {}
+	~deferrer() {
+		if (_f) {
+			_f();
+		}
+	}
+	deferrer(const deferrer &)            = delete;
+	deferrer &operator=(const deferrer &) = delete;
+	deferrer(deferrer &&other) noexcept : _f(std::move(other._f)) {
+		other._f = {};
+	}
+	deferrer &operator=(deferrer &&other) noexcept {
+		if (this != &other) {
+			// call current function before overwriting
+			if (_f) {
+				_f();
+			}
+			_f       = std::move(other._f);
+			other._f = {};
+		}
+		return *this;
+	}
+
+private:
+	fn_t _f{};
+};
+
 }
 
 #endif /* D266BFE1_D878_44FE_909C_6632F9055C9A */
