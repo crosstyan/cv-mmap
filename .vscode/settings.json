@@ -15,6 +15,7 @@
     "spdlog",
     "STREQUAL",
     "STRR",
-    "tomlplusplus"
+    "tomlplusplus",
+    "videoio"
   ]
 }

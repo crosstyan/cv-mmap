@@ -77,11 +77,11 @@ target_include_directories(app_video_backends PUBLIC backends)
 
 option(WITH_BACKEND_OPENCV "Build with OpenCV support" ON)
 if (WITH_BACKEND_OPENCV)
-        find_package(OpenCV REQUIRED)
+        find_package(OpenCV REQUIRED COMPONENTS videoio)
         target_compile_definitions(app_video_backends PUBLIC WITH_BACKEND_OPENCV=1)
         target_sources(app_video_backends PRIVATE backends/app_backends_opencv.cpp)
         target_include_directories(app_video_backends PRIVATE ${OpenCV_INCLUDE_DIRS})
-        target_link_libraries(app_video_backends PRIVATE ${OpenCV_LIBS})
+        target_link_libraries(app_video_backends PRIVATE opencv_videoio)
 endif()
 
 option(WITH_BACKEND_GSTREAMER "Build with GStreamer support" ON)
