@@ -87,9 +87,9 @@ struct GStreamerBackendImpl {
 	std::jthread worker_thread;
 	std::atomic<bool> initialized{false};
 
-	on_metadata_fn_t on_metadata{nullptr};
-	on_frame_fn_t on_frame{nullptr};
-	on_error_fn_t on_error{nullptr};
+	on_metadata_fn_t _on_metadata{nullptr};
+	on_frame_fn_t _on_frame{nullptr};
+	on_error_fn_t _on_error{nullptr};
 
 	// Frame metadata maintained by backend
 	frame_metadata_t metadata{};
@@ -105,6 +105,24 @@ struct GStreamerBackendImpl {
 
 	~GStreamerBackendImpl() {
 		Shutdown();
+	}
+
+	void on_metadata(const frame_metadata_t &metadata) {
+		if (_on_metadata) {
+			_on_metadata(metadata);
+		}
+	}
+
+	void on_frame(std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata) {
+		if (_on_frame) {
+			_on_frame(frame_buffer, metadata);
+		}
+	}
+
+	void on_error(error_t error_code, std::string_view message) {
+		if (_on_error) {
+			_on_error(error_code, message);
+		}
 	}
 
 	/// @brief Ensure the pipeline ends with an appsink
@@ -172,10 +190,8 @@ struct GStreamerBackendImpl {
 		metadata.frame_count += 1;
 
 		// Invoke frame callback
-		if (on_frame) {
-			auto frame_buffer = std::span<uint8_t>(map.data, map.size);
-			on_frame(frame_buffer, metadata);
-		}
+		auto frame_buffer = std::span<uint8_t>(map.data, map.size);
+		on_frame(frame_buffer, metadata);
 
 		gst_buffer_unmap(buffer, &map);
 		gst_sample_unref(sample);
@@ -199,18 +215,14 @@ struct GStreamerBackendImpl {
 		pipeline      = gst_parse_launch(pipeline_str.c_str(), &error);
 		if (error) {
 			spdlog::error("failed to parse GStreamer pipeline: {}", error->message);
-			if (on_error) {
-				on_error(-EINVAL, error->message);
-			}
+			on_error(-EINVAL, error->message);
 			g_error_free(error);
 			return;
 		}
 
 		if (!pipeline) {
 			spdlog::error("failed to create GStreamer pipeline");
-			if (on_error) {
-				on_error(-ENODEV, "Failed to create GStreamer pipeline");
-			}
+			on_error(-ENODEV, "Failed to create GStreamer pipeline");
 			return;
 		}
 
@@ -218,9 +230,7 @@ struct GStreamerBackendImpl {
 		appsink = gst_bin_get_by_name(GST_BIN(pipeline), "sink");
 		if (!appsink) {
 			spdlog::error("failed to find appsink element named 'sink' in pipeline");
-			if (on_error) {
-				on_error(-ENOENT, "Failed to find appsink in pipeline");
-			}
+			on_error(-ENOENT, "Failed to find appsink in pipeline");
 			gst_object_unref(pipeline);
 			pipeline = nullptr;
 			return;
@@ -236,9 +246,7 @@ struct GStreamerBackendImpl {
 		GstCaps *desired_caps = gst_caps_from_string(ALLOWED_APPSINK_CAPS);
 		if (!desired_caps) {
 			spdlog::error("failed to create GStreamer caps from string");
-			if (on_error) {
-				on_error(-EINVAL, "Failed to create caps filter");
-			}
+			on_error(-EINVAL, "Failed to create caps filter");
 			gst_object_unref(appsink);
 			gst_object_unref(pipeline);
 			appsink  = nullptr;
@@ -273,10 +281,8 @@ struct GStreamerBackendImpl {
 		// Start pipeline
 		GstStateChangeReturn ret = gst_element_set_state(pipeline, GST_STATE_PLAYING);
 		if (ret == GST_STATE_CHANGE_FAILURE) {
-			spdlog::error("failed to start GStreamer pipeline");
-			if (on_error) {
-				on_error(-EIO, "Failed to start GStreamer pipeline");
-			}
+			spdlog::error("starting GStreamer pipeline");
+			on_error(-EIO, "Failed to start GStreamer pipeline");
 			gst_object_unref(appsink);
 			gst_object_unref(pipeline);
 			appsink  = nullptr;
@@ -287,10 +293,8 @@ struct GStreamerBackendImpl {
 		// Wait for pipeline to be ready and pull first sample to get metadata
 		GstSample *sample = gst_app_sink_pull_sample(GST_APP_SINK(appsink));
 		if (!sample) {
-			spdlog::error("failed to pull first sample from GStreamer pipeline");
-			if (on_error) {
-				on_error(-EIO, "Failed to capture first frame");
-			}
+			spdlog::error("pulling first sample from GStreamer pipeline");
+			on_error(-EIO, "Failed to capture first frame");
 			gst_element_set_state(pipeline, GST_STATE_NULL);
 			gst_object_unref(appsink);
 			gst_object_unref(pipeline);
@@ -315,9 +319,7 @@ struct GStreamerBackendImpl {
 							  gst_video_format_to_string(format),
 							  caps_str ? caps_str : "unknown");
 				g_free(caps_str);
-				if (on_error) {
-					on_error(-EINVAL, "Unsupported video format");
-				}
+				on_error(-EINVAL, "Unsupported video format");
 				gst_sample_unref(sample);
 				gst_element_set_state(pipeline, GST_STATE_NULL);
 				gst_object_unref(appsink);
@@ -353,9 +355,7 @@ struct GStreamerBackendImpl {
 						  "Expected video/x-raw format. Received: {}",
 						  caps_str ? caps_str : "no caps");
 			g_free(caps_str);
-			if (on_error) {
-				on_error(-EINVAL, "Invalid video caps - expected video/x-raw");
-			}
+			on_error(-EINVAL, "Invalid video caps - expected video/x-raw");
 			gst_sample_unref(sample);
 			gst_element_set_state(pipeline, GST_STATE_NULL);
 			gst_object_unref(appsink);
@@ -379,9 +379,7 @@ struct GStreamerBackendImpl {
 		}
 
 		// Invoke metadata callback
-		if (on_metadata) {
-			on_metadata(metadata);
-		}
+		on_metadata(metadata);
 
 		// Process first sample
 		process_sample(sample);
@@ -408,9 +406,7 @@ struct GStreamerBackendImpl {
 					gchar *debug_info;
 					gst_message_parse_error(msg, &err, &debug_info);
 					spdlog::error("GStreamer error: {} ({})", err->message, debug_info ? debug_info : "none");
-					if (on_error) {
-						on_error(-EIO, err->message);
-					}
+					on_error(-EIO, err->message);
 					g_clear_error(&err);
 					g_free(debug_info);
 					gst_message_unref(msg);
@@ -421,19 +417,15 @@ struct GStreamerBackendImpl {
 					if (finite_source_info && options.looping) {
 						spdlog::info("looping finite source");
 						if (!seek_to_start()) {
-							spdlog::error("failed to seek to start for looping");
-							if (on_error) {
-								on_error(-EIO, "Failed to loop video");
-							}
+							spdlog::error("seeking to start for looping");
+							on_error(-EIO, "bad loop video");
 							gst_message_unref(msg);
 							return;
 						}
 						gst_message_unref(msg);
 						continue;
 					} else {
-						if (on_error) {
-							on_error(0, "EOF");
-						}
+						on_error(0, "EOF");
 						gst_message_unref(msg);
 						return;
 					}
@@ -452,9 +444,7 @@ struct GStreamerBackendImpl {
 					consecutive_errors++;
 					if (consecutive_errors >= MAX_CONSECUTIVE_ERRORS) {
 						spdlog::error("too many consecutive processing errors");
-						if (on_error) {
-							on_error(-EIO, "Too many frame processing errors");
-						}
+						on_error(-EIO, "Too many frame processing errors");
 						return;
 					}
 				}
@@ -471,17 +461,13 @@ struct GStreamerBackendImpl {
 					spdlog::info("appsink reached EOS");
 					if (finite_source_info && options.looping) {
 						if (!seek_to_start()) {
-							spdlog::error("failed to seek to start for looping");
-							if (on_error) {
-								on_error(-EIO, "Failed to loop video");
-							}
+							spdlog::error("seeking to start for looping");
+							on_error(-EIO, "bad loop video");
 							return;
 						}
 						continue;
 					} else {
-						if (on_error) {
-							on_error(0, "EOF");
-						}
+						on_error(0, "EOF");
 						return;
 					}
 				}
@@ -514,15 +500,15 @@ struct GStreamerBackendImpl {
 	}
 
 	void SetOnMetadata(on_metadata_fn_t on_metadata_) {
-		on_metadata = std::move(on_metadata_);
+		_on_metadata = std::move(on_metadata_);
 	}
 
 	void SetOnFrame(on_frame_fn_t on_frame_) {
-		on_frame = std::move(on_frame_);
+		_on_frame = std::move(on_frame_);
 	}
 
 	void SetOnError(on_error_fn_t on_error_) {
-		on_error = std::move(on_error_);
+		_on_error = std::move(on_error_);
 	}
 
 	error_t SeekFrame(size_t frame_index) {

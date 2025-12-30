@@ -31,9 +31,9 @@ struct OpenCVBackendImpl {
 	OpenCVBackendOptions options;
 	cv::VideoCapture cap;
 	std::jthread worker_thread;
-	on_metadata_fn_t on_metadata{nullptr};
-	on_frame_fn_t on_frame{nullptr};
-	on_error_fn_t on_error{nullptr};
+	on_metadata_fn_t _on_metadata{nullptr};
+	on_frame_fn_t _on_frame{nullptr};
+	on_error_fn_t _on_error{nullptr};
 
 	// Frame metadata maintained by backend
 	frame_metadata_t metadata{};
@@ -45,6 +45,24 @@ struct OpenCVBackendImpl {
 
 	OpenCVBackendImpl() = default;
 	OpenCVBackendImpl(OpenCVBackendOptions opts) : options(std::move(opts)) {}
+
+	void on_metadata(const frame_metadata_t &metadata) {
+		if (_on_metadata) {
+			_on_metadata(metadata);
+		}
+	}
+
+	void on_frame(std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata) {
+		if (_on_frame) {
+			_on_frame(frame_buffer, metadata);
+		}
+	}
+
+	void on_error(error_t error_code, std::string_view message) {
+		if (_on_error) {
+			_on_error(error_code, message);
+		}
+	}
 
 	std::optional<finite_source_info_t> check_finite_source() {
 		const auto fps         = cap.get(cv::CAP_PROP_FPS);
@@ -95,9 +113,7 @@ struct OpenCVBackendImpl {
 		if (not cap.isOpened()) {
 			spdlog::error("open video source. check OpenCV VideoCapture API support if you're sure the source is correct.");
 			spdlog::info("OpenCV build information:\n{}", cv::getBuildInformation());
-			if (on_error) {
-				on_error(-ENODEV, "Failed to open video source");
-			}
+			on_error(-ENODEV, "Failed to open video source");
 			return;
 		}
 
@@ -117,10 +133,8 @@ struct OpenCVBackendImpl {
 		cv::Mat frame;
 		cap >> frame;
 		if (frame.empty()) {
-			spdlog::error("failed to capture first frame");
-			if (on_error) {
-				on_error(-EIO, "Failed to capture first frame");
-			}
+			spdlog::error("capture first frame");
+			on_error(-EIO, "bad capture first frame");
 			return;
 		}
 
@@ -157,15 +171,11 @@ struct OpenCVBackendImpl {
 					 app::to_str(pixel_format));
 
 		// Invoke metadata callback
-		if (on_metadata) {
-			on_metadata(metadata);
-		}
+		on_metadata(metadata);
 
 		// Invoke frame callback for first frame
-		if (on_frame) {
-			auto frame_buffer = std::span<uint8_t>(frame.data, frame.total() * frame.elemSize());
-			on_frame(frame_buffer, metadata);
-		}
+		auto frame_buffer = std::span<uint8_t>(frame.data, frame.total() * frame.elemSize());
+		on_frame(frame_buffer, metadata);
 
 		// Start worker thread
 		worker_thread = std::jthread([this](std::stop_token stop_token) {
@@ -186,9 +196,7 @@ struct OpenCVBackendImpl {
 						continue;
 					} else {
 						// End of non-looping finite source
-						if (on_error) {
-							on_error(0, "EOF");
-						}
+						on_error(0, "EOF");
 						break;
 					}
 				} else {
@@ -197,9 +205,7 @@ struct OpenCVBackendImpl {
 					if (consecutive_empty_frames >= MAX_CONSECUTIVE_EMPTY_FRAMES) {
 						spdlog::error("live source: {} consecutive empty frames, treating as device error",
 									  consecutive_empty_frames);
-						if (on_error) {
-							on_error(-EIO, "Device disconnected or capture failure");
-						}
+						on_error(-EIO, "Device disconnected or capture failure");
 						break;
 					}
 					spdlog::warn("live source empty frame captured ({}/{})",
@@ -215,10 +221,8 @@ struct OpenCVBackendImpl {
 			metadata.frame_count += 1;
 
 			// Invoke frame callback
-			if (on_frame) {
-				auto frame_buffer = std::span<uint8_t>(frame.data, frame.total() * frame.elemSize());
-				on_frame(frame_buffer, metadata);
-			}
+			auto frame_buffer = std::span<uint8_t>(frame.data, frame.total() * frame.elemSize());
+			on_frame(frame_buffer, metadata);
 
 			// Log and sleep for finite sources
 			if (finite_source_info) {
@@ -242,15 +246,15 @@ struct OpenCVBackendImpl {
 	}
 
 	void SetOnMetadata(on_metadata_fn_t on_metadata_) {
-		on_metadata = std::move(on_metadata_);
+		_on_metadata = std::move(on_metadata_);
 	}
 
 	void SetOnFrame(on_frame_fn_t on_frame_) {
-		on_frame = std::move(on_frame_);
+		_on_frame = std::move(on_frame_);
 	}
 
 	void SetOnError(on_error_fn_t on_error_) {
-		on_error = std::move(on_error_);
+		_on_error = std::move(on_error_);
 	}
 
 	error_t SeekFrame(size_t frame_index) {
