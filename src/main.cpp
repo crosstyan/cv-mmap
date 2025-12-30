@@ -222,9 +222,7 @@ int main(int argc, char **argv) {
 												_metadata_buffer(buf.subspan(0, SHM_PAYLOAD_OFFSET)),
 												_image_buffer(buf.subspan(SHM_PAYLOAD_OFFSET, buf.size() - SHM_PAYLOAD_OFFSET)) {
 			assert(total_buffer_size() == buf.size());
-			assert(frame_metadata_t::ensure_magic(_metadata_buffer));
-			static_assert(sizeof(frame_metadata_t) < (SHM_PAYLOAD_OFFSET - 0),
-						  "frame_metadata_t size must be less than SHM_PAYLOAD_OFFSET");
+			metadata().ensure_magic();
 		}
 		~frame_state_t() {
 			if (_mmap_ptr) {
@@ -266,7 +264,7 @@ int main(int argc, char **argv) {
 		}
 
 		frame_metadata_t &metadata() {
-			return *reinterpret_cast<frame_metadata_t *>(_metadata_buffer.data() + frame_metadata_t::CV_MMAP_MAGIC.size());
+			return *reinterpret_cast<frame_metadata_t *>(_metadata_buffer.data());
 		}
 
 		static std::expected<frame_state_t, int> open(int shm_fd, size_t size) {

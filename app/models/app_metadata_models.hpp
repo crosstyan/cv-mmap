@@ -12,13 +12,120 @@
 #include "app_enum_models.hpp"
 
 namespace app {
-constexpr auto NAME_MAX_LEN = 24;
+constexpr auto LABEL_LEN_MAX = 24;
 /**
  * @brief offset of the shared memory payload
  * @note the first 256 bytes are reserved for the frame info and other useful metadata
  */
-constexpr auto SHM_PAYLOAD_OFFSET = 256;
-constexpr auto FRAME_TOPIC_MAGIC  = 0x7d;
+constexpr auto SHM_PAYLOAD_OFFSET  = 256;
+constexpr auto FRAME_TOPIC_MAGIC   = 0x7d;
+constexpr auto MODULE_STATUS_MAGIC = 0x5a;
+
+constexpr uint32_t MODULE_STATUS_ONLINE       = 0xa1;
+constexpr uint32_t MODULE_STATUS_OFFLINE      = 0xa0;
+constexpr uint32_t MODULE_STATUS_STREAM_RESET = 0xb0;
+
+constexpr uint8_t VERSION_MAJOR = 1;
+constexpr uint8_t VERSION_MINOR = 0;
+
+struct sync_message_t {
+	sync_message_t() {
+		_magic         = FRAME_TOPIC_MAGIC;
+		versions_major = VERSION_MAJOR;
+		versions_minor = VERSION_MINOR;
+		std::fill(std::begin(_label), std::end(_label), '\0');
+	};
+	sync_message_t(const std::string_view &label, uint32_t frame_count) : frame_count(frame_count) {
+		_magic = FRAME_TOPIC_MAGIC;
+		if (label.size() > LABEL_LEN_MAX) {
+			throw std::invalid_argument(std::format("label is too long: `{}`", label));
+		}
+		std::copy(label.begin(), label.end(), _label);
+		std::fill(_label + label.size(), _label + LABEL_LEN_MAX, '\0');
+	}
+
+	sync_message_t &set_frame_count(uint32_t frame_count) {
+		auto atomic_ref = std::atomic_ref<uint32_t>(this->frame_count);
+		atomic_ref.store(frame_count, std::memory_order::relaxed);
+		return *this;
+	}
+
+	static constexpr size_t size() {
+		return sizeof(sync_message_t);
+	}
+
+	std::string_view label() const {
+		return std::string_view{reinterpret_cast<const char *>(_label)};
+	}
+
+	std::span<const uint8_t> as_uint8s() const {
+		return std::span<const uint8_t>{
+			reinterpret_cast<const uint8_t *>(this), sizeof(sync_message_t)};
+	}
+
+	/** properties */
+	uint8_t _magic{FRAME_TOPIC_MAGIC};
+	uint8_t _reserved_0[1]; // padding
+	uint8_t versions_major{VERSION_MAJOR};
+	uint8_t versions_minor{VERSION_MINOR};
+	uint32_t frame_count;
+	uint8_t _reserved_1[4]; // padding
+	uint64_t timestamp_ns;
+	/**
+	 * @brief label of the video source
+	 * @note C string, null-terminated
+	 */
+	uint8_t _label[LABEL_LEN_MAX];
+};
+static_assert(std::alignment_of<sync_message_t>::value == 8, "sync_message_t must be 8-byte aligned");
+
+struct module_status_message_t {
+	static constexpr size_t size() {
+		return sizeof(module_status_message_t);
+	}
+
+	void _fill_label(const std::string_view &label) {
+		if (label.size() > LABEL_LEN_MAX) {
+			throw std::invalid_argument(std::format("label is too long: `{}`", label));
+		}
+		std::copy(label.begin(), label.end(), _label);
+		std::fill(_label + label.size(), _label + LABEL_LEN_MAX, '\0');
+	}
+
+	void _fill_with_status(uint32_t status, const std::string_view &label) {
+		_magic         = MODULE_STATUS_MAGIC;
+		versions_major = VERSION_MAJOR;
+		versions_minor = VERSION_MINOR;
+		module_status  = status;
+		_fill_label(label);
+	}
+
+	static module_status_message_t make_online(const std::string_view &label) {
+		module_status_message_t msg;
+		msg._fill_with_status(MODULE_STATUS_ONLINE, label);
+		return msg;
+	}
+
+	static module_status_message_t make_offline(const std::string_view &label) {
+		module_status_message_t msg;
+		msg._fill_with_status(MODULE_STATUS_OFFLINE, label);
+		return msg;
+	}
+
+	static module_status_message_t make_frame_reset(const std::string_view &label) {
+		module_status_message_t msg;
+		msg._fill_with_status(MODULE_STATUS_STREAM_RESET, label);
+		return msg;
+	}
+
+	/** properties */
+	uint8_t _magic{MODULE_STATUS_MAGIC};
+	uint8_t _reserved_0[1]; // padding
+	uint8_t versions_major{VERSION_MAJOR};
+	uint8_t versions_minor{VERSION_MINOR};
+	uint32_t module_status;
+	uint8_t _label[LABEL_LEN_MAX];
+};
 
 // https://docs.opencv.org/4.x/d3/d63/classcv_1_1Mat.html
 // See `Detailed Description`
@@ -34,7 +141,7 @@ struct frame_info_t {
 	/// CV_8U, CV_8S, CV_16U, CV_16S, CV_16F, CV_32S, CV_32F, CV_64F
 	Depth depth;
 	uint32_t buffer_size;
-	PixelFormat pixel_format = PixelFormat::BGR;
+	PixelFormat pixel_format;
 	/** end of properties */
 
 	/// @brief pixel size in bytes
@@ -62,67 +169,12 @@ struct frame_info_t {
 };
 static_assert(std::alignment_of<frame_info_t>::value == 4, "frame_info_t must be 4-byte aligned");
 
-struct sync_message_t {
-public:
-	static constexpr auto LABEL_LEN_MAX = NAME_MAX_LEN;
-
-	sync_message_t() {
-		_magic = FRAME_TOPIC_MAGIC;
-		std::memset(_label, 0, LABEL_LEN_MAX);
-	};
-	sync_message_t(const std::string_view &label, uint32_t frame_count) : frame_count(frame_count) {
-		_magic = FRAME_TOPIC_MAGIC;
-		if (label.size() > LABEL_LEN_MAX) {
-			throw std::invalid_argument(std::format("label is too long: `{}`", label));
-		}
-		std::copy(label.begin(), label.end(), _label);
-		std::fill(_label + label.size(), _label + LABEL_LEN_MAX, '\0');
-	}
-
-	sync_message_t &set_frame_count(uint32_t frame_count) {
-		auto atomic_ref = std::atomic_ref<uint32_t>(this->frame_count);
-		atomic_ref.store(frame_count, std::memory_order::relaxed);
-		return *this;
-	}
-
-	static constexpr size_t size() {
-		return sizeof(sync_message_t);
-	}
-
-	std::string_view label() const {
-		return std::string_view{reinterpret_cast<const char *>(_label)};
-	}
-
-	std::span<const std::byte> as_bytes() const {
-		return std::span<const std::byte>{
-			reinterpret_cast<const std::byte *>(this), sizeof(sync_message_t)};
-	}
-
-	std::span<const uint8_t> as_uint8s() const {
-		return std::span<const uint8_t>{
-			reinterpret_cast<const uint8_t *>(this), sizeof(sync_message_t)};
-	}
-
-	/** properties */
-	uint8_t _magic = FRAME_TOPIC_MAGIC;
-	uint8_t _reserved_0[3]; // padding
-	uint32_t frame_count;
-	uint8_t _reserved_1[4]; // padding
-	uint64_t timestamp_ns;
-	/**
-	 * @brief label of the video source
-	 * @note C string, null-terminated
-	 */
-	uint8_t _label[NAME_MAX_LEN];
-};
-static_assert(std::alignment_of<sync_message_t>::value == 8, "sync_message_t must be 8-byte aligned");
-
 /**
  * @note native aligned frame metadata
  */
 struct frame_metadata_t {
 	static constexpr auto CV_MMAP_MAGIC =
-		std::array<char, 8>{'C', 'V', '-', 'M', 'M', 'A', 'P', '\0'};
+		std::array<uint8_t, 8>{'C', 'V', '-', 'M', 'M', 'A', 'P', '\0'};
 
 	static constexpr auto size() {
 		return CV_MMAP_MAGIC.size() + sizeof(frame_info_t);
@@ -131,12 +183,11 @@ struct frame_metadata_t {
 	/**
 	 * @brief ensure the magic is set
 	 */
-	static bool ensure_magic(std::span<uint8_t> buf) {
-		if (buf.size() < CV_MMAP_MAGIC.size()) {
-			return false;
-		}
-		std::copy(CV_MMAP_MAGIC.begin(), CV_MMAP_MAGIC.end(), buf.begin());
-		return true;
+	void ensure_magic() {
+		std::copy(
+			CV_MMAP_MAGIC.begin(),
+			CV_MMAP_MAGIC.end(),
+			magic);
 	}
 
 	std::atomic_ref<uint32_t> frame_count_atomic() {
@@ -145,9 +196,9 @@ struct frame_metadata_t {
 
 	/** properties */
 	uint8_t magic[CV_MMAP_MAGIC.size()];
-	uint8_t versions_major;
-	uint8_t versions_minor;
-	uint8_t _reserved_0[2];
+	uint8_t versions_major{VERSION_MAJOR};
+	uint8_t versions_minor{VERSION_MINOR};
+	uint8_t _reserved_0[4 - 3];
 	uint32_t frame_count;
 	uint64_t timestamp_ns;
 	frame_info_t info;
