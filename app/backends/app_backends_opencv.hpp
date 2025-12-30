@@ -6,7 +6,7 @@
 #include "app_enum_models.hpp"
 
 namespace app::backends {
-using opencv_parameter_t = std::variant<int, std::string>;
+using opencv_parameter_t = std::variant<std::string, int>;
 
 struct OpenCVBackendImpl;
 struct OpenCVBackend {
@@ -21,6 +21,7 @@ struct OpenCVBackend {
 	void Shutdown();
 	void SetOnMetadata(on_metadata_fn_t on_metadata);
 	void SetOnFrame(on_frame_fn_t on_frame);
+	void SetOnError(on_error_fn_t on_error);
 	error_t SeekFrame(size_t frame_index);
 };
 }

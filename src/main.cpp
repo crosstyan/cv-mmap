@@ -8,9 +8,9 @@
 #include <regex>
 #include <expected>
 #include <span>
+#include <thread>
 #include <CLI/CLI.hpp>
 #include <spdlog/spdlog.h>
-#include <opencv2/videoio.hpp>
 #include <zmq.hpp>
 #include <sys/types.h>
 #include <sys/ipc.h>
@@ -21,6 +21,7 @@
 #include "version/app_version.hpp"
 #include "config/app_config.hpp"
 #include "models/app_metadata_models.hpp"
+#include "backends/app_backends_opencv.hpp"
 #include "app_utils.hpp"
 
 #if defined(__APPLE__) && defined(__MACH__)
@@ -118,66 +119,8 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 	spdlog::info("bond to ZMQ address: `{}`", config.zmq_address());
-	cv::VideoCapture cap;
-	// https://gstreamer.freedesktop.org/documentation/shm/shmsink.html?gi-language=c
-	if (std::holds_alternative<int>(config.pipeline)) {
-		const auto index = std::get<int>(config.pipeline);
-		spdlog::info("open video source index (int): {}", index);
-		cap.open(index, config.api_preference);
-	} else {
-		const auto pipeline               = std::get<std::string>(config.pipeline);
-		constexpr auto check_gst_pipeline = [](std::string pipeline) {
-			std::regex re(R"(\,\s+)");
-			std::smatch m;
-			if (std::regex_search(pipeline, m, re)) {
-				spdlog::warn("extra spaces found in the pipeline string: `{}`. "
-							 "GStreamer won't happy about extra space in caps. "
-							 "please remove them, otherwise it may cause unexpected behavior.",
-							 pipeline);
-			}
-		};
-		if (static_cast<cv::VideoCaptureAPIs>(config.api_preference) == cv::CAP_GSTREAMER) {
-			check_gst_pipeline(pipeline);
-		}
-		spdlog::info("open video source pipeline (string): {}", pipeline);
-		cap.open(pipeline, config.api_preference);
-	}
-	if (not cap.isOpened()) {
-		spdlog::error("open video source. check OpenCV VideoCapture API support if you're sure the source is correct.");
-		std::cout << cv::getBuildInformation() << std::endl;
-		return 1;
-	}
 
-	struct finite_source_info_t {
-		double fps;
-		uint32_t frame_count;
-
-		std::chrono::milliseconds frame_interval() const {
-			return std::chrono::milliseconds(static_cast<std::chrono::milliseconds::rep>(1000.0 / fps));
-		}
-	};
-	const auto check_finite_source = [&cap] -> std::optional<finite_source_info_t> {
-		const auto fps         = cap.get(cv::CAP_PROP_FPS);
-		const auto frame_count = cap.get(cv::CAP_PROP_FRAME_COUNT);
-		if (fps > 0 and frame_count > 0) {
-			return finite_source_info_t{
-				.fps         = fps,
-				.frame_count = static_cast<uint32_t>(frame_count),
-			};
-		}
-		return std::nullopt;
-	};
-
-	const auto reset_video_position = [&cap] {
-		cap.set(cv::CAP_PROP_POS_FRAMES, 0);
-	};
-	const auto get_video_position = [&cap] -> int {
-		return static_cast<int>(cap.get(cv::CAP_PROP_POS_FRAMES));
-	};
-
-
-	static uint32_t frame_count = 0;
-	static auto is_running      = std::atomic_bool{true};
+	static auto is_running = std::atomic_bool{true};
 
 	/**
 	 * @brief signal handler for SIGINT
@@ -187,14 +130,6 @@ int main(int argc, char **argv) {
 		is_running.store(false, std::memory_order::relaxed);
 	};
 	std::signal(SIGINT, sigint_handler);
-
-	const auto finite_source_info = check_finite_source();
-	if (finite_source_info) {
-		spdlog::info("detected finite source; fps={} ({}ms), frame_count={}, is_loop={}",
-					 finite_source_info->fps, finite_source_info->frame_interval().count(), finite_source_info->frame_count, config.is_loop);
-	} else {
-		spdlog::info("infinite source detected (live stream)");
-	}
 
 	/**
 	 * @brief a simple RAII wrapper for shared memory
@@ -346,16 +281,6 @@ int main(int argc, char **argv) {
 			return frame_state_t(std::span<uint8_t>(ptr, size));
 		}
 
-		/**
-		 * @brief set the frame to the image buffer
-		 * @note the frame size must be the same as the image buffer size
-		 */
-		void set_frame(const cv::Mat &frame) {
-			const auto picture_buffer_size = frame.total() * frame.elemSize();
-			assert(picture_buffer_size == _image_buffer.size());
-			std::copy(frame.data, frame.data + picture_buffer_size, _image_buffer.begin());
-		}
-
 		void set_frame_count(uint32_t frame_count) {
 			metadata().frame_count_atomic().store(frame_count, std::memory_order::relaxed);
 		}
@@ -369,106 +294,78 @@ int main(int argc, char **argv) {
 		std::span<uint8_t> _image_buffer;
 	};
 
-	cv::Mat frame;
-	const auto on_initial_frame = [&shm_state, &cap, &frame] -> std::expected<frame_state_t, int> {
-		using ue_t = std::unexpected<int>;
-		cap >> frame;
-		if (frame.empty()) {
-			spdlog::error("capture first frame");
-			return ue_t{-1};
-		}
-		const auto pixel_format = guess_pixel_format(frame.channels());
-		frame_info_t info{
-			.width        = static_cast<uint16_t>(frame.cols),
-			.height       = static_cast<uint16_t>(frame.rows),
-			.channels     = static_cast<uint8_t>(frame.channels()),
-			.depth        = static_cast<Depth>(frame.depth()),
-			.buffer_size  = static_cast<uint32_t>(frame.total() * frame.elemSize()),
-			.pixel_format = pixel_format,
-		};
+	// Frame state will be initialized by on_metadata callback
+	std::optional<frame_state_t> frame_state;
+	std::optional<sync_message_t> sync_msg;
 
-		spdlog::info("initial frame info: {}x{}x{}; "
-					 "depth={}({}); "
-					 "stride[0]={}; "
-					 "stride[1]={}; "
-					 "total={}; "
-					 "elemSize={}; "
-					 "bufferSize={}; "
-					 "pixelFormat={};",
-					 frame.cols,
-					 frame.rows,
-					 frame.channels(),
-					 app::to_str(static_cast<app::Depth>(frame.depth())),
-					 frame.depth(),
-					 frame.step[0],
-					 frame.step[1],
-					 frame.total(),
-					 frame.elemSize(),
-					 frame.total() * frame.elemSize(),
-					 app::to_str(pixel_format));
+	// Create OpenCV backend
+	app::backends::OpenCVBackend backend(
+		config.pipeline,
+		config.is_loop,
+		static_cast<app::VideoCaptureAPIs>(config.api_preference));
 
-		const auto picture_buffer_size = frame.total() * frame.elemSize();
+	// Set up callbacks
+	backend.SetOnMetadata([&shm_state, &frame_state, &sync_msg, &config](const frame_metadata_t &metadata) {
+		const auto picture_buffer_size = metadata.info.buffer_size;
 		const auto total_buffer_size   = SHM_PAYLOAD_OFFSET + picture_buffer_size;
 
-		auto frame_state = frame_state_t::open(shm_state.fd(), total_buffer_size);
-		if (not frame_state) {
-			spdlog::error("failed to open frame state; {}", frame_state.error());
-			return ue_t{frame_state.error()};
+		auto fs = frame_state_t::open(shm_state.fd(), total_buffer_size);
+		if (not fs) {
+			spdlog::error("failed to open frame state; {}", fs.error());
+			return;
 		}
-		frame_state->metadata().frame_count_atomic().store(0, std::memory_order::relaxed);
-		frame_state->metadata().info = info;
-		return frame_state;
-	};
+		fs->metadata().frame_count_atomic().store(0, std::memory_order::relaxed);
+		fs->metadata().info = metadata.info;
+		frame_state         = std::move(*fs);
+		sync_msg.emplace(config.name, 0);
+	});
 
-	auto frame_state_ = on_initial_frame();
-	if (not frame_state_) {
-		spdlog::error("failed to open frame state; {}", frame_state_.error());
-		return 1;
-	}
-	auto frame_state         = std::move(*frame_state_);
-	auto sync_msg            = sync_message_t(config.name, frame_count);
-	const auto send_sync_msg = [&sync_msg, &sock] {
+	backend.SetOnFrame([&frame_state, &sync_msg, &sock](std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata) {
+		if (!frame_state || !sync_msg) {
+			spdlog::error("frame callback invoked before metadata callback");
+			return;
+		}
+
+		// Copy frame data to shared memory
+		auto &fs                       = *frame_state;
+		const auto picture_buffer_size = frame_buffer.size();
+		assert(picture_buffer_size == fs.image_buffer().size());
+		std::copy(frame_buffer.begin(), frame_buffer.end(), fs.image_buffer().begin());
+		fs.set_frame_count(metadata.frame_count);
+
+		// Send sync message
 		try {
-			sync_msg.set_frame_count(frame_count);
+			sync_msg->set_frame_count(metadata.frame_count);
 			std::array<uint8_t, sync_message_t::size()> buffer;
-			const auto _ret = sync_msg.marshal(buffer);
+			const auto _ret = sync_msg->marshal(buffer);
 			assert(_ret != -1);
 			spdlog::debug("sync_msg hex dump:\n{}", hexdump(buffer));
 			sock.send(zmq::buffer(buffer), zmq::send_flags::none);
 		} catch (const zmq::error_t &e) {
-			spdlog::error("send synchronization message for frame@{}; {}", frame_count, e.what());
+			spdlog::error("send synchronization message for frame@{}; {}", metadata.frame_count, e.what());
 		}
-	};
+	});
 
-	send_sync_msg();
-	while (is_running.load(std::memory_order::relaxed)) {
-		cap >> frame;
-		if (frame.empty()) {
-			if (finite_source_info) {
-				spdlog::info("reached end of finite video source");
-				if (config.is_loop) {
-					reset_video_position();
-				} else {
-					break;
-				}
-			} else {
-				spdlog::warn("live source empty frame captured");
-				break;
-			}
+	backend.SetOnError([](int error_code, std::string_view message) {
+		if (error_code == 0) {
+			// End of stream (not an error)
+			spdlog::info("backend: {}", message);
 		} else {
-			frame_state.set_frame(frame);
-			frame_state.set_frame_count(frame_count);
-			send_sync_msg();
-			if (finite_source_info) {
-				const auto current = get_video_position();
-				spdlog::debug("frame@{} ({}/{})", frame_count, current, finite_source_info->frame_count);
-				std::this_thread::sleep_for(finite_source_info->frame_interval());
-			} else {
-				spdlog::debug("frame@{}", frame_count);
-			}
+			spdlog::error("backend error ({}): {}", error_code, message);
 		}
-		frame_count += 1;
+		is_running.store(false, std::memory_order::relaxed);
+	});
+
+	// Start the backend
+	backend.Init();
+
+	// Wait for shutdown signal
+	while (is_running.load(std::memory_order::relaxed)) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	}
+
+	// Shutdown backend
+	backend.Shutdown();
 
 	spdlog::info("normally exit");
 	return 0;
