@@ -21,9 +21,9 @@ constexpr auto SHM_PAYLOAD_OFFSET  = 256;
 constexpr auto FRAME_TOPIC_MAGIC   = 0x7d;
 constexpr auto MODULE_STATUS_MAGIC = 0x5a;
 
-constexpr uint32_t MODULE_STATUS_ONLINE       = 0xa1;
-constexpr uint32_t MODULE_STATUS_OFFLINE      = 0xa0;
-constexpr uint32_t MODULE_STATUS_STREAM_RESET = 0xb0;
+constexpr int32_t MODULE_STATUS_ONLINE       = 0xa1;
+constexpr int32_t MODULE_STATUS_OFFLINE      = 0xa0;
+constexpr int32_t MODULE_STATUS_STREAM_RESET = 0xb0;
 
 constexpr uint8_t VERSION_MAJOR = 1;
 constexpr uint8_t VERSION_MINOR = 0;
@@ -90,6 +90,11 @@ struct module_status_message_t {
 		return sizeof(module_status_message_t);
 	}
 
+	std::span<const uint8_t> as_uint8s() const {
+		return std::span<const uint8_t>{
+			reinterpret_cast<const uint8_t *>(this), sizeof(module_status_message_t)};
+	}
+
 	void _fill_label(const std::string_view &label) {
 		if (label.size() > LABEL_LEN_MAX) {
 			throw std::invalid_argument(std::format("label is too long: `{}`", label));
@@ -98,7 +103,7 @@ struct module_status_message_t {
 		std::fill(_label + label.size(), _label + LABEL_LEN_MAX, '\0');
 	}
 
-	void _fill_with_status(uint32_t status, const std::string_view &label) {
+	void _fill_with_status(int32_t status, const std::string_view &label) {
 		_magic         = MODULE_STATUS_MAGIC;
 		versions_major = VERSION_MAJOR;
 		versions_minor = VERSION_MINOR;
@@ -129,7 +134,7 @@ struct module_status_message_t {
 	uint8_t _reserved_0[1]; // padding
 	uint8_t versions_major{VERSION_MAJOR};
 	uint8_t versions_minor{VERSION_MINOR};
-	uint32_t module_status;
+	int32_t module_status;
 	uint8_t _label[LABEL_LEN_MAX];
 };
 

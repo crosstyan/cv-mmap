@@ -398,7 +398,23 @@ int main(int argc, char **argv) {
 		is_running.store(false, std::memory_order::relaxed);
 	});
 
+	const auto send_status = [&sock, name = config.name](int32_t status) {
+		try {
+			std::array<uint8_t, module_status_message_t::size()> buffer;
+			auto msg = module_status_message_t{};
+			msg._fill_with_status(status, name);
+			std::copy(
+				msg.as_uint8s().begin(),
+				msg.as_uint8s().end(),
+				buffer.begin());
+			sock.send(zmq::buffer(buffer), zmq::send_flags::none);
+		} catch (const zmq::error_t &e) {
+			spdlog::error("send module status message; {}", e.what());
+		}
+	};
+
 	backend->Init();
+	send_status(MODULE_STATUS_ONLINE);
 
 	// Wait for shutdown signal
 	while (is_running.load(std::memory_order::relaxed)) {
@@ -406,6 +422,7 @@ int main(int argc, char **argv) {
 	}
 
 	backend->Shutdown();
+	send_status(MODULE_STATUS_OFFLINE);
 
 	spdlog::info("normally exit");
 	return 0;

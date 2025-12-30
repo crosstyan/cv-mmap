@@ -46,7 +46,20 @@ struct GStreamerBackend {
 	void SetOnMetadata(on_metadata_fn_t on_metadata);
 	void SetOnFrame(on_frame_fn_t on_frame);
 	void SetOnError(on_error_fn_t on_error);
+	/**
+	 * @brief Seek to specific frame index (only for finite sources)
+	 * @param frame_index The target frame index to seek to
+	 * @return 0 on success, -EOPNOTSUPP if not supported, -EINVAL if out of range, -EIO on I/O error
+	 * @note when `use_finite_as_infinite_stream` is true, seeking is disabled and will return -EOPNOTSUPP
+	 */
 	error_t SeekFrame(size_t frame_index);
+	/**
+	 * @brief Reset frame count to zero
+	 * @return 0 on success, -EIO on I/O error
+	 * @note For finite sources, this seeks back to the beginning unless
+	 * `use_finite_as_infinite_stream` is true, when it only resets the internal
+	 * frame count without any seeking.
+	 */
 	error_t ResetFrameCount();
 };
 

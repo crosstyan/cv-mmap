@@ -7,7 +7,7 @@ name = 'example'
 [video]
 # opencv | gstreamer
 backend = 'gstreamer'
-use_finite_as_infinite_stream = true
+use_finite_as_infinite_stream = false
 [opencv]
 parameter = "example.mkv"
 [gstreamer]
