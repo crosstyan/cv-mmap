@@ -77,7 +77,7 @@ struct finite_source_info_t {
 
 struct GStreamerBackendOptions {
 	std::string pipeline;
-	bool looping;
+	bool use_finite_as_infinite_stream;
 };
 
 struct GStreamerBackendImpl {
@@ -188,6 +188,12 @@ struct GStreamerBackendImpl {
 
 		// Update frame count
 		metadata.frame_count += 1;
+
+		// Set timestamp
+		metadata.timestamp_ns = static_cast<uint64_t>(
+			std::chrono::duration_cast<std::chrono::nanoseconds>(
+				std::chrono::system_clock::now().time_since_epoch())
+				.count());
 
 		// Invoke frame callback
 		auto frame_buffer = std::span<uint8_t>(map.data, map.size);
@@ -368,12 +374,12 @@ struct GStreamerBackendImpl {
 		// Check for finite source
 		finite_source_info = check_finite_source();
 		if (finite_source_info) {
-			spdlog::info("detected finite source; fps={} ({}ms), duration={}s, estimated_frames={}, is_loop={}",
+			spdlog::info("detected finite source; fps={} ({}ms), duration={}s, estimated_frames={}, use_finite_as_infinite_stream={}",
 						 finite_source_info->fps,
 						 finite_source_info->frame_interval().count(),
 						 finite_source_info->duration_ns / 1e9,
 						 finite_source_info->estimated_frame_count(),
-						 options.looping);
+						 options.use_finite_as_infinite_stream);
 		} else {
 			spdlog::info("infinite source detected (live stream)");
 		}
@@ -414,7 +420,7 @@ struct GStreamerBackendImpl {
 				}
 				case GST_MESSAGE_EOS: {
 					spdlog::info("GStreamer end-of-stream");
-					if (finite_source_info && options.looping) {
+					if (finite_source_info && options.use_finite_as_infinite_stream) {
 						spdlog::info("looping finite source");
 						if (!seek_to_start()) {
 							spdlog::error("seeking to start for looping");
@@ -454,7 +460,7 @@ struct GStreamerBackendImpl {
 				// Check if appsink is EOS
 				if (gst_app_sink_is_eos(GST_APP_SINK(appsink))) {
 					spdlog::info("appsink reached EOS");
-					if (finite_source_info && options.looping) {
+					if (finite_source_info && options.use_finite_as_infinite_stream) {
 						if (!seek_to_start()) {
 							spdlog::error("seeking to start for looping");
 							on_error(-EIO, "bad loop video");
@@ -510,6 +516,9 @@ struct GStreamerBackendImpl {
 		if (!finite_source_info) {
 			return -EOPNOTSUPP;
 		}
+		if (options.use_finite_as_infinite_stream) {
+			return -EOPNOTSUPP;
+		}
 		if (!pipeline) {
 			return -ENODEV;
 		}
@@ -535,7 +544,7 @@ struct GStreamerBackendImpl {
 	}
 
 	error_t ResetFrameCount() {
-		if (finite_source_info) {
+		if (finite_source_info && !options.use_finite_as_infinite_stream) {
 			// Finite source: seek to beginning
 			if (!pipeline) {
 				return -ENODEV;
@@ -552,10 +561,10 @@ struct GStreamerBackendImpl {
 
 // GStreamerBackend public API
 
-GStreamerBackend::GStreamerBackend(std::string pipeline, bool looping)
+GStreamerBackend::GStreamerBackend(std::string pipeline, bool use_finite_as_infinite_stream)
 	: impl(std::make_unique<GStreamerBackendImpl>(GStreamerBackendOptions{
-		  .pipeline = std::move(pipeline),
-		  .looping  = looping,
+		  .pipeline                      = std::move(pipeline),
+		  .use_finite_as_infinite_stream = use_finite_as_infinite_stream,
 	  })) {}
 
 GStreamerBackend::~GStreamerBackend() = default;

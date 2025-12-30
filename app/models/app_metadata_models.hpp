@@ -50,6 +50,12 @@ struct sync_message_t {
 		return *this;
 	}
 
+	sync_message_t &set_timestamp_ns(uint64_t timestamp_ns) {
+		auto atomic_ref = std::atomic_ref<uint64_t>(this->timestamp_ns);
+		atomic_ref.store(timestamp_ns, std::memory_order::relaxed);
+		return *this;
+	}
+
 	static constexpr size_t size() {
 		return sizeof(sync_message_t);
 	}
@@ -192,6 +198,10 @@ struct frame_metadata_t {
 
 	std::atomic_ref<uint32_t> frame_count_atomic() {
 		return std::atomic_ref<uint32_t>(frame_count);
+	};
+
+	std::atomic_ref<uint64_t> timestamp_ns_atomic() {
+		return std::atomic_ref<uint64_t>(timestamp_ns);
 	};
 
 	/** properties */

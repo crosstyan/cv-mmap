@@ -288,6 +288,10 @@ int main(int argc, char **argv) {
 			metadata().frame_count_atomic().store(frame_count, std::memory_order::relaxed);
 		}
 
+		void set_timestamp_ns(uint64_t timestamp_ns) {
+			metadata().timestamp_ns_atomic().store(timestamp_ns, std::memory_order::relaxed);
+		}
+
 
 	private:
 		uint8_t *_mmap_ptr;
@@ -312,7 +316,7 @@ int main(int argc, char **argv) {
 		}
 		backend = pro::make_proxy<app::backends::IBackend, app::backends::OpenCVBackend>(
 			config.opencv->parameter,
-			config.is_looping,
+			config.use_finite_as_infinite_stream,
 			config.opencv->api_preference);
 		spdlog::info("using OpenCV backend");
 		break;
@@ -326,7 +330,7 @@ int main(int argc, char **argv) {
 		}
 		backend = pro::make_proxy<app::backends::IBackend, app::backends::GStreamerBackend>(
 			config.gstreamer->pipeline,
-			config.is_looping);
+			config.use_finite_as_infinite_stream);
 		spdlog::info("using GStreamer backend");
 		break;
 	}
@@ -346,6 +350,7 @@ int main(int argc, char **argv) {
 			return;
 		}
 		fs->metadata().frame_count_atomic().store(0, std::memory_order::relaxed);
+		fs->metadata().timestamp_ns_atomic().store(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count(), std::memory_order::relaxed);
 		fs->metadata().info = metadata.info;
 		frame_state         = std::move(*fs);
 		sync_msg.emplace(config.name, 0);
@@ -363,11 +368,13 @@ int main(int argc, char **argv) {
 		assert(picture_buffer_size == fs.image_buffer().size());
 		std::copy(frame_buffer.begin(), frame_buffer.end(), fs.image_buffer().begin());
 		fs.set_frame_count(metadata.frame_count);
+		fs.set_timestamp_ns(metadata.timestamp_ns);
 
 		// Send sync message
 		try {
-			sync_msg->set_frame_count(metadata.frame_count);
 			std::array<uint8_t, sync_message_t::size()> buffer;
+			sync_msg->set_frame_count(metadata.frame_count);
+			sync_msg->set_timestamp_ns(metadata.timestamp_ns);
 			std::copy(
 				sync_msg->as_uint8s().begin(),
 				sync_msg->as_uint8s().end(),

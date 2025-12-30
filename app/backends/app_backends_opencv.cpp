@@ -23,7 +23,7 @@ struct finite_source_info_t {
 
 struct OpenCVBackendOptions {
 	opencv_parameter_t parameter;
-	bool looping;
+	bool use_finite_as_infinite_stream;
 	cv::VideoCaptureAPIs api_preference;
 };
 
@@ -124,7 +124,7 @@ struct OpenCVBackendImpl {
 						 finite_source_info->fps,
 						 finite_source_info->frame_interval().count(),
 						 finite_source_info->frame_count,
-						 options.looping);
+						 options.use_finite_as_infinite_stream);
 		} else {
 			spdlog::info("infinite source detected (live stream)");
 		}
@@ -174,6 +174,10 @@ struct OpenCVBackendImpl {
 		on_metadata(metadata);
 
 		// Invoke frame callback for first frame
+		metadata.timestamp_ns = static_cast<uint64_t>(
+			std::chrono::duration_cast<std::chrono::nanoseconds>(
+				std::chrono::system_clock::now().time_since_epoch())
+				.count());
 		auto frame_buffer = std::span<uint8_t>(frame.data, frame.total() * frame.elemSize());
 		on_frame(frame_buffer, metadata);
 
@@ -190,7 +194,7 @@ struct OpenCVBackendImpl {
 			if (frame.empty()) {
 				if (finite_source_info) {
 					spdlog::info("reached end of finite video source");
-					if (options.looping) {
+					if (options.use_finite_as_infinite_stream) {
 						reset_video_position();
 						consecutive_empty_frames = 0;
 						continue;
@@ -219,6 +223,12 @@ struct OpenCVBackendImpl {
 
 			// Update frame count
 			metadata.frame_count += 1;
+
+			// Set timestamp
+			metadata.timestamp_ns = static_cast<uint64_t>(
+				std::chrono::duration_cast<std::chrono::nanoseconds>(
+					std::chrono::system_clock::now().time_since_epoch())
+					.count());
 
 			// Invoke frame callback
 			auto frame_buffer = std::span<uint8_t>(frame.data, frame.total() * frame.elemSize());
@@ -261,6 +271,9 @@ struct OpenCVBackendImpl {
 		if (!finite_source_info) {
 			return -EOPNOTSUPP;
 		}
+		if (options.use_finite_as_infinite_stream) {
+			return -EOPNOTSUPP;
+		}
 		if (frame_index >= finite_source_info->frame_count) {
 			return -EINVAL;
 		}
@@ -273,7 +286,7 @@ struct OpenCVBackendImpl {
 	}
 
 	error_t ResetFrameCount() {
-		if (finite_source_info) {
+		if (finite_source_info && !options.use_finite_as_infinite_stream) {
 			// Finite source: seek to beginning
 			bool success = cap.set(cv::CAP_PROP_POS_FRAMES, 0);
 			if (!success) {
@@ -289,11 +302,11 @@ struct OpenCVBackendImpl {
 // OpenCVBackend public API
 
 OpenCVBackend::OpenCVBackend(std::variant<std::string, int> parameter,
-							 bool looping,
+							 bool use_finite_as_infinite_stream,
 							 app::VideoCaptureAPIs api_preference) : impl(std::make_unique<OpenCVBackendImpl>(OpenCVBackendOptions{
-																		 .parameter      = std::move(parameter),
-																		 .looping        = looping,
-																		 .api_preference = static_cast<cv::VideoCaptureAPIs>(api_preference),
+																		 .parameter                     = std::move(parameter),
+																		 .use_finite_as_infinite_stream = use_finite_as_infinite_stream,
+																		 .api_preference                = static_cast<cv::VideoCaptureAPIs>(api_preference),
 																	 })) {}
 OpenCVBackend::~OpenCVBackend() = default;
 void OpenCVBackend::Init() {

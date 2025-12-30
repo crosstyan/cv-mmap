@@ -31,8 +31,8 @@ struct GStreamerBackend {
 
 	/// @brief Construct a GStreamer backend with a pipeline string
 	/// @param pipeline The gst-launch-1.0 style pipeline string
-	/// @param looping Whether to loop the video (only applicable for finite sources like files)
-	explicit GStreamerBackend(std::string pipeline, bool looping = false);
+	/// @param use_finite_as_infinite_stream Whether to treat finite source as infinite stream (loop automatically, disable seeking)
+	explicit GStreamerBackend(std::string pipeline, bool use_finite_as_infinite_stream = false);
 	~GStreamerBackend();
 
 	// Non-copyable, movable

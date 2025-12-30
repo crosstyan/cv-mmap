@@ -13,7 +13,7 @@ struct OpenCVBackend {
 	std::unique_ptr<OpenCVBackendImpl> impl;
 
 	OpenCVBackend(opencv_parameter_t parameter,
-				  bool looping                         = false,
+				  bool use_finite_as_infinite_stream   = false,
 				  app::VideoCaptureAPIs api_preference = app::VideoCaptureAPIs::CAP_ANY);
 	~OpenCVBackend();
 

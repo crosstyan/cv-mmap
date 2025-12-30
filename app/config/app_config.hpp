@@ -32,8 +32,8 @@ struct Config {
 	std::string name;
 	/// backend type: opencv or gstreamer
 	BackendType backend = BackendType::OpenCV;
-	/// whether the video source is looped, when it's a finite source
-	bool is_looping = false;
+	/// treat finite source as infinite stream (loop automatically, disable seeking)
+	bool use_finite_as_infinite_stream = false;
 	/// OpenCV-specific config (used when backend == OpenCV)
 	std::optional<OpenCVConfig> opencv;
 	/// GStreamer-specific config (used when backend == GStreamer)
