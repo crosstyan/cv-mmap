@@ -36,6 +36,7 @@
 #include <unistd.h>
 #endif
 
+// APP_DEBUG_SYNC_MESSAGE_DUMP
 
 int main(int argc, char **argv) {
 	using namespace app;
@@ -369,9 +370,13 @@ int main(int argc, char **argv) {
 		try {
 			sync_msg->set_frame_count(metadata.frame_count);
 			std::array<uint8_t, sync_message_t::size()> buffer;
-			const auto _ret = sync_msg->marshal(buffer);
-			assert(_ret != -1);
-			// spdlog::debug("sync_msg hex dump:\n{}", hexdump(buffer));
+			std::copy(
+				sync_msg->as_uint8s().begin(),
+				sync_msg->as_uint8s().end(),
+				buffer.begin());
+#ifdef APP_DEBUG_SYNC_MESSAGE_DUMP
+			spdlog::debug("sync_msg hex dump:\n{}", hexdump(buffer));
+#endif
 			sock.send(zmq::buffer(buffer), zmq::send_flags::none);
 		} catch (const zmq::error_t &e) {
 			spdlog::error("send synchronization message for frame@{}; {}", metadata.frame_count, e.what());
@@ -379,7 +384,7 @@ int main(int argc, char **argv) {
 	});
 
 	backend->SetOnError([](int error_code, std::string_view message) {
-		if (error_code == 0) {
+		if (error_code == backends::ERR_EOF) {
 			spdlog::info("backend EOF: {}", message);
 		} else {
 			spdlog::error("backend({}): {}", error_code, message);

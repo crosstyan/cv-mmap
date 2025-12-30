@@ -196,7 +196,7 @@ struct OpenCVBackendImpl {
 						continue;
 					} else {
 						// End of non-looping finite source
-						on_error(0, "EOF");
+						on_error(ERR_EOF, "EOF");
 						break;
 					}
 				} else {

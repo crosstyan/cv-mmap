@@ -462,7 +462,7 @@ struct GStreamerBackendImpl {
 						}
 						continue;
 					} else {
-						on_error(0, "EOF");
+						on_error(ERR_EOF, "EOF");
 						return;
 					}
 				}
