@@ -5,6 +5,7 @@
 #include <optional>
 #include <regex>
 #include <spdlog/spdlog.h>
+#include <errno.h>
 #include "app_backends_opencv.hpp"
 #include "app_backends_facade.hpp"
 #include "app_enum_models.hpp"
