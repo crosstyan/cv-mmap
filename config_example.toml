@@ -1,0 +1,14 @@
+# instance name
+# no longer need declare shm_name and zmq_addr
+# convention over configuration
+# shm_name: cvmmap_{name}
+# zmq_addr: ipc:///tmp/{shm_name}
+name = 'example'
+[video]
+# opencv | gstreamer
+backend = 'gstreamer'
+use_finite_as_infinite_stream = true
+[opencv]
+parameter = "example.mkv"
+[gstreamer]
+pipeline = "filesrc location=example.mkv ! decodebin ! videoconvert ! appsink name=sink"

@@ -201,6 +201,7 @@ cython_debug/
 
 config.toml
 config_*.toml
+!config_example.toml
 .cache
 
 output
