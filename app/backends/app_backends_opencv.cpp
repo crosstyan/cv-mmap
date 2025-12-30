@@ -9,7 +9,7 @@ namespace app::backends {
 struct OpenCVBackendOptions {
 	opencv_parameter_t parameter;
 	bool looping;
-	app::VideoCaptureAPIs api_preference;
+	cv::VideoCaptureAPIs api_preference;
 };
 
 struct OpenCVBackendImpl {
@@ -47,7 +47,7 @@ OpenCVBackend::OpenCVBackend(std::variant<int, std::string> parameter,
 							 app::VideoCaptureAPIs api_preference) : impl(std::make_unique<OpenCVBackendImpl>(OpenCVBackendOptions{
 																		 .parameter      = std::move(parameter),
 																		 .looping        = looping,
-																		 .api_preference = api_preference,
+																		 .api_preference = static_cast<cv::VideoCaptureAPIs>(api_preference),
 																	 })) {}
 OpenCVBackend::~OpenCVBackend() = default;
 void OpenCVBackend::Init() {
