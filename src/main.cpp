@@ -19,8 +19,14 @@
 #include "version/app_version.hpp"
 #include "config/app_config.hpp"
 #include "models/app_metadata_models.hpp"
-#include "backends/app_backends_opencv.hpp"
 #include "app_utils.hpp"
+#include "backends/app_backends_facade.hpp"
+#ifdef WITH_BACKEND_OPENCV
+#include "backends/app_backends_opencv.hpp"
+#endif
+#ifdef WITH_BACKEND_GSTREAMER
+#include "backends/app_backends_gst.hpp"
+#endif
 
 #if defined(__APPLE__) && defined(__MACH__)
 #define __APP_MACOS__
@@ -296,14 +302,42 @@ int main(int argc, char **argv) {
 	std::optional<frame_state_t> frame_state;
 	std::optional<sync_message_t> sync_msg;
 
-	// Create OpenCV backend
-	app::backends::OpenCVBackend backend(
-		config.pipeline,
-		config.is_loop,
-		static_cast<app::VideoCaptureAPIs>(config.api_preference));
+	// Create backend based on config
+	pro::proxy<app::backends::IBackend> backend;
+	switch (config.backend) {
+#ifdef WITH_BACKEND_OPENCV
+	case app::BackendType::OpenCV: {
+		if (!config.opencv) {
+			spdlog::error("OpenCV backend selected but [opencv] config section missing");
+			return 1;
+		}
+		backend = pro::make_proxy<app::backends::IBackend, app::backends::OpenCVBackend>(
+			config.opencv->parameter,
+			config.is_looping,
+			config.opencv->api_preference);
+		spdlog::info("using OpenCV backend");
+		break;
+	}
+#endif
+#ifdef WITH_BACKEND_GSTREAMER
+	case app::BackendType::GStreamer: {
+		if (!config.gstreamer) {
+			spdlog::error("GStreamer backend selected but [gstreamer] config section missing");
+			return 1;
+		}
+		backend = pro::make_proxy<app::backends::IBackend, app::backends::GStreamerBackend>(
+			config.gstreamer->pipeline,
+			config.is_looping);
+		spdlog::info("using GStreamer backend");
+		break;
+	}
+#endif
+	default:
+		spdlog::error("selected backend is not available in this build");
+		return 1;
+	}
 
-	// Set up callbacks
-	backend.SetOnMetadata([&shm_state, &frame_state, &sync_msg, &config](const frame_metadata_t &metadata) {
+	backend->SetOnMetadata([&shm_state, &frame_state, &sync_msg, &config](const frame_metadata_t &metadata) {
 		const auto picture_buffer_size = metadata.info.buffer_size;
 		const auto total_buffer_size   = SHM_PAYLOAD_OFFSET + picture_buffer_size;
 
@@ -318,7 +352,7 @@ int main(int argc, char **argv) {
 		sync_msg.emplace(config.name, 0);
 	});
 
-	backend.SetOnFrame([&frame_state, &sync_msg, &sock](std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata) {
+	backend->SetOnFrame([&frame_state, &sync_msg, &sock](std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata) {
 		if (not frame_state || not sync_msg) {
 			spdlog::error("[BUG] frame callback invoked before metadata callback (should not happen)");
 			return;
@@ -344,7 +378,7 @@ int main(int argc, char **argv) {
 		}
 	});
 
-	backend.SetOnError([](int error_code, std::string_view message) {
+	backend->SetOnError([](int error_code, std::string_view message) {
 		if (error_code == 0) {
 			spdlog::info("backend EOF: {}", message);
 		} else {
@@ -354,16 +388,14 @@ int main(int argc, char **argv) {
 		is_running.store(false, std::memory_order::relaxed);
 	});
 
-	// Start the backend
-	backend.Init();
+	backend->Init();
 
 	// Wait for shutdown signal
 	while (is_running.load(std::memory_order::relaxed)) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	}
 
-	// Shutdown backend
-	backend.Shutdown();
+	backend->Shutdown();
 
 	spdlog::info("normally exit");
 	return 0;
