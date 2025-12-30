@@ -449,12 +449,7 @@ struct GStreamerBackendImpl {
 					}
 				}
 
-				// Log progress for finite sources
-				if (finite_source_info) {
-					spdlog::debug("frame@{}", metadata.frame_count);
-				} else {
-					spdlog::debug("frame@{}", metadata.frame_count);
-				}
+				spdlog::debug("frame@{}", metadata.frame_count);
 			} else {
 				// Check if appsink is EOS
 				if (gst_app_sink_is_eos(GST_APP_SINK(appsink))) {
@@ -538,6 +533,21 @@ struct GStreamerBackendImpl {
 		metadata.frame_count = static_cast<uint32_t>(frame_index);
 		return 0;
 	}
+
+	error_t ResetFrameCount() {
+		if (finite_source_info) {
+			// Finite source: seek to beginning
+			if (!pipeline) {
+				return -ENODEV;
+			}
+			if (!seek_to_start()) {
+				return -EIO;
+			}
+		}
+		// Reset internal frame count for both finite and stream sources
+		metadata.frame_count = 0;
+		return 0;
+	}
 };
 
 // GStreamerBackend public API
@@ -575,6 +585,10 @@ void GStreamerBackend::SetOnError(on_error_fn_t on_error) {
 
 error_t GStreamerBackend::SeekFrame(size_t frame_index) {
 	return impl->SeekFrame(frame_index);
+}
+
+error_t GStreamerBackend::ResetFrameCount() {
+	return impl->ResetFrameCount();
 }
 
 } // namespace app::backends

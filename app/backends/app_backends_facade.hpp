@@ -24,6 +24,7 @@ PRO_DEF_MEM_DISPATCH(MemSetOnMetadata, SetOnMetadata);
 PRO_DEF_MEM_DISPATCH(MemSetOnFrame, SetOnFrame);
 PRO_DEF_MEM_DISPATCH(MemSetOnError, SetOnError);
 PRO_DEF_MEM_DISPATCH(MemSeekFrame, SeekFrame);
+PRO_DEF_MEM_DISPATCH(MemResetFrameCount, ResetFrameCount);
 
 // clang-format off
 struct IBackend : pro::facade_builder 
@@ -33,6 +34,7 @@ struct IBackend : pro::facade_builder
     ::add_convention<MemSetOnFrame, void(on_frame_fn_t)>
     ::add_convention<MemSetOnError, void(on_error_fn_t)>
     ::add_convention<MemSeekFrame, error_t(size_t)>
+    ::add_convention<MemResetFrameCount, error_t()>
     ::build {};
 // clang-format on
 

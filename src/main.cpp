@@ -74,7 +74,7 @@ int main(int argc, char **argv) {
 	try {
 		config = app::Config::from_toml(config_path);
 	} catch (const std::exception &e) {
-		spdlog::error("Failed to load config: {}", e.what());
+		spdlog::error("loading config: {}", e.what());
 		return 1;
 	}
 
@@ -201,7 +201,7 @@ int main(int argc, char **argv) {
 
 	auto shm_state_ = shm_state_t::open(config.shm_name());
 	if (not shm_state_) {
-		spdlog::error("failed to open shared memory `{}`. reason: {}", config.shm_name(), shm_state_.error());
+		spdlog::error("opening shared memory `{}`. reason: {}", config.shm_name(), shm_state_.error());
 		return 1;
 	}
 	auto shm_state = std::move(*shm_state_);
@@ -346,11 +346,11 @@ int main(int argc, char **argv) {
 
 	backend.SetOnError([](int error_code, std::string_view message) {
 		if (error_code == 0) {
-			// End of stream (not an error)
-			spdlog::info("backend: {}", message);
+			spdlog::info("backend EOF: {}", message);
 		} else {
-			spdlog::error("backend error ({}): {}", error_code, message);
+			spdlog::error("backend({}): {}", error_code, message);
 		}
+		// stop the looping on any error
 		is_running.store(false, std::memory_order::relaxed);
 	});
 

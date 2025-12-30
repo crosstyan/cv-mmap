@@ -271,6 +271,19 @@ struct OpenCVBackendImpl {
 		metadata.frame_count = static_cast<uint32_t>(frame_index);
 		return 0;
 	}
+
+	error_t ResetFrameCount() {
+		if (finite_source_info) {
+			// Finite source: seek to beginning
+			bool success = cap.set(cv::CAP_PROP_POS_FRAMES, 0);
+			if (!success) {
+				return -EIO;
+			}
+		}
+		// Reset internal frame count for both finite and stream sources
+		metadata.frame_count = 0;
+		return 0;
+	}
 };
 
 // OpenCVBackend public API
@@ -305,5 +318,9 @@ void OpenCVBackend::SetOnError(on_error_fn_t on_error) {
 
 error_t OpenCVBackend::SeekFrame(size_t frame_index) {
 	return impl->SeekFrame(frame_index);
+}
+
+error_t OpenCVBackend::ResetFrameCount() {
+	return impl->ResetFrameCount();
 }
 }

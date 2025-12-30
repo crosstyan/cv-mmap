@@ -47,6 +47,7 @@ struct GStreamerBackend {
 	void SetOnFrame(on_frame_fn_t on_frame);
 	void SetOnError(on_error_fn_t on_error);
 	error_t SeekFrame(size_t frame_index);
+	error_t ResetFrameCount();
 };
 
 } // namespace app::backends

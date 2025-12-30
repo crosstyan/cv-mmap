@@ -139,6 +139,7 @@ struct frame_metadata_t {
 
 	/** properties */
 	uint32_t frame_count;
+	// TODO: uint64_t timestamp_ns;
 	frame_info_t info;
 };
 
