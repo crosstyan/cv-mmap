@@ -72,7 +72,6 @@ target_compile_definitions(app_version
 add_subdirectory(lib/proxy)
 
 ####### BACKENDS #######
-add_subdirectory(backends)
 add_library(app_video_backends STATIC)
 target_include_directories(app_video_backends PUBLIC backends)
 
@@ -93,11 +92,12 @@ if (WITH_GSTREAMER_BACKEND)
         gstreamer-video-1.0>=1.14
         gstreamer-app-1.0>=1.14)
         target_compile_definitions(app_video_backends PRIVATE WITH_GSTREAMER_BACKEND=1) 
-        target_sources(app_video_backends PRIVATE backends/app_backends_gstreamer.cpp)
+        target_sources(app_video_backends PRIVATE backends/app_backends_gst.cpp)
         target_include_directories(app_video_backends PRIVATE ${GST_INCLUDE_DIRS})
         target_link_libraries(app_video_backends PRIVATE ${GST_LIBRARIES})
 endif()
 target_link_libraries(app_video_backends PUBLIC msft_proxy4::proxy)
+target_link_libraries(app_video_backends PUBLIC app_models)
 
 add_library(app INTERFACE)
 target_include_directories(app INTERFACE .)
