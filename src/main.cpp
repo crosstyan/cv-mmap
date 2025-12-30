@@ -337,7 +337,7 @@ int main(int argc, char **argv) {
 			std::array<uint8_t, sync_message_t::size()> buffer;
 			const auto _ret = sync_msg->marshal(buffer);
 			assert(_ret != -1);
-			spdlog::debug("sync_msg hex dump:\n{}", hexdump(buffer));
+			// spdlog::debug("sync_msg hex dump:\n{}", hexdump(buffer));
 			sock.send(zmq::buffer(buffer), zmq::send_flags::none);
 		} catch (const zmq::error_t &e) {
 			spdlog::error("send synchronization message for frame@{}; {}", metadata.frame_count, e.what());
