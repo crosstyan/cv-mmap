@@ -181,7 +181,7 @@ struct GStreamerBackendImpl {
 
 		GstMapInfo map;
 		if (!gst_buffer_map(buffer, &map, GST_MAP_READ)) {
-			spdlog::error("failed to map GStreamer buffer");
+			spdlog::error("maping GStreamer buffer");
 			gst_sample_unref(sample);
 			return false;
 		}
@@ -214,23 +214,23 @@ struct GStreamerBackendImpl {
 		GError *error = nullptr;
 		pipeline      = gst_parse_launch(pipeline_str.c_str(), &error);
 		if (error) {
-			spdlog::error("failed to parse GStreamer pipeline: {}", error->message);
+			spdlog::error("parsing GStreamer pipeline: {}", error->message);
 			on_error(-EINVAL, error->message);
 			g_error_free(error);
 			return;
 		}
 
 		if (!pipeline) {
-			spdlog::error("failed to create GStreamer pipeline");
-			on_error(-ENODEV, "Failed to create GStreamer pipeline");
+			spdlog::error("creating GStreamer pipeline");
+			on_error(-ENODEV, "bad creation GStreamer pipeline");
 			return;
 		}
 
 		// Get appsink element
 		appsink = gst_bin_get_by_name(GST_BIN(pipeline), "sink");
 		if (!appsink) {
-			spdlog::error("failed to find appsink element named 'sink' in pipeline");
-			on_error(-ENOENT, "Failed to find appsink in pipeline");
+			spdlog::error("finding appsink element named 'sink' in pipeline");
+			on_error(-ENOENT, "find appsink in pipeline");
 			gst_object_unref(pipeline);
 			pipeline = nullptr;
 			return;
@@ -245,8 +245,8 @@ struct GStreamerBackendImpl {
 		// This ensures we get raw video with known pixel layouts
 		GstCaps *desired_caps = gst_caps_from_string(ALLOWED_APPSINK_CAPS);
 		if (!desired_caps) {
-			spdlog::error("failed to create GStreamer caps from string");
-			on_error(-EINVAL, "Failed to create caps filter");
+			spdlog::error("creating GStreamer caps from string");
+			on_error(-EINVAL, "creation caps filter");
 			gst_object_unref(appsink);
 			gst_object_unref(pipeline);
 			appsink  = nullptr;
@@ -282,7 +282,7 @@ struct GStreamerBackendImpl {
 		GstStateChangeReturn ret = gst_element_set_state(pipeline, GST_STATE_PLAYING);
 		if (ret == GST_STATE_CHANGE_FAILURE) {
 			spdlog::error("starting GStreamer pipeline");
-			on_error(-EIO, "Failed to start GStreamer pipeline");
+			on_error(-EIO, "bad start GStreamer pipeline");
 			gst_object_unref(appsink);
 			gst_object_unref(pipeline);
 			appsink  = nullptr;
