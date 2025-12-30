@@ -186,7 +186,7 @@ struct OpenCVBackendImpl {
 					} else {
 						// End of non-looping finite source
 						if (on_error) {
-							on_error(0, "End of video stream");
+							on_error(0, "EOF");
 						}
 						break;
 					}

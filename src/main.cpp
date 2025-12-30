@@ -311,7 +311,7 @@ int main(int argc, char **argv) {
 
 		auto fs = frame_state_t::open(shm_state.fd(), total_buffer_size);
 		if (not fs) {
-			spdlog::error("failed to open frame state; {}", fs.error());
+			spdlog::error("open frame state; {}", fs.error());
 			return;
 		}
 		fs->metadata().frame_count_atomic().store(0, std::memory_order::relaxed);
@@ -321,8 +321,8 @@ int main(int argc, char **argv) {
 	});
 
 	backend.SetOnFrame([&frame_state, &sync_msg, &sock](std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata) {
-		if (!frame_state || !sync_msg) {
-			spdlog::error("frame callback invoked before metadata callback");
+		if (not frame_state || not sync_msg) {
+			spdlog::error("[BUG] frame callback invoked before metadata callback (should not happen)");
 			return;
 		}
 
