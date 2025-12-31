@@ -10,24 +10,9 @@
 #include <sys/types.h>
 #include <type_traits>
 #include "app_enum_models.hpp"
+#include "app_common_models.hpp"
 
 namespace app {
-constexpr auto LABEL_LEN_MAX = 24;
-/**
- * @brief offset of the shared memory payload
- * @note the first 256 bytes are reserved for the frame info and other useful metadata
- */
-constexpr auto SHM_PAYLOAD_OFFSET  = 256;
-constexpr auto FRAME_TOPIC_MAGIC   = 0x7d;
-constexpr auto MODULE_STATUS_MAGIC = 0x5a;
-
-constexpr int32_t MODULE_STATUS_ONLINE       = 0xa1;
-constexpr int32_t MODULE_STATUS_OFFLINE      = 0xa0;
-constexpr int32_t MODULE_STATUS_STREAM_RESET = 0xb0;
-
-constexpr uint8_t VERSION_MAJOR = 1;
-constexpr uint8_t VERSION_MINOR = 0;
-
 struct sync_message_t {
 	sync_message_t() {
 		_magic         = FRAME_TOPIC_MAGIC;

@@ -6,7 +6,6 @@
 #include <string>
 #include <expected>
 #include <span>
-#include <thread>
 #include <CLI/CLI.hpp>
 #include <spdlog/spdlog.h>
 #include <zmq.hpp>
@@ -19,6 +18,7 @@
 #include "version/app_version.hpp"
 #include "config/app_config.hpp"
 #include "models/app_metadata_models.hpp"
+#include "models/app_control_msg_models.hpp"
 #include "app_utils.hpp"
 #include "backends/app_backends_facade.hpp"
 #ifdef WITH_BACKEND_OPENCV
@@ -124,6 +124,35 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 	spdlog::info("bond to ZMQ address: `{}`", config.zmq_address());
+
+	// Control socket (REQ/REP pattern)
+	zmq::socket_t control_sock(ctx, zmq::socket_type::rep);
+	deferrer zmq_control_deferrer([&control_sock, zmq_control_address = config.zmq_control_address()] {
+		if (zmq_control_address.starts_with(IPC_PREFIX)) {
+			const auto path = zmq_control_address.substr(std::string_view(IPC_PREFIX).size());
+			const auto err  = unlink(path.c_str());
+			if (err == -1) {
+				spdlog::error("unlink ZMQ control address `{}` because of `{} ({})`", path, strerror(errno), errno);
+			}
+		}
+	});
+
+	try {
+		control_sock.bind(config.zmq_control_address());
+		if (config.zmq_control_address().starts_with(IPC_PREFIX)) {
+			const auto path = config.zmq_control_address().substr(std::string_view(IPC_PREFIX).size());
+			const auto ok   = chmod(path.c_str(), S_IRWXU | S_IRWXG | S_IRWXO);
+			if (ok == -1) {
+				spdlog::warn("chmod ZMQ control address `{}` because of `{}`", path, strerror(errno));
+			}
+		}
+		// Set receive timeout for non-blocking polling behavior
+		control_sock.set(zmq::sockopt::rcvtimeo, 100); // 100ms timeout
+	} catch (const zmq::error_t &e) {
+		spdlog::error("bind to ZMQ control address: `{}`", e.what());
+		return 1;
+	}
+	spdlog::info("bond to ZMQ control address: `{}`", config.zmq_control_address());
 
 	static auto is_running = std::atomic_bool{true};
 
@@ -427,9 +456,93 @@ int main(int argc, char **argv) {
 	backend->Init();
 	send_status(MODULE_STATUS_ONLINE);
 
-	// Wait for shutdown signal
+	const auto send_response = [&control_sock, &config](int32_t command_id, int32_t response_code, std::span<const uint8_t> response_message = {}) {
+		// Small object optimization: use stack buffer for small messages, heap for large ones
+		constexpr size_t SSO_THRESHOLD = 64;
+		const size_t total_size        = sizeof(control_message_response_t) + response_message.size();
+
+		alignas(control_message_response_t) uint8_t stack_buffer[sizeof(control_message_response_t) + SSO_THRESHOLD];
+		std::unique_ptr<uint8_t[]> heap_buffer;
+		uint8_t *buffer_ptr;
+
+		if (response_message.size() <= SSO_THRESHOLD) {
+			buffer_ptr = stack_buffer;
+		} else {
+			heap_buffer = std::make_unique<uint8_t[]>(total_size);
+			buffer_ptr  = heap_buffer.get();
+		}
+
+		auto *response       = new (buffer_ptr) control_message_response_t{};
+		response->command_id = command_id;
+		response->set_label(config.name);
+		response->response_code           = response_code;
+		response->response_message_length = static_cast<uint16_t>(response_message.size());
+		if (!response_message.empty()) {
+			std::copy(response_message.begin(), response_message.end(), response->_response_message_data);
+		}
+		try {
+			control_sock.send(zmq::buffer(buffer_ptr, total_size), zmq::send_flags::none);
+		} catch (const zmq::error_t &e) {
+			spdlog::error("send control response: {}", e.what());
+		}
+	};
+
+	// Main loop: poll for control messages
 	while (is_running.load(std::memory_order::relaxed)) {
-		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		zmq::message_t request;
+		auto result = control_sock.recv(request, zmq::recv_flags::none);
+		if (!result) {
+			// Timeout or no message, continue polling
+			continue;
+		}
+
+		// Process control message
+		if (request.size() < sizeof(control_message_request_t)) {
+			spdlog::warn("received control message too small: {} bytes", request.size());
+			send_response(CONTROL_MSG_CMD_GENERIC, CONTROL_RESPONSE_INVALID_MSG_SIZE);
+			continue;
+		}
+
+		const auto *req = static_cast<const control_message_request_t *>(request.data());
+		if (req->_magic != CONTROL_MESSAGE_REQUEST_MAGIC) {
+			spdlog::warn("received control message with invalid magic: 0x{:02x}", req->_magic);
+			send_response(req->command_id, CONTROL_RESPONSE_INVALID_MAGIC);
+			continue;
+		}
+
+		spdlog::debug("received control message: command_id=0x{:04x}", req->command_id);
+
+		if (req->versions_major != VERSION_MAJOR) {
+			spdlog::warn("received control message with incompatible version: {}.{} (expected {}.x)",
+						 req->versions_major, req->versions_minor, VERSION_MAJOR);
+			send_response(req->command_id, CONTROL_RESPONSE_INVALID_VERSION);
+			continue;
+		}
+
+		if (req->label() != config.name) {
+			spdlog::warn("received control message for different instance: `{}` != `{}`", req->label(), config.name);
+			send_response(req->command_id, CONTROL_RESPONSE_INVALID_LABEL);
+			continue;
+		}
+
+		switch (req->command_id) {
+		case CONTROL_MSG_CMD_RESET_FRAME_COUNT: {
+			spdlog::info("control: RESET_FRAME_COUNT requested");
+			auto err = backend->ResetFrameCount();
+			if (err != backends::ERR_OK) {
+				spdlog::error("resetting frame count: {}", err);
+				send_response(req->command_id, CONTROL_RESPONSE_ERROR);
+			} else {
+				send_status(MODULE_STATUS_STREAM_RESET);
+				send_response(req->command_id, CONTROL_RESPONSE_OK);
+			}
+			break;
+		}
+		default:
+			spdlog::warn("unknown control command: 0x{:04x}", req->command_id);
+			send_response(req->command_id, CONTROL_RESPONSE_UNKNOWN_CMD);
+			break;
+		}
 	}
 
 	backend->Shutdown();

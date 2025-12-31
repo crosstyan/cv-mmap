@@ -66,6 +66,11 @@ struct Config {
 	std::string zmq_address() const {
 		return "ipc:///tmp/" + shm_name();
 	}
+
+	[[nodiscard]]
+	std::string zmq_control_address() const {
+		return "ipc:///tmp/" + shm_name() + "_control";
+	}
 };
 
 /// Convert BackendType to string
