@@ -5,6 +5,10 @@
 #include "app_backends_facade.hpp"
 #include "app_enum_models.hpp"
 
+namespace app {
+struct VideoConfig;
+}
+
 namespace app::backends {
 using opencv_parameter_t = std::variant<std::string, int>;
 
@@ -13,7 +17,7 @@ struct OpenCVBackend {
 	std::unique_ptr<OpenCVBackendImpl> impl;
 
 	OpenCVBackend(opencv_parameter_t parameter,
-				  bool use_finite_as_infinite_stream   = false,
+				  const app::VideoConfig &video_config,
 				  app::VideoCaptureAPIs api_preference = app::VideoCaptureAPIs::CAP_ANY);
 	~OpenCVBackend();
 

@@ -101,6 +101,7 @@ if (NOT WITH_BACKEND_OPENCV AND NOT WITH_BACKEND_GSTREAMER)
 endif()
 target_link_libraries(app_video_backends PUBLIC msft_proxy4::proxy)
 target_link_libraries(app_video_backends PUBLIC app_models)
+target_link_libraries(app_video_backends PUBLIC app_config)
 
 add_library(app INTERFACE)
 target_include_directories(app INTERFACE .)

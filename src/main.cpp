@@ -307,7 +307,7 @@ int main(int argc, char **argv) {
 
 	// Create backend based on config
 	pro::proxy<app::backends::IBackend> backend;
-	switch (config.backend) {
+	switch (config.video.backend) {
 #ifdef WITH_BACKEND_OPENCV
 	case app::BackendType::OpenCV: {
 		if (!config.opencv) {
@@ -316,7 +316,7 @@ int main(int argc, char **argv) {
 		}
 		backend = pro::make_proxy<app::backends::IBackend, app::backends::OpenCVBackend>(
 			config.opencv->parameter,
-			config.use_finite_as_infinite_stream,
+			config.video,
 			config.opencv->api_preference);
 		spdlog::info("using OpenCV backend");
 		break;
@@ -330,7 +330,7 @@ int main(int argc, char **argv) {
 		}
 		backend = pro::make_proxy<app::backends::IBackend, app::backends::GStreamerBackend>(
 			config.gstreamer->pipeline,
-			config.use_finite_as_infinite_stream);
+			config.video);
 		spdlog::info("using GStreamer backend");
 		break;
 	}
@@ -388,16 +388,6 @@ int main(int argc, char **argv) {
 		}
 	});
 
-	backend->SetOnError([](int error_code, std::string_view message) {
-		if (error_code == backends::ERR_EOF) {
-			spdlog::info("backend EOF: {}", message);
-		} else {
-			spdlog::error("backend({}): {}", error_code, message);
-		}
-		// stop the looping on any error
-		is_running.store(false, std::memory_order::relaxed);
-	});
-
 	const auto send_status = [&sock, name = config.name](int32_t status) {
 		try {
 			std::array<uint8_t, module_status_message_t::size()> buffer;
@@ -412,6 +402,27 @@ int main(int argc, char **argv) {
 			spdlog::error("send module status message; {}", e.what());
 		}
 	};
+
+	backend->SetOnError([&backend, &config, send_status](int error_code, std::string_view message) {
+		if (error_code == backends::ERR_EOS) {
+			spdlog::info("backend EOF: {}", message);
+			if (config.video.finite_stream_ending_behavior == app::FiniteStreamEndingBehavior::Loop) {
+				spdlog::info("looping finite stream (encore)");
+				auto err = backend->ResetFrameCount();
+				if (err != backends::ERR_OK) {
+					spdlog::error("resetting frame count for loop: {}", err);
+					is_running.store(false, std::memory_order::relaxed);
+				} else {
+					send_status(MODULE_STATUS_STREAM_RESET);
+				}
+				return;
+			}
+		} else {
+			spdlog::error("backend({}): {}", error_code, message);
+		}
+		// stop the looping on any error (or non-loop EOF)
+		is_running.store(false, std::memory_order::relaxed);
+	});
 
 	backend->Init();
 	send_status(MODULE_STATUS_ONLINE);

@@ -4,6 +4,10 @@
 #include <string>
 #include "app_backends_facade.hpp"
 
+namespace app {
+struct VideoConfig;
+}
+
 namespace app::backends {
 
 struct GStreamerBackendImpl;
@@ -31,8 +35,8 @@ struct GStreamerBackend {
 
 	/// @brief Construct a GStreamer backend with a pipeline string
 	/// @param pipeline The gst-launch-1.0 style pipeline string
-	/// @param use_finite_as_infinite_stream Whether to treat finite source as infinite stream (loop automatically, disable seeking)
-	explicit GStreamerBackend(std::string pipeline, bool use_finite_as_infinite_stream = false);
+	/// @param video_config Video configuration including looping behavior
+	explicit GStreamerBackend(std::string pipeline, const app::VideoConfig &video_config);
 	~GStreamerBackend();
 
 	// Non-copyable, movable

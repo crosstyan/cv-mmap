@@ -10,6 +10,7 @@
 #include "app_backends_gst.hpp"
 #include "app_backends_facade.hpp"
 #include "app_enum_models.hpp"
+#include "app_config.hpp"
 
 namespace app::backends {
 
@@ -77,7 +78,7 @@ struct finite_source_info_t {
 
 struct GStreamerBackendOptions {
 	std::string pipeline;
-	bool use_finite_as_infinite_stream;
+	app::VideoConfig video_config;
 };
 
 struct GStreamerBackendImpl {
@@ -379,7 +380,7 @@ struct GStreamerBackendImpl {
 						 finite_source_info->frame_interval().count(),
 						 finite_source_info->duration_ns / 1e9,
 						 finite_source_info->estimated_frame_count(),
-						 options.use_finite_as_infinite_stream);
+						 options.video_config.use_finite_as_infinite_stream);
 		} else {
 			spdlog::info("infinite source detected (live stream)");
 		}
@@ -420,7 +421,7 @@ struct GStreamerBackendImpl {
 				}
 				case GST_MESSAGE_EOS: {
 					spdlog::info("GStreamer end-of-stream");
-					if (finite_source_info && options.use_finite_as_infinite_stream) {
+					if (finite_source_info && options.video_config.use_finite_as_infinite_stream) {
 						spdlog::info("looping finite source");
 						if (!seek_to_start()) {
 							spdlog::error("seeking to start for looping");
@@ -460,7 +461,7 @@ struct GStreamerBackendImpl {
 				// Check if appsink is EOS
 				if (gst_app_sink_is_eos(GST_APP_SINK(appsink))) {
 					spdlog::info("appsink reached EOS");
-					if (finite_source_info && options.use_finite_as_infinite_stream) {
+					if (finite_source_info && options.video_config.use_finite_as_infinite_stream) {
 						if (!seek_to_start()) {
 							spdlog::error("seeking to start for looping");
 							on_error(-EIO, "bad loop video");
@@ -468,7 +469,7 @@ struct GStreamerBackendImpl {
 						}
 						continue;
 					} else {
-						on_error(ERR_EOF, "EOF");
+						on_error(ERR_EOS, "EOF");
 						return;
 					}
 				}
@@ -516,7 +517,7 @@ struct GStreamerBackendImpl {
 		if (!finite_source_info) {
 			return -EOPNOTSUPP;
 		}
-		if (options.use_finite_as_infinite_stream) {
+		if (options.video_config.use_finite_as_infinite_stream) {
 			return -EOPNOTSUPP;
 		}
 		if (!pipeline) {
@@ -544,7 +545,7 @@ struct GStreamerBackendImpl {
 	}
 
 	error_t ResetFrameCount() {
-		if (finite_source_info && !options.use_finite_as_infinite_stream) {
+		if (finite_source_info && !options.video_config.use_finite_as_infinite_stream) {
 			// Finite source: seek to beginning
 			if (!pipeline) {
 				return -ENODEV;
@@ -561,10 +562,10 @@ struct GStreamerBackendImpl {
 
 // GStreamerBackend public API
 
-GStreamerBackend::GStreamerBackend(std::string pipeline, bool use_finite_as_infinite_stream)
+GStreamerBackend::GStreamerBackend(std::string pipeline, const app::VideoConfig &video_config)
 	: impl(std::make_unique<GStreamerBackendImpl>(GStreamerBackendOptions{
-		  .pipeline                      = std::move(pipeline),
-		  .use_finite_as_infinite_stream = use_finite_as_infinite_stream,
+		  .pipeline     = std::move(pipeline),
+		  .video_config = video_config,
 	  })) {}
 
 GStreamerBackend::~GStreamerBackend() = default;

@@ -9,6 +9,7 @@
 #include "app_backends_opencv.hpp"
 #include "app_backends_facade.hpp"
 #include "app_enum_models.hpp"
+#include "app_config.hpp"
 
 namespace app::backends {
 
@@ -23,7 +24,7 @@ struct finite_source_info_t {
 
 struct OpenCVBackendOptions {
 	opencv_parameter_t parameter;
-	bool use_finite_as_infinite_stream;
+	app::VideoConfig video_config;
 	cv::VideoCaptureAPIs api_preference;
 };
 
@@ -124,7 +125,7 @@ struct OpenCVBackendImpl {
 						 finite_source_info->fps,
 						 finite_source_info->frame_interval().count(),
 						 finite_source_info->frame_count,
-						 options.use_finite_as_infinite_stream);
+						 options.video_config.use_finite_as_infinite_stream);
 		} else {
 			spdlog::info("infinite source detected (live stream)");
 		}
@@ -194,13 +195,13 @@ struct OpenCVBackendImpl {
 			if (frame.empty()) {
 				if (finite_source_info) {
 					spdlog::info("reached end of finite video source");
-					if (options.use_finite_as_infinite_stream) {
+					if (options.video_config.use_finite_as_infinite_stream) {
 						reset_video_position();
 						consecutive_empty_frames = 0;
 						continue;
 					} else {
 						// End of non-looping finite source
-						on_error(ERR_EOF, "EOF");
+						on_error(ERR_EOS, "EOF");
 						break;
 					}
 				} else {
@@ -271,7 +272,7 @@ struct OpenCVBackendImpl {
 		if (!finite_source_info) {
 			return -EOPNOTSUPP;
 		}
-		if (options.use_finite_as_infinite_stream) {
+		if (options.video_config.use_finite_as_infinite_stream) {
 			return -EOPNOTSUPP;
 		}
 		if (frame_index >= finite_source_info->frame_count) {
@@ -286,7 +287,7 @@ struct OpenCVBackendImpl {
 	}
 
 	error_t ResetFrameCount() {
-		if (finite_source_info && !options.use_finite_as_infinite_stream) {
+		if (finite_source_info && !options.video_config.use_finite_as_infinite_stream) {
 			// Finite source: seek to beginning
 			bool success = cap.set(cv::CAP_PROP_POS_FRAMES, 0);
 			if (!success) {
@@ -302,11 +303,11 @@ struct OpenCVBackendImpl {
 // OpenCVBackend public API
 
 OpenCVBackend::OpenCVBackend(std::variant<std::string, int> parameter,
-							 bool use_finite_as_infinite_stream,
+							 const app::VideoConfig &video_config,
 							 app::VideoCaptureAPIs api_preference) : impl(std::make_unique<OpenCVBackendImpl>(OpenCVBackendOptions{
-																		 .parameter                     = std::move(parameter),
-																		 .use_finite_as_infinite_stream = use_finite_as_infinite_stream,
-																		 .api_preference                = static_cast<cv::VideoCaptureAPIs>(api_preference),
+																		 .parameter      = std::move(parameter),
+																		 .video_config   = video_config,
+																		 .api_preference = static_cast<cv::VideoCaptureAPIs>(api_preference),
 																	 })) {}
 OpenCVBackend::~OpenCVBackend() = default;
 void OpenCVBackend::Init() {

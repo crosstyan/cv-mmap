@@ -13,6 +13,11 @@ enum class BackendType {
 	GStreamer,
 };
 
+enum class FiniteStreamEndingBehavior {
+	Stop,
+	Loop,
+};
+
 /// OpenCV-specific configuration
 struct OpenCVConfig {
 	/// pipeline string or device index
@@ -27,13 +32,19 @@ struct GStreamerConfig {
 	std::string pipeline;
 };
 
+struct VideoConfig {
+	/// backend type
+	BackendType backend{BackendType::OpenCV};
+	/// treat finite source as infinite stream (loop automatically, disable seeking)
+	bool use_finite_as_infinite_stream{false};
+	FiniteStreamEndingBehavior finite_stream_ending_behavior{FiniteStreamEndingBehavior::Stop};
+};
+
 struct Config {
 	/// name of cvmmap server instance
 	std::string name;
-	/// backend type: opencv or gstreamer
-	BackendType backend = BackendType::OpenCV;
-	/// treat finite source as infinite stream (loop automatically, disable seeking)
-	bool use_finite_as_infinite_stream = false;
+	/// video capture configuration
+	VideoConfig video;
 	/// OpenCV-specific config (used when backend == OpenCV)
 	std::optional<OpenCVConfig> opencv;
 	/// GStreamer-specific config (used when backend == GStreamer)
@@ -61,5 +72,10 @@ struct Config {
 std::string_view to_string(BackendType backend);
 /// Parse BackendType from string
 BackendType backend_from_string(std::string_view s);
+
+/// Convert FiniteStreamEndingBehavior to string
+std::string_view to_string(FiniteStreamEndingBehavior behavior);
+/// Parse FiniteStreamEndingBehavior from string
+FiniteStreamEndingBehavior finite_stream_ending_behavior_from_string(std::string_view s);
 
 }

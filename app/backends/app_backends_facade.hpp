@@ -12,7 +12,7 @@ namespace app::backends {
 using error_t = int;
 
 constexpr error_t ERR_OK  = 0;
-constexpr error_t ERR_EOF = ERR_OK;
+constexpr error_t ERR_EOS = ERR_OK;
 
 /// @brief Callback invoked once when metadata is available (first frame captured)
 using on_metadata_fn_t = std::move_only_function<void(const frame_metadata_t &metadata)>;

@@ -26,15 +26,38 @@ BackendType backend_from_string(std::string_view s) {
 	throw invalid_argument("unknown backend type: " + std::string(s));
 }
 
+std::string_view to_string(FiniteStreamEndingBehavior behavior) {
+	switch (behavior) {
+	case FiniteStreamEndingBehavior::Stop:
+		return "stop";
+	case FiniteStreamEndingBehavior::Loop:
+		return "loop";
+	default:
+		return "unknown";
+	}
+}
+
+FiniteStreamEndingBehavior finite_stream_ending_behavior_from_string(std::string_view s) {
+	if (s == "stop" || s == "Stop") {
+		return FiniteStreamEndingBehavior::Stop;
+	} else if (s == "loop" || s == "Loop") {
+		return FiniteStreamEndingBehavior::Loop;
+	}
+	throw invalid_argument("unknown finite_stream_ending_behavior: " + std::string(s));
+}
+
 Config Config::Default() {
 	return {
-		.name                          = "default",
-		.backend                       = BackendType::GStreamer,
-		.use_finite_as_infinite_stream = false,
-		.opencv                        = std::nullopt,
-		.gstreamer                     = GStreamerConfig{
-								.pipeline = "videotestsrc ! timeoverlay ! videoconvert ! video/x-raw,format=BGR ! appsink name=opencvsink",
-        },
+		.name  = "default",
+		.video = VideoConfig{
+			.backend                       = BackendType::GStreamer,
+			.use_finite_as_infinite_stream = false,
+			.finite_stream_ending_behavior = FiniteStreamEndingBehavior::Stop,
+		},
+		.opencv    = std::nullopt,
+		.gstreamer = GStreamerConfig{
+			.pipeline = "videotestsrc ! timeoverlay ! videoconvert ! video/x-raw,format=BGR ! appsink name=opencvsink",
+		},
 	};
 }
 
@@ -60,13 +83,20 @@ Config Config::from_toml(const std::filesystem::path &path) {
 	if (auto video = tbl["video"].as_table(); video) {
 		// backend
 		if (auto val = (*video)["backend"].value<std::string>(); val) {
-			config.backend = backend_from_string(*val);
+			config.video.backend = backend_from_string(*val);
 		} else {
-			config.backend = BackendType::OpenCV; // default
+			config.video.backend = BackendType::OpenCV; // default
 		}
 
 		// use_finite_as_infinite_stream
-		config.use_finite_as_infinite_stream = (*video)["use_finite_as_infinite_stream"].value_or(false);
+		config.video.use_finite_as_infinite_stream = (*video)["use_finite_as_infinite_stream"].value_or(false);
+
+		// finite_stream_ending_behavior
+		if (auto val = (*video)["finite_stream_ending_behavior"].value<std::string>(); val) {
+			config.video.finite_stream_ending_behavior = finite_stream_ending_behavior_from_string(*val);
+		} else {
+			config.video.finite_stream_ending_behavior = FiniteStreamEndingBehavior::Stop;
+		}
 	}
 
 	// [opencv] section
@@ -111,10 +141,10 @@ Config Config::from_toml(const std::filesystem::path &path) {
 	}
 
 	// Validate: ensure the selected backend has its config
-	if (config.backend == BackendType::OpenCV && !config.opencv) {
+	if (config.video.backend == BackendType::OpenCV && !config.opencv) {
 		throw invalid_argument("[opencv] section is required when backend is 'opencv'");
 	}
-	if (config.backend == BackendType::GStreamer && !config.gstreamer) {
+	if (config.video.backend == BackendType::GStreamer && !config.gstreamer) {
 		throw invalid_argument("[gstreamer] section is required when backend is 'gstreamer'");
 	}
 
@@ -126,8 +156,9 @@ std::string Config::to_toml() const {
 	ss << "name = \"" << name << "\"\n\n";
 
 	ss << "[video]\n";
-	ss << "backend = \"" << to_string(backend) << "\"\n";
-	ss << "use_finite_as_infinite_stream = " << (use_finite_as_infinite_stream ? "true" : "false") << "\n\n";
+	ss << "backend = \"" << to_string(video.backend) << "\"\n";
+	ss << "use_finite_as_infinite_stream = " << (video.use_finite_as_infinite_stream ? "true" : "false") << "\n";
+	ss << "finite_stream_ending_behavior = \"" << to_string(video.finite_stream_ending_behavior) << "\"\n\n";
 
 	if (opencv) {
 		ss << "[opencv]\n";
