@@ -27,6 +27,8 @@ from .msg import (
     CONTROL_MSG_CMD_GENERIC,
     CONTROL_MSG_CMD_RESET_FRAME_COUNT,
     CONTROL_RESPONSE_OK,
+    MODULE_STATUS_OFFLINE,
+    MODULE_STATUS_STREAM_RESET,
 )
 from .shm import SharedMemory
 
@@ -70,12 +72,14 @@ class CvMmapClient:
         https://stackoverflow.com/questions/57901180/only-keep-latest-multipart-message-in-subscriber-with-pyzmq-pub-sub-socket
         """
         self._sock.subscribe(bytes([FRAME_TOPIC_MAGIC]))
+        self._sock.subscribe(bytes([MODULE_STATUS_MAGIC]))
 
     def _unsubscribe(self):
         """
         manually trigger the un-subscription to the topic.
         """
         self._sock.unsubscribe(bytes([FRAME_TOPIC_MAGIC]))
+        self._sock.unsubscribe(bytes([MODULE_STATUS_MAGIC]))
 
     def __init__(
         self,
@@ -170,6 +174,13 @@ class CvMmapClient:
     async def __aiter__(self) -> AsyncGenerator[tuple[NDArray, FrameMetadata], None]:
         """
         Asynchronous generator that yields numpy array of image.
+
+        Raises
+        ------
+        StopAsyncIteration
+            When module goes offline or stream is reset.
+        RuntimeError
+            When label mismatch or other errors occur.
         """
         while True:
             events = await self._poller.poll()
@@ -178,7 +189,34 @@ class CvMmapClient:
                     message = await socket.recv()
                     message = cast(bytes, message)
 
-                    try:
+                    # Check the magic byte to determine message type
+                    if len(message) < 1:
+                        raise RuntimeError("Received empty message")
+
+                    magic = message[0]
+
+                    if magic == MODULE_STATUS_MAGIC:
+                        # Handle module status message
+                        status_msg = ModuleStatusMessage.unmarshal(message)
+                        if status_msg.module_status in (
+                            MODULE_STATUS_OFFLINE,
+                            MODULE_STATUS_STREAM_RESET,
+                        ):
+                            status_name = (
+                                "OFFLINE"
+                                if status_msg.module_status == MODULE_STATUS_OFFLINE
+                                else "STREAM_RESET"
+                            )
+                            getLogger(__name__).info(
+                                "Module '%s' status: %s, stopping generator",
+                                status_msg.label,
+                                status_name,
+                            )
+                            return
+                        continue
+
+                    if magic == FRAME_TOPIC_MAGIC:
+                        # Handle sync message (frame notification)
                         sync_message = SyncMessage.unmarshal(message)
                         self._ensure_memory()
                         assert self._image_buffer is not None
@@ -190,9 +228,8 @@ class CvMmapClient:
 
                         metadata = self._read_metadata_unchecked()
                         yield self._image_buffer, metadata
-                    except StructError as e:
-                        getLogger(__name__).exception(e)
-                        continue
+                    else:
+                        raise RuntimeError(f"Unknown message magic: {magic:#x}")
 
 
 class CvMmapConfig(TypedDict):

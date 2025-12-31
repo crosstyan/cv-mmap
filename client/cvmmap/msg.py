@@ -177,20 +177,6 @@ class ModuleStatusMessage:
     def size() -> int:
         return struct.calcsize(ModuleStatusMessage.PACK_FMT)
 
-    @staticmethod
-    def make_online(label: str) -> "ModuleStatusMessage":
-        return ModuleStatusMessage(label=label, module_status=MODULE_STATUS_ONLINE)
-
-    @staticmethod
-    def make_offline(label: str) -> "ModuleStatusMessage":
-        return ModuleStatusMessage(label=label, module_status=MODULE_STATUS_OFFLINE)
-
-    @staticmethod
-    def make_frame_reset(label: str) -> "ModuleStatusMessage":
-        return ModuleStatusMessage(
-            label=label, module_status=MODULE_STATUS_STREAM_RESET
-        )
-
     def marshal(self) -> bytes:
         """Marshal the ModuleStatusMessage to bytes matching the C++ format"""
         if len(self.label) > LABEL_LEN_MAX:
