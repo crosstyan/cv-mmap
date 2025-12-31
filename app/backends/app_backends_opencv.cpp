@@ -202,6 +202,9 @@ struct OpenCVBackendImpl {
 					} else {
 						// End of non-looping finite source
 						on_error(ERR_EOS, "EOF");
+						if (options.video_config.finite_stream_ending_behavior == app::FiniteStreamEndingBehavior::Loop) {
+							continue;
+						}
 						break;
 					}
 				} else {

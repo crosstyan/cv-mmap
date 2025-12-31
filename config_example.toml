@@ -6,8 +6,9 @@
 name = 'example'
 [video]
 # opencv | gstreamer
-backend = 'gstreamer'
+backend = 'opencv'
 use_finite_as_infinite_stream = false
+finite_stream_ending_behavior = 'loop' # stop | loop
 [opencv]
 parameter = "example.mkv"
 [gstreamer]
