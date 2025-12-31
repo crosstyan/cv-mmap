@@ -306,32 +306,6 @@ class CvMmapRequestClient:
             timeout_ms=timeout_ms,
         )
 
-    async def send_generic_command(
-        self,
-        data: bytes = b"",
-        timeout_ms: int = 5000,
-    ) -> ControlMessageResponse:
-        """
-        Send a generic command with optional data.
-
-        Parameters
-        ----------
-        data
-            Optional data to include in the request.
-        timeout_ms
-            Timeout in milliseconds to wait for response.
-
-        Returns
-        -------
-        ControlMessageResponse
-            The response from the server.
-        """
-        return await self.send_request(
-            command_id=CONTROL_MSG_CMD_GENERIC,
-            request_message=data,
-            timeout_ms=timeout_ms,
-        )
-
     def close(self):
         """Close the ZMQ socket."""
         if self._sock is not None:
