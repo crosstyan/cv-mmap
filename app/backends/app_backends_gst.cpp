@@ -13,6 +13,7 @@
 #include "app_config.hpp"
 
 namespace app::backends {
+static constexpr const char *APP_SINK_NAME = "sink";
 
 /// @brief Allowed caps for appsink - only accept BGR, RGB, BGRA, RGBA, or GRAY8 in video/x-raw format
 /// @note This ensures we get raw video frames with known pixel formats that we can handle
@@ -262,7 +263,7 @@ struct GStreamerBackendImpl {
 		}
 
 		// Check if upstream can provide the formats we want
-		GstPad *sink_pad = gst_element_get_static_pad(appsink, "sink");
+		GstPad *sink_pad = gst_element_get_static_pad(appsink, APP_SINK_NAME);
 		if (sink_pad) {
 			GstCaps *peer_caps = gst_pad_peer_query_caps(sink_pad, nullptr);
 			if (peer_caps) {
