@@ -1,3 +1,4 @@
+import datetime
 import struct
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -563,6 +564,11 @@ class FrameMetadata:
         # magic(8) + versions(2) + reserved(2 for alignment) + frame_count(4) + timestamp_ns(8) + FrameInfo
         return CV_MMAP_MAGIC_LEN + 4 + 4 + 8 + FrameInfo.size()
 
+    @property
+    def timestamp(self) -> datetime.datetime:
+        """Get timestamp as datetime object"""
+        return datetime.datetime.fromtimestamp(self.timestamp_ns / 1e9)
+
     @staticmethod
     def unmarshal(data: bytes) -> "FrameMetadata":
         """
@@ -572,7 +578,7 @@ class FrameMetadata:
         The caller should validate the magic and pass the remaining data.
         """
         # Parse: major(B) + minor(B) + reserved[2](2B for alignment) + frame_count(I) + timestamp_ns(Q)
-        header_fmt = "=BBBBI"
+        header_fmt = "=BBHIQ"
         header_size = struct.calcsize(header_fmt)
 
         if len(data) < header_size:
@@ -582,19 +588,12 @@ class FrameMetadata:
             versions_major,
             versions_minor,
             _reserved_0,
-            _padding,
             frame_count,
+            timestamp_ns,
         ) = struct.unpack(header_fmt, data[:header_size])
 
-        # Parse timestamp_ns
-        timestamp_offset = header_size
-        timestamp_size = struct.calcsize("=Q")
-        timestamp_ns = struct.unpack(
-            "=Q", data[timestamp_offset : timestamp_offset + timestamp_size]
-        )[0]
-
         # Parse FrameInfo
-        info_offset = timestamp_offset + timestamp_size
+        info_offset = header_size
         info = FrameInfo.unmarshal(data[info_offset:])
 
         return FrameMetadata(

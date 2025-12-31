@@ -199,7 +199,7 @@ struct frame_metadata_t {
 	uint8_t magic[CV_MMAP_MAGIC.size()];
 	uint8_t versions_major{VERSION_MAJOR};
 	uint8_t versions_minor{VERSION_MINOR};
-	uint8_t _reserved_0[4 - 3];
+	uint8_t _reserved_0[2];
 	uint32_t frame_count;
 	uint64_t timestamp_ns;
 	frame_info_t info;
