@@ -490,7 +490,17 @@ int main(int argc, char **argv) {
 	// Main loop: poll for control messages
 	while (is_running.load(std::memory_order::relaxed)) {
 		zmq::message_t request;
-		auto result = control_sock.recv(request, zmq::recv_flags::none);
+		zmq::recv_result_t result;
+		try {
+			result = control_sock.recv(request, zmq::recv_flags::none);
+		} catch (const zmq::error_t &e) {
+			if (e.num() == EINTR) {
+				// Interrupted by signal (e.g., SIGINT), check is_running and continue
+				continue;
+			}
+			spdlog::error("recv control message: {}", e.what());
+			continue;
+		}
 		if (!result) {
 			// Timeout or no message, continue polling
 			continue;
