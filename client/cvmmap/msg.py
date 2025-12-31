@@ -522,15 +522,10 @@ class FrameMetadata:
         uint8_t magic[8]         (8 bytes, "CV-MMAP\0")
         uint8_t versions_major   (1 byte)
         uint8_t versions_minor   (1 byte)
-        uint8_t _reserved_0[1]   (1 byte, but actually 4-3=1 in C++)
+        uint8_t _reserved_0[2]   (2 bytes)
         uint32_t frame_count     (4 bytes)
         uint64_t timestamp_ns    (8 bytes)
         frame_info_t info        (12 bytes)
-
-    Note: The C++ code has `uint8_t _reserved_0[4 - 3]` which equals 1 byte,
-    but due to alignment for uint32_t frame_count, there might be padding.
-    Looking at the structure, after versions (2 bytes) + reserved (1 byte) = 3 bytes,
-    we need 1 more byte for 4-byte alignment before frame_count.
     """
 
     frame_count: int
@@ -540,10 +535,9 @@ class FrameMetadata:
     versions_minor: int = VERSION_MINOR
 
     # Pack format (after 8-byte magic):
-    # major(B) + minor(B) + reserved(B) + padding(B) + frame_count(I) + timestamp_ns(Q) + FrameInfo
-    # Note: Need 2 bytes of padding after versions to align frame_count to 4-byte boundary
-    HEADER_FMT = "=BBBBI"  # major, minor, reserved, padding, frame_count
-    TIMESTAMP_FMT = "=Q"  # timestamp_ns
+    # major(B) + minor(B) + reserved[2](H) + frame_count(I) + timestamp_ns(Q) + FrameInfo
+    # Note: 2 bytes of reserved after versions to align frame_count to 4-byte boundary
+    HEADER_FMT = "=BBHIQ"  # major, minor, reserved[2], frame_count, timestamp_ns
 
     @staticmethod
     def size() -> int:
@@ -563,9 +557,8 @@ class FrameMetadata:
         Note: This expects data starting AFTER the magic bytes (offset from CV_MMAP_MAGIC_LEN).
         The caller should validate the magic and pass the remaining data.
         """
-        # Parse: major(B) + minor(B) + reserved[2](2B for alignment) + frame_count(I) + timestamp_ns(Q)
-        header_fmt = "=BBHIQ"
-        header_size = struct.calcsize(header_fmt)
+        # Parse: major(B) + minor(B) + reserved[2](H) + frame_count(I) + timestamp_ns(Q)
+        header_size = struct.calcsize(FrameMetadata.HEADER_FMT)
 
         if len(data) < header_size:
             raise ValueError(f"Data too short for header: {len(data)} < {header_size}")
@@ -576,7 +569,7 @@ class FrameMetadata:
             _reserved_0,
             frame_count,
             timestamp_ns,
-        ) = struct.unpack(header_fmt, data[:header_size])
+        ) = struct.unpack(FrameMetadata.HEADER_FMT, data[:header_size])
 
         # Parse FrameInfo
         info_offset = header_size
