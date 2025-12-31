@@ -13,10 +13,37 @@ import zmq
 from zmq import Socket
 from zmq.asyncio import Context, Poller
 
-from .msg import SyncMessage, FrameMetadata, FRAME_TOPIC_MAGIC
+from .msg import (
+    SyncMessage,
+    FrameMetadata,
+    FrameInfo,
+    ModuleStatusMessage,
+    ControlMessageRequest,
+    ControlMessageResponse,
+    FRAME_TOPIC_MAGIC,
+    MODULE_STATUS_MAGIC,
+    CV_MMAP_MAGIC,
+    CV_MMAP_MAGIC_LEN,
+    CONTROL_MSG_CMD_GENERIC,
+    CONTROL_MSG_CMD_RESET_FRAME_COUNT,
+    CONTROL_RESPONSE_OK,
+)
 from .shm import SharedMemory
 
 NDArray = np.ndarray
+
+# Re-export message types for convenience
+__all__ = [
+    "CvMmapClient",
+    "CvMmapRequestClient",
+    "CvMmapConfig",
+    "SyncMessage",
+    "FrameMetadata",
+    "FrameInfo",
+    "ModuleStatusMessage",
+    "ControlMessageRequest",
+    "ControlMessageResponse",
+]
 
 
 class CvMmapClient:
@@ -90,17 +117,13 @@ class CvMmapClient:
 
         ```
         0-7   : "CV-MMAP\0" magic bytes
-        8-…  : FrameMetadata packed struct (frame_count + FrameInfo)
+        8-…  : FrameMetadata packed struct (versions + frame_count + timestamp_ns + FrameInfo)
         ```
 
         This function validates the magic prefix and then uses the Python
         struct definitions to unpack the metadata that follows.
         """
         assert self._shm is not None, "Shared memory not attached"
-
-        # The shared-memory metadata starts with the 8-byte magic string
-        # "CV-MMAP\0" followed by the packed FrameMetadata bytes.
-        from .msg import CV_MMAP_MAGIC, CV_MMAP_MAGIC_LEN
 
         # Validate magic
         magic = bytes(self._shm.buf[:CV_MMAP_MAGIC_LEN])
@@ -110,17 +133,16 @@ class CvMmapClient:
             )
 
         start = CV_MMAP_MAGIC_LEN
-        end = start + FrameMetadata.size()
+        end = start + FrameMetadata.size() - CV_MMAP_MAGIC_LEN
         return FrameMetadata.unmarshal(bytes(self._shm.buf[start:end]))
-    
+
     def _read_metadata_unchecked(self) -> FrameMetadata:
         """
         Read and decode the `FrameMetadata` structure from shared memory directly without checking the magic
         """
         assert self._shm is not None, "Shared memory not attached"
-        from .msg import CV_MMAP_MAGIC_LEN
         start = CV_MMAP_MAGIC_LEN
-        end = start + FrameMetadata.size()
+        end = start + FrameMetadata.size() - CV_MMAP_MAGIC_LEN
         return FrameMetadata.unmarshal(bytes(self._shm.buf[start:end]))
 
     def _ensure_memory(self):
@@ -178,3 +200,142 @@ class CvMmapConfig(TypedDict):
     # Optional overrides for non-standard setups
     shm_name: Optional[str]
     zmq_addr: Optional[str]
+
+
+class CvMmapRequestClient:
+    """
+    A client for sending control requests to the CvMmap server.
+
+    Uses ZMQ REQ/REP pattern to send control messages and receive responses.
+    """
+
+    _name: str
+    _shm_name: str
+    _zmq_addr: str
+
+    _ctx: Context
+    _sock: Socket
+
+    def __init__(
+        self,
+        name: str,
+        zmq_addr: Optional[str] = None,
+    ):
+        """Create a CvMmapRequestClient.
+
+        Parameters
+        ----------
+        name
+            Base name of the video source (e.g. "default"). Used as the label
+            in control messages.
+        zmq_addr
+            Optional ZMQ REQ socket address. If not provided, defaults to
+            ``ipc:///tmp/cvmmap_{name}_req`` by convention.
+        """
+        self._name = name
+        self._shm_name = f"cvmmap_{name}"
+        self._zmq_addr = zmq_addr or f"ipc:///tmp/{self._shm_name}_req"
+
+        self._ctx = Context.instance()
+        self._sock = self._ctx.socket(zmq.REQ)
+        self._sock.connect(self._zmq_addr)
+
+    async def send_request(
+        self,
+        command_id: int,
+        request_message: bytes = b"",
+        timeout_ms: int = 5000,
+    ) -> ControlMessageResponse:
+        """
+        Send a control request and wait for response.
+
+        Parameters
+        ----------
+        command_id
+            The command ID to send.
+        request_message
+            Optional additional data to include in the request.
+        timeout_ms
+            Timeout in milliseconds to wait for response.
+
+        Returns
+        -------
+        ControlMessageResponse
+            The response from the server.
+
+        Raises
+        ------
+        TimeoutError
+            If no response is received within the timeout.
+        """
+        request = ControlMessageRequest(
+            label=self._name,
+            command_id=command_id,
+            request_message=request_message,
+        )
+
+        await self._sock.send(request.marshal())
+
+        # Poll with timeout
+        poller = Poller()
+        poller.register(self._sock, zmq.POLLIN)
+        events = await poller.poll(timeout=timeout_ms)
+
+        if not events:
+            raise TimeoutError(f"No response received within {timeout_ms}ms")
+
+        response_data = await self._sock.recv()
+        return ControlMessageResponse.unmarshal(cast(bytes, response_data))
+
+    async def reset_frame_count(self, timeout_ms: int = 5000) -> ControlMessageResponse:
+        """
+        Send a reset frame count command.
+
+        Parameters
+        ----------
+        timeout_ms
+            Timeout in milliseconds to wait for response.
+
+        Returns
+        -------
+        ControlMessageResponse
+            The response from the server.
+        """
+        return await self.send_request(
+            command_id=CONTROL_MSG_CMD_RESET_FRAME_COUNT,
+            timeout_ms=timeout_ms,
+        )
+
+    async def send_generic_command(
+        self,
+        data: bytes = b"",
+        timeout_ms: int = 5000,
+    ) -> ControlMessageResponse:
+        """
+        Send a generic command with optional data.
+
+        Parameters
+        ----------
+        data
+            Optional data to include in the request.
+        timeout_ms
+            Timeout in milliseconds to wait for response.
+
+        Returns
+        -------
+        ControlMessageResponse
+            The response from the server.
+        """
+        return await self.send_request(
+            command_id=CONTROL_MSG_CMD_GENERIC,
+            request_message=data,
+            timeout_ms=timeout_ms,
+        )
+
+    def close(self):
+        """Close the ZMQ socket."""
+        if self._sock is not None:
+            self._sock.close()
+
+    def __del__(self):
+        self.close()
