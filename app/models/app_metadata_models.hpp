@@ -136,8 +136,9 @@ struct frame_info_t {
 	uint8_t channels;
 	/// CV_8U, CV_8S, CV_16U, CV_16S, CV_16F, CV_32S, CV_32F, CV_64F
 	Depth depth;
-	uint32_t buffer_size;
 	PixelFormat pixel_format;
+	uint8_t _reserved_0[1]; // padding
+	uint32_t buffer_size;
 	/** end of properties */
 
 	/// @brief pixel size in bytes
