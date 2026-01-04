@@ -348,8 +348,8 @@ struct GStreamerBackendImpl {
 					   .height       = static_cast<uint16_t>(height),
 					   .channels     = channels,
 					   .depth        = Depth::U8, // GStreamer video/x-raw uses 8-bit per channel
-					   .buffer_size  = buf_size,
 					   .pixel_format = *pixel_format,
+					   .buffer_size  = buf_size,
             };
 
 			spdlog::info("GStreamer frame info: {}x{}x{}; format={}; bufferSize={}; pixelFormat={}",

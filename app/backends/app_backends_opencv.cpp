@@ -147,8 +147,8 @@ struct OpenCVBackendImpl {
 					  .height       = static_cast<uint16_t>(frame.rows),
 					  .channels     = static_cast<uint8_t>(frame.channels()),
 					  .depth        = static_cast<Depth>(frame.depth()),
-					  .buffer_size  = static_cast<uint32_t>(frame.total() * frame.elemSize()),
 					  .pixel_format = pixel_format,
+					  .buffer_size  = static_cast<uint32_t>(frame.total() * frame.elemSize()),
         };
 
 		spdlog::info("initial frame info: {}x{}x{}; "
