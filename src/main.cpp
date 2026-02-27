@@ -1,5 +1,8 @@
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <cstdint>
 #include <filesystem>
 #include <csignal>
 #include <string_view>
@@ -155,11 +158,16 @@ int main(int argc, char **argv) {
 	spdlog::info("bond to ZMQ control address: `{}`", config.zmq_control_address());
 
 	static auto is_running = std::atomic_bool{true};
+	static auto sigint_count = std::atomic_int{0};
 
 	/**
 	 * @brief signal handler for SIGINT
 	 */
 	constexpr auto sigint_handler = [](int) {
+		if (sigint_count.fetch_add(1, std::memory_order::relaxed) > 0) {
+			spdlog::critical("SIGINT received twice, force killing...");
+			std::exit(1);
+		}
 		spdlog::info("SIGINT received, stopping...");
 		is_running.store(false, std::memory_order::relaxed);
 	};
