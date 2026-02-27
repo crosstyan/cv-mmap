@@ -5,18 +5,19 @@ import anyio
 import cv2
 
 # note that no beginning slash is needed
-NAME = "camera_5602"
 
-async def main():
-    client = CvMmapClient(NAME)
+async def main(name:str):
+    client = CvMmapClient(name)
     logger.info("created")
     async for im, meta in client:
         cv2.imshow("image", im)
         cv2.waitKey(1)
 
 
-def run_main():
-    anyio.run(main)
+@click.command()
+@click.argument("name", required=True, type=str)
+def run_main(name: str):
+    anyio.run(main, name)
 
 
 if __name__ == "__main__":
