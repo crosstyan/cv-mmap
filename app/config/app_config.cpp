@@ -1,7 +1,25 @@
 #include "app_config.hpp"
+#include <algorithm>
 #include <sstream>
 #include <toml++/toml.hpp>
 #include <spdlog/spdlog.h>
+
+namespace {
+/**
+ * @brief Normalize a pipeline string by replacing newlines with spaces.
+ *
+ * GStreamer's gst_parse_launch doesn't handle multiline strings properly.
+ * This function converts newlines to spaces to make the pipeline valid.
+ *
+ * @param pipeline The pipeline string potentially containing newlines
+ * @return std::string The normalized single-line pipeline string
+ */
+std::string normalize_pipeline_string(std::string pipeline) {
+	pipeline.erase(std::remove(pipeline.begin(), pipeline.end(), '\r'), pipeline.end());
+	std::replace(pipeline.begin(), pipeline.end(), '\n', ' ');
+	return pipeline;
+}
+} // namespace
 
 namespace app {
 using invalid_argument = std::invalid_argument;
@@ -132,7 +150,7 @@ Config Config::from_toml(const std::filesystem::path &path) {
 
 		// pipeline (required)
 		if (auto val = (*gst)["pipeline"].value<std::string>(); val) {
-			gst_cfg.pipeline = *val;
+			gst_cfg.pipeline = normalize_pipeline_string(*val);
 		} else {
 			throw invalid_argument("gstreamer.pipeline is required when [gstreamer] section exists");
 		}
@@ -179,4 +197,4 @@ std::string Config::to_toml() const {
 
 	return ss.str();
 }
-}
+} // namespace app
