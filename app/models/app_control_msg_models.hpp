@@ -43,6 +43,7 @@ struct control_message_request_t {
 	uint16_t request_message_length;
 	uint8_t _request_message_data[];
 };
+static_assert(sizeof(control_message_request_t) == 36, "control_message_request_t must be 36 bytes");
 
 struct control_message_response_t {
 	[[nodiscard]]
@@ -82,6 +83,7 @@ struct control_message_response_t {
 	uint16_t response_message_length;
 	uint8_t _response_message_data[];
 };
+static_assert(sizeof(control_message_response_t) == 40, "control_message_response_t must be 40 bytes");
 
 }
 

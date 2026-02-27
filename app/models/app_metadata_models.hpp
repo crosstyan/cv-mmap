@@ -60,7 +60,7 @@ struct sync_message_t {
 	uint8_t versions_major{VERSION_MAJOR};
 	uint8_t versions_minor{VERSION_MINOR};
 	uint32_t frame_count;
-	uint8_t _reserved_1[4]; // padding
+	uint8_t _reserved_1[8]; // padding
 	uint64_t timestamp_ns;
 	/**
 	 * @brief label of the video source
