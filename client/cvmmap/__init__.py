@@ -10,8 +10,7 @@ from typing import (
 
 import numpy as np
 import zmq
-from zmq import Socket
-from zmq.asyncio import Context, Poller
+from zmq.asyncio import Context, Poller, Socket
 
 from .msg import (
     SyncMessage,
@@ -54,8 +53,6 @@ class CvMmapClient:
     """
 
     _name: str
-    _shm_name: str
-    _zmq_addr: str
 
     _ctx: Context
     _sock: Socket
@@ -64,22 +61,49 @@ class CvMmapClient:
     _image_buffer: Optional[NDArray] = None
     _shm: Optional[SharedMemory] = None
 
+    @property
+    def shm_name(self) -> str:
+        """Get the shared memory name used by this client."""
+        return f"cvmmap_{self._name}"
+    
+    @property
+    def zmq_addr(self) -> str:
+        """Get the ZMQ address used by this client."""
+        return f"ipc:///tmp/{self.shm_name}"
+
     def _subscribe(self):
         """
-        manually trigger the subscription to the topic.
+        Manually trigger the subscription to the topic.
 
-        https://github.com/zeromq/libzmq/issues/1688
-        https://stackoverflow.com/questions/57901180/only-keep-latest-multipart-message-in-subscriber-with-pyzmq-pub-sub-socket
+        CRITICAL ARCHITECTURE NOTE (ZeroMQ Bug):
+        We MUST subscribe to all topics (empty string `b""`) because we are using
+        the ZMQ_CONFLATE socket option (keep only the latest message).
+
+        In ZeroMQ, conflation happens before/alongside filtering, and it uses a
+        hardcoded queue size of exactly 1 message TOTAL for the socket. If the
+        server publishes a FRAME_TOPIC followed immediately by a MODULE_STATUS:
+        1. The queue receives FRAME_TOPIC.
+        2. The queue immediately overwrites it with MODULE_STATUS (conflate behavior).
+        3. If we only subscribed to FRAME_TOPIC, ZMQ looks at the single item
+           (MODULE_STATUS), says "this doesn't match", drops it, and we receive nothing.
+
+        By subscribing to everything, we guarantee the `recv()` call gives us
+        whatever was sent last, and we manually route it by checking `msg[0]`
+        (the magic byte) in `__aiter__`.
+
+        References:
+        - https://github.com/zeromq/libzmq/issues/1688
+        - https://stackoverflow.com/questions/57901180/only-keep-latest-multipart-message-in-subscriber-with-pyzmq-pub-sub-socket
         """
-        self._sock.subscribe(bytes([FRAME_TOPIC_MAGIC]))
-        self._sock.subscribe(bytes([MODULE_STATUS_MAGIC]))
+        self._sock.subscribe(b"")
 
     def _unsubscribe(self):
         """
-        manually trigger the un-subscription to the topic.
+        Manually trigger the un-subscription to the topic.
+        Since we subscribe to everything (due to CONFLATE limitations), we
+        must also unsubscribe from everything.
         """
-        self._sock.unsubscribe(bytes([FRAME_TOPIC_MAGIC]))
-        self._sock.unsubscribe(bytes([MODULE_STATUS_MAGIC]))
+        self._sock.unsubscribe(b"")
 
     def __init__(
         self,
@@ -96,15 +120,12 @@ class CvMmapClient:
         """
 
         self._name = name
-        # convention over configuration
-        self._shm_name = f"cvmmap_{name}"
-        self._zmq_addr = f"ipc:///tmp/{self._shm_name}"
 
         self._ctx = Context.instance()
         self._sock = self._ctx.socket(zmq.SUB)
         # In Python, you set the CONFLATE option before you connect to the socket
         self._sock.setsockopt(zmq.CONFLATE, 1)
-        self._sock.connect(self._zmq_addr)
+        self._sock.connect(self.zmq_addr)
         self._subscribe()
         self._poller = Poller()
         self._poller.register(self._sock, zmq.POLLIN)
@@ -128,6 +149,7 @@ class CvMmapClient:
         struct definitions to unpack the metadata that follows.
         """
         assert self._shm is not None, "Shared memory not attached"
+        assert self._shm.buf is not None, "Shared memory buffer is None"
 
         # Validate magic
         magic = bytes(self._shm.buf[:CV_MMAP_MAGIC_LEN])
@@ -145,6 +167,8 @@ class CvMmapClient:
         Read and decode the `FrameMetadata` structure from shared memory directly without checking the magic
         """
         assert self._shm is not None, "Shared memory not attached"
+        assert self._shm.buf is not None, "Shared memory buffer is None"
+
         start = CV_MMAP_MAGIC_LEN
         end = start + FrameMetadata.size() - CV_MMAP_MAGIC_LEN
         return FrameMetadata.unmarshal(bytes(self._shm.buf[start:end]))
@@ -156,12 +180,14 @@ class CvMmapClient:
 
         if self._shm is None:
             self._shm = SharedMemory(  # pylint: disable=unexpected-keyword-arg
-                name=self._shm_name, create=False, track=False
+                name=self.shm_name, create=False, track=False
             )
 
         # Read metadata once and build numpy view if not yet created (this also validates magic)
         meta = self._read_metadata()
         if self._image_buffer is None:
+            assert self._shm is not None, "Shared memory not attached"
+            assert self._shm.buf is not None, "Shared memory buffer is None"
             start = self._SHM_PAYLOAD_OFFSET
             end = start + meta.info.buffer_size
             mv = self._shm.buf[start:end]
@@ -247,16 +273,24 @@ class CvMmapRequestClient:
     """
 
     _name: str
-    _shm_name: str
-    _zmq_addr: str
 
     _ctx: Context
     _sock: Socket
 
+    @property
+    def shm_name(self) -> str:
+        """Get the shared memory name used by this client."""
+        return f"cvmmap_{self._name}"
+    
+    @property
+    def zmq_addr(self) -> str:
+        """Get the ZMQ address used by this client."""
+        return f"ipc:///tmp/{self.shm_name}_control"
+
+
     def __init__(
         self,
-        name: str,
-        zmq_addr: Optional[str] = None,
+        name: str
     ):
         """Create a CvMmapRequestClient.
 
@@ -267,15 +301,13 @@ class CvMmapRequestClient:
             in control messages.
         zmq_addr
             Optional ZMQ REQ socket address. If not provided, defaults to
-            ``ipc:///tmp/cvmmap_{name}_req`` by convention.
+            ``ipc:///tmp/cvmmap_{name}_control`` by convention.
         """
         self._name = name
-        self._shm_name = f"cvmmap_{name}"
-        self._zmq_addr = zmq_addr or f"ipc:///tmp/{self._shm_name}_req"
 
         self._ctx = Context.instance()
         self._sock = self._ctx.socket(zmq.REQ)
-        self._sock.connect(self._zmq_addr)
+        self._sock.connect(self.zmq_addr)
 
     async def send_request(
         self,
