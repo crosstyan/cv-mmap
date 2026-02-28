@@ -5,6 +5,13 @@ The stream could be a GStreamer pipeline or a camera device, depending on the pl
 Use [ZeroMQ](https://zeromq.org/) to notify other processes when a new frame is available. (for synchronization)
 The consumer process SHOULD NOT write to the shared memory, only read/clone the data.
 
+## Python client
+
+The Python client has been extracted into a standalone project for independent packaging/versioning:
+
+- local path: `/home/crosstyan/Code/cvmmap-python-client`
+- docs in this repo: `docs/python-client.md`
+
 - [ajaygunalan/IPC_SHM](https://github.com/ajaygunalan/IPC_SHM)
 - [khomin/electron_camera_ffmpeg](https://github.com/khomin/electron_camera_ffmpeg)
 - [khomin/electron_ffmpeg_addon_camera](https://github.com/khomin/electron_ffmpeg_addon_camera)

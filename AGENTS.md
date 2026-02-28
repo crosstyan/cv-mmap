@@ -14,7 +14,6 @@ C++ OpenCV/GStreamer IPC capture application using ZeroMQ and POSIX shared memor
 │   ├── config/   # TOML parsing 
 │   ├── lib/      # Third-party dependencies (CLI11, toml++, spdlog)
 │   └── models/   # IPC & Control message structures
-├── client/       # Python client consumer
 └── src/          # Entry point (main.cpp)
 ```
 
@@ -24,7 +23,7 @@ C++ OpenCV/GStreamer IPC capture application using ZeroMQ and POSIX shared memor
 | Adding a backend | `app/backends/` | Implement facade interface |
 | Modifying config | `app/config/` | Update `app_config.cpp` and `.toml` formats |
 | Changing IPC payload | `app/models/` | Ensure C++/Python struct alignment |
-| Python consumer | `client/` | Numpy + pyzmq logic |
+| Python consumer | external repo `cvmmap-python-client` | Importable Python package (`cvmmap`) |
 
 ## CONVENTIONS
 - **Logging:** Use `spdlog` (`std::format` style), NEVER `std::cout`
