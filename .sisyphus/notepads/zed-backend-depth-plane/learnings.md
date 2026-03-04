@@ -10,3 +10,6 @@
 - [2026-03-04] Task-4: added `ZedConfig` model with optional `serial/index`, required `resolution/fps/depth_mode`, optional numeric defaults, and bool `reconnect`.
 - [2026-03-04] Task-4 parsing now validates backend-specific section selection and errors explicitly when selecting `zed` without `[zed]`.
 - [2026-03-04] Task-4 added `[zed]` section to `config_example.toml` demonstrating all configured fields and defaults.
+
+- [2026-03-04] Restored functional ZED ethernet runtime path: stream_mode aliases now include local|usb|device|auto and network aliases ethernet|network|stream with canonical serialization to local/network.
+- [2026-03-04] ZED backend now chooses init input at runtime: network mode calls setFromStream(ip[,port]) while local mode preserves serial/index/default camera selection and logs chosen path.

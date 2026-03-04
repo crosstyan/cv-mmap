@@ -12,8 +12,13 @@ finite_stream_ending_behavior = 'loop' # stop | loop
 parameter = "example.mkv"
 
 [zed]
-serial = 12345
-index = 0
+stream_mode = "local" # local|usb|device|auto or network aliases ethernet|network|stream
+# network mode example:
+# stream_mode = "ethernet"
+# ip_address = "192.168.1.100"
+# port = 30000
+# serial = 12345
+# index = 0
 resolution = "1080p"
 fps = 30
 depth_mode = "neural"

@@ -1,5 +1,6 @@
 #include "app_config.hpp"
 #include <algorithm>
+#include <cctype>
 #include <sstream>
 #include <toml++/toml.hpp>
 #include <spdlog/spdlog.h>
@@ -18,6 +19,40 @@ std::string normalize_pipeline_string(std::string pipeline) {
 	pipeline.erase(std::remove(pipeline.begin(), pipeline.end(), '\r'), pipeline.end());
 	std::replace(pipeline.begin(), pipeline.end(), '\n', ' ');
 	return pipeline;
+}
+
+std::string normalize_ascii_lower(std::string value) {
+	std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+		return static_cast<char>(std::tolower(c));
+	});
+	return value;
+}
+
+std::string trim_ascii_spaces(std::string value) {
+	const auto first = value.find_first_not_of(" \t\r\n");
+	if (first == std::string::npos) {
+		return "";
+	}
+	const auto last = value.find_last_not_of(" \t\r\n");
+	return value.substr(first, last - first + 1);
+}
+
+bool is_zed_network_stream_mode(const std::string_view mode) {
+	const auto normalized = normalize_ascii_lower(std::string(mode));
+	return normalized == "network" || normalized == "ethernet" || normalized == "stream";
+}
+
+bool is_zed_local_stream_mode(const std::string_view mode) {
+	const auto normalized = normalize_ascii_lower(std::string(mode));
+	return normalized == "local" || normalized == "usb" || normalized == "device" || normalized == "auto";
+}
+
+bool is_valid_zed_stream_mode(const std::string_view mode) {
+	return is_zed_network_stream_mode(mode) || is_zed_local_stream_mode(mode);
+}
+
+std::string canonical_zed_stream_mode(const std::string_view mode) {
+	return is_zed_network_stream_mode(mode) ? "network" : "local";
 }
 } // namespace
 
@@ -165,8 +200,21 @@ Config Config::from_toml(const std::filesystem::path &path) {
 	if (auto zed = tbl["zed"].as_table(); zed) {
 		ZedConfig zed_cfg{};
 
+		if (auto val = (*zed)["stream_mode"].value<std::string>(); val) {
+			zed_cfg.stream_mode = normalize_ascii_lower(trim_ascii_spaces(*val));
+		} else {
+			zed_cfg.stream_mode = "local";
+		}
+
+		if (!is_valid_zed_stream_mode(zed_cfg.stream_mode)) {
+			throw invalid_argument("zed.stream_mode must be one of: local, usb, device, auto, network, ethernet, stream");
+		}
+
 		if (auto val = (*zed)["serial"]; val) {
 			if (auto serial = val.value<int>(); serial) {
+				if (*serial < 0) {
+					throw invalid_argument("zed.serial must be non-negative");
+				}
 				zed_cfg.serial = *serial;
 			} else {
 				throw invalid_argument("zed.serial must be integer");
@@ -175,9 +223,35 @@ Config Config::from_toml(const std::filesystem::path &path) {
 
 		if (auto val = (*zed)["index"]; val) {
 			if (auto index = val.value<int>(); index) {
+				if (*index < 0) {
+					throw invalid_argument("zed.index must be non-negative");
+				}
 				zed_cfg.index = *index;
 			} else {
 				throw invalid_argument("zed.index must be integer");
+			}
+		}
+
+		if (auto val = (*zed)["ip_address"]; val) {
+			if (auto ip = val.value<std::string>(); ip) {
+				auto trimmed_ip = trim_ascii_spaces(*ip);
+				if (trimmed_ip.empty()) {
+					throw invalid_argument("zed.ip_address must not be empty when provided");
+				}
+				zed_cfg.ip_address = std::move(trimmed_ip);
+			} else {
+				throw invalid_argument("zed.ip_address must be string");
+			}
+		}
+
+		if (auto val = (*zed)["port"]; val) {
+			if (auto port = val.value<int>(); port) {
+				if (*port <= 0 || *port > 65535) {
+					throw invalid_argument("zed.port must be in range 1..65535");
+				}
+				zed_cfg.port = *port;
+			} else {
+				throw invalid_argument("zed.port must be integer");
 			}
 		}
 
@@ -240,10 +314,32 @@ Config Config::from_toml(const std::filesystem::path &path) {
 		}
 
 		if (auto val = (*zed)["left_pixel_format"].value<std::string>(); val) {
-			zed_cfg.left_pixel_format = *val;
+			zed_cfg.left_pixel_format = normalize_ascii_lower(*val);
 		} else {
 			zed_cfg.left_pixel_format = "bgr8";
 		}
+
+		if (zed_cfg.serial && zed_cfg.index) {
+			throw invalid_argument("zed.serial and zed.index are mutually exclusive");
+		}
+
+		if (is_zed_network_stream_mode(zed_cfg.stream_mode)) {
+			if (!zed_cfg.ip_address || zed_cfg.ip_address->empty()) {
+				throw invalid_argument("zed.ip_address is required when zed.stream_mode is network/ethernet/stream");
+			}
+			if (zed_cfg.serial || zed_cfg.index) {
+				throw invalid_argument("zed.serial and zed.index must not be set when zed.stream_mode is network/ethernet/stream");
+			}
+		} else {
+			if (zed_cfg.ip_address) {
+				throw invalid_argument("zed.ip_address is only valid when zed.stream_mode is network/ethernet/stream");
+			}
+			if (zed_cfg.port) {
+				throw invalid_argument("zed.port is only valid when zed.stream_mode is network/ethernet/stream");
+			}
+		}
+
+		zed_cfg.stream_mode = canonical_zed_stream_mode(zed_cfg.stream_mode);
 
 		config.zed = zed_cfg;
 	}
@@ -290,6 +386,13 @@ std::string Config::to_toml() const {
 
 	if (zed) {
 		ss << "\n[zed]\n";
+		ss << "stream_mode = \"" << canonical_zed_stream_mode(zed->stream_mode) << "\"\n";
+		if (zed->ip_address) {
+			ss << "ip_address = \"" << *zed->ip_address << "\"\n";
+		}
+		if (zed->port) {
+			ss << "port = " << *zed->port << "\n";
+		}
 		if (zed->serial) {
 			ss << "serial = " << *zed->serial << "\n";
 		}

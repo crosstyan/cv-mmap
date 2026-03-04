@@ -2,8 +2,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
-#include <cstdint>
-#include <filesystem>
 #include <csignal>
 #include <string_view>
 #include <string>
@@ -29,6 +27,10 @@
 #endif
 #ifdef WITH_BACKEND_GSTREAMER
 #include "backends/app_backends_gst.hpp"
+#endif
+#ifdef WITH_BACKEND_ZED
+#include "backends/app_backends_zed.hpp"
+#include "backends/app_backends_zed.cpp"
 #endif
 
 #if defined(__APPLE__) && defined(__MACH__)
@@ -372,6 +374,22 @@ int main(int argc, char **argv) {
 		break;
 	}
 #endif
+	case app::BackendType::ZED: {
+#ifdef WITH_BACKEND_ZED
+		if (!config.zed) {
+			spdlog::error("ZED backend selected but [zed] config section missing");
+			return 1;
+		}
+		backend = pro::make_proxy<app::backends::IBackend, app::backends::ZedBackend>(
+			*config.zed,
+			config.video);
+		spdlog::info("using ZED backend");
+		break;
+#else
+		spdlog::error("ZED backend selected but unavailable in this build; reconfigure with -DWITH_BACKEND_ZED=ON");
+		return 1;
+#endif
+	}
 	default:
 		spdlog::error("selected backend is not available in this build");
 		return 1;

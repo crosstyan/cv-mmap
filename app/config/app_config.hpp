@@ -36,6 +36,9 @@ struct GStreamerConfig {
 struct ZedConfig {
 	std::optional<int> serial;
 	std::optional<int> index;
+	std::string stream_mode{"local"};
+	std::optional<std::string> ip_address;
+	std::optional<int> port;
 	std::string resolution;
 	int fps{};
 	std::string depth_mode;

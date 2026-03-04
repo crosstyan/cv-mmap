@@ -14,3 +14,5 @@
 - [2026-03-04] Task-5 isolated execution: re-added `WITH_BACKEND_ZED` in `app/CMakeLists.txt` only; `cmake -B build-zed -S . -DWITH_BACKEND_ZED=ON` is consumed (no "Manually-specified variables were not used") and fails deterministically with actionable missing-SDK guidance.
 - [2026-03-04] Task-5 correction pass: switched to ZED sample-style package discovery in `app/CMakeLists.txt` (`find_package(ZED REQUIRED)` + `find_package(CUDA ${ZED_CUDA_VERSION} REQUIRED)`), plus sample-style `${ZED_LIBRARIES}`/`${ZED_STATIC_LIBRARIES}` selection via `LINK_SHARED_ZED`; `WITH_BACKEND_ZED` remains optional/OFF by default.
 - [2026-03-04] Verification: `cmake -B build-zed -S . -DWITH_BACKEND_ZED=ON` now consumes the option (no "Manually-specified variables were not used") and resolves via package flow in this environment; baseline default build still fails at existing `fmt::v9` linker issue.
+
+- [2026-03-04] Verification commands executed; both default and ZED-enabled builds still fail at final link stage due pre-existing fmt::v9 unresolved symbols in environment (independent of ZED ethernet restoration).
