@@ -30,6 +30,8 @@ std::string_view to_string(BackendType backend) {
 		return "opencv";
 	case BackendType::GStreamer:
 		return "gstreamer";
+	case BackendType::ZED:
+		return "zed";
 	default:
 		return "unknown";
 	}
@@ -40,6 +42,8 @@ BackendType backend_from_string(std::string_view s) {
 		return BackendType::OpenCV;
 	} else if (s == "gstreamer" || s == "GStreamer" || s == "gst") {
 		return BackendType::GStreamer;
+	} else if (s == "zed" || s == "ZED") {
+		return BackendType::ZED;
 	}
 	throw invalid_argument("unknown backend type: " + std::string(s));
 }
@@ -158,12 +162,101 @@ Config Config::from_toml(const std::filesystem::path &path) {
 		config.gstreamer = gst_cfg;
 	}
 
+	if (auto zed = tbl["zed"].as_table(); zed) {
+		ZedConfig zed_cfg{};
+
+		if (auto val = (*zed)["serial"]; val) {
+			if (auto serial = val.value<int>(); serial) {
+				zed_cfg.serial = *serial;
+			} else {
+				throw invalid_argument("zed.serial must be integer");
+			}
+		}
+
+		if (auto val = (*zed)["index"]; val) {
+			if (auto index = val.value<int>(); index) {
+				zed_cfg.index = *index;
+			} else {
+				throw invalid_argument("zed.index must be integer");
+			}
+		}
+
+		if (auto val = (*zed)["resolution"].value<std::string>(); val) {
+			zed_cfg.resolution = *val;
+		} else {
+			throw invalid_argument("zed.resolution is required when [zed] section exists");
+		}
+
+		if (auto val = (*zed)["fps"].value<int>(); val) {
+			zed_cfg.fps = *val;
+		} else {
+			throw invalid_argument("zed.fps is required when [zed] section exists and must be integer");
+		}
+
+		if (auto val = (*zed)["depth_mode"].value<std::string>(); val) {
+			zed_cfg.depth_mode = *val;
+		} else {
+			throw invalid_argument("zed.depth_mode is required when [zed] section exists");
+		}
+
+		if (auto val = (*zed)["open_timeout_ms"]; val) {
+			if (auto v = val.value<int>(); v) {
+				zed_cfg.open_timeout_ms = *v;
+			} else {
+				throw invalid_argument("zed.open_timeout_ms must be integer");
+			}
+		}
+
+		if (auto val = (*zed)["warmup_frames"]; val) {
+			if (auto v = val.value<int>(); v) {
+				zed_cfg.warmup_frames = *v;
+			} else {
+				throw invalid_argument("zed.warmup_frames must be integer");
+			}
+		}
+
+		if (auto val = (*zed)["max_consecutive_failures"]; val) {
+			if (auto v = val.value<int>(); v) {
+				zed_cfg.max_consecutive_failures = *v;
+			} else {
+				throw invalid_argument("zed.max_consecutive_failures must be integer");
+			}
+		}
+
+		if (auto val = (*zed)["reconnect_interval_ms"]; val) {
+			if (auto v = val.value<int>(); v) {
+				zed_cfg.reconnect_interval_ms = *v;
+			} else {
+				throw invalid_argument("zed.reconnect_interval_ms must be integer");
+			}
+		}
+
+		if (auto val = (*zed)["reconnect"]; val) {
+			if (auto v = val.value<bool>(); v) {
+				zed_cfg.reconnect = *v;
+			} else {
+				throw invalid_argument("zed.reconnect must be boolean");
+			}
+		}
+
+		if (auto val = (*zed)["left_pixel_format"].value<std::string>(); val) {
+			zed_cfg.left_pixel_format = *val;
+		} else {
+			zed_cfg.left_pixel_format = "bgr8";
+		}
+
+		config.zed = zed_cfg;
+	}
+
 	// Validate: ensure the selected backend has its config
 	if (config.video.backend == BackendType::OpenCV && !config.opencv) {
 		throw invalid_argument("[opencv] section is required when backend is 'opencv'");
 	}
 	if (config.video.backend == BackendType::GStreamer && !config.gstreamer) {
 		throw invalid_argument("[gstreamer] section is required when backend is 'gstreamer'");
+	}
+	if (config.video.backend == BackendType::ZED && !config.zed) {
+		throw invalid_argument("[zed] section is required when backend is 'zed'");
 	}
 
 	return config;
@@ -193,6 +286,25 @@ std::string Config::to_toml() const {
 	if (gstreamer) {
 		ss << "[gstreamer]\n";
 		ss << "pipeline = \"" << gstreamer->pipeline << "\"\n";
+	}
+
+	if (zed) {
+		ss << "\n[zed]\n";
+		if (zed->serial) {
+			ss << "serial = " << *zed->serial << "\n";
+		}
+		if (zed->index) {
+			ss << "index = " << *zed->index << "\n";
+		}
+		ss << "resolution = \"" << zed->resolution << "\"\n";
+		ss << "fps = " << zed->fps << "\n";
+		ss << "depth_mode = \"" << zed->depth_mode << "\"\n";
+		ss << "open_timeout_ms = " << zed->open_timeout_ms << "\n";
+		ss << "warmup_frames = " << zed->warmup_frames << "\n";
+		ss << "max_consecutive_failures = " << zed->max_consecutive_failures << "\n";
+		ss << "reconnect_interval_ms = " << zed->reconnect_interval_ms << "\n";
+		ss << "reconnect = " << (zed->reconnect ? "true" : "false") << "\n";
+		ss << "left_pixel_format = \"" << zed->left_pixel_format << "\"\n";
 	}
 
 	return ss.str();

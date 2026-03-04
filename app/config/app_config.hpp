@@ -11,6 +11,7 @@ namespace app {
 enum class BackendType {
 	OpenCV,
 	GStreamer,
+	ZED,
 };
 
 enum class FiniteStreamEndingBehavior {
@@ -32,6 +33,20 @@ struct GStreamerConfig {
 	std::string pipeline;
 };
 
+struct ZedConfig {
+	std::optional<int> serial;
+	std::optional<int> index;
+	std::string resolution;
+	int fps{};
+	std::string depth_mode;
+	int open_timeout_ms{10000};
+	int warmup_frames{15};
+	int max_consecutive_failures{30};
+	int reconnect_interval_ms{1000};
+	bool reconnect{true};
+	std::string left_pixel_format{"bgr8"};
+};
+
 struct VideoConfig {
 	/// backend type
 	BackendType backend{BackendType::OpenCV};
@@ -49,6 +64,7 @@ struct Config {
 	std::optional<OpenCVConfig> opencv;
 	/// GStreamer-specific config (used when backend == GStreamer)
 	std::optional<GStreamerConfig> gstreamer;
+	std::optional<ZedConfig> zed;
 
 	static Config Default();
 

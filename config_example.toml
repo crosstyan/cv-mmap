@@ -5,11 +5,23 @@
 # zmq_addr: ipc:///tmp/{shm_name}
 name = 'example'
 [video]
-# opencv | gstreamer
 backend = 'gstreamer'
 use_finite_as_infinite_stream = false
 finite_stream_ending_behavior = 'loop' # stop | loop
 [opencv]
 parameter = "example.mkv"
+
+[zed]
+serial = 12345
+index = 0
+resolution = "1080p"
+fps = 30
+depth_mode = "neural"
+open_timeout_ms = 10000
+warmup_frames = 15
+max_consecutive_failures = 30
+reconnect_interval_ms = 1000
+reconnect = true
+left_pixel_format = "bgr8"
 [gstreamer]
 pipeline = "filesrc location=example.mkv ! decodebin ! videoconvert ! appsink name=sink"
