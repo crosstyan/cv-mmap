@@ -109,7 +109,7 @@ Wave 4: Cross-repo integration tests + rollout evidence
 
 <!-- TASKS_INSERT_BEFORE_FINAL_VERIFICATION -->
 
-- [ ] 1. Lock ABI v2 contract as implementation source of truth
+- [x] 1. Lock ABI v2 contract as implementation source of truth
 
   **What to do**: Align concrete implementation targets to `docs/cvmmap.ksy` v2 definitions (header size, descriptor size/capacity, offsets, masks, ordering) and create a contract checklist file under each repo’s tests/docs area used by implementers to avoid drift.
   **Must NOT do**: Do not invent field names/layouts that differ from ksy; do not alter ksy semantics in this task.
@@ -148,7 +148,7 @@ Wave 4: Cross-repo integration tests + rollout evidence
 
   **Commit**: YES | Message: `docs(protocol): lock abi v2 contract checklist` | Files: [`cv-mmap/docs/*`, `cvmmap-python-client/tests/*`, `cv-mmap-gui/app/*tests*`]
 
-- [ ] 2. Implement C++ ABI v2 metadata/descriptor models in cv-mmap
+- [x] 2. Implement C++ ABI v2 metadata/descriptor models in cv-mmap
 
   **What to do**: Add ABI v2 C++ structs (packed/fixed-size semantics matching ksy), including v2 header and 4 descriptor slots, plus conversion helpers from v1-compatible frame info to v2 plane-0 and depth plane descriptors.
   **Must NOT do**: Do not remove existing v1 sync/control message structs; do not change `SHM_PAYLOAD_OFFSET` from 256.
@@ -187,7 +187,7 @@ Wave 4: Cross-repo integration tests + rollout evidence
 
   **Commit**: YES | Message: `feat(protocol): add abi v2 metadata and plane descriptors` | Files: [`cv-mmap/app/models/*`]
 
-- [ ] 3. Enforce strict ZED config validation and canonical value mapping
+- [x] 3. Enforce strict ZED config validation and canonical value mapping
 
   **What to do**: Update config parsing and ZED backend parser to support canonical aliases (`1080p`→`HD1080`, `2k`→`HD2K`, `4k`→supported nearest explicit value), explicitly support/validate depth mode options including `neural` where SDK supports it, and fail-fast on unknown values.
   **Must NOT do**: Do not keep warn+fallback behavior for unknown resolution/depth mode.
@@ -227,7 +227,7 @@ Wave 4: Cross-repo integration tests + rollout evidence
 
   **Commit**: YES | Message: `fix(config): fail fast on invalid zed mode and resolution` | Files: [`cv-mmap/app/config/*`, `cv-mmap/app/backends/app_backends_zed.cpp`, `cv-mmap/config_example.toml`]
 
-- [ ] 4. Upgrade producer SHM write path to ABI v2 metadata + multi-plane payload packing
+- [x] 4. Upgrade producer SHM write path to ABI v2 metadata + multi-plane payload packing
 
   **What to do**: Refactor `src/main.cpp` producer write path to allocate payload for v2 plane packing (left at offset 0, depth contiguous after left), write v2 metadata region [0..255], and publish sync after metadata+payload commit.
   **Must NOT do**: Do not break control REQ/REP protocol behavior; do not move payload offset from 256.
@@ -267,7 +267,7 @@ Wave 4: Cross-repo integration tests + rollout evidence
 
   **Commit**: YES | Message: `feat(producer): emit abi v2 metadata and packed planes` | Files: [`cv-mmap/src/main.cpp`, `cv-mmap/app/models/*`]
 
-- [ ] 5. Implement ZED backend depth plane capture and stable two-plane metadata policy
+- [x] 5. Implement ZED backend depth plane capture and stable two-plane metadata policy
 
   **What to do**: Extend ZED backend frame capture to retrieve left image and depth measure, produce plane descriptors for both, and adopt stable plane policy (two planes when depth enabled; invalid depth values represented in-plane when retrieval degrades rather than dynamic plane count oscillation unless explicitly forced by startup failure).
   **Must NOT do**: Do not regress local camera open/reconnect or active network `setFromStream` path.
@@ -307,7 +307,7 @@ Wave 4: Cross-repo integration tests + rollout evidence
 
   **Commit**: YES | Message: `feat(zed): add depth plane capture and descriptor emission` | Files: [`cv-mmap/app/backends/app_backends_zed.cpp`, `cv-mmap/app/backends/app_backends_zed.hpp`]
 
-- [ ] 6. Complete Task 10 Ethernet-ready placeholders with active stream path hardening
+- [x] 6. Complete Task 10 Ethernet-ready placeholders with active stream path hardening
 
   **What to do**: Keep active `setFromStream` runtime behavior and add explicit placeholder extension points for future multi-cam ethernet sender/receiver orchestration (documented stubs, TODO anchors, and validation hooks). Enforce stream-mode constraints (ip required, serial/index forbidden in network mode).
   **Must NOT do**: Do not convert network support into comments-only or dead code.
@@ -347,7 +347,7 @@ Wave 4: Cross-repo integration tests + rollout evidence
 
   **Commit**: YES | Message: `chore(zed): harden ethernet placeholders while keeping stream active` | Files: [`cv-mmap/app/backends/app_backends_zed.cpp`, `cv-mmap/app/config/app_config.cpp`, `cv-mmap/config_example.toml`]
 
-- [ ] 7. Add Python client ABI v1/v2 parser and depth plane API exposure
+- [x] 7. Add Python client ABI v1/v2 parser and depth plane API exposure
 
   **What to do**: Extend Python protocol models to decode v2 header+descriptors while preserving v1 parsing. Update client memory mapping to support multi-plane payload slices, stride-aware ndarray views, and explicit depth plane accessors in public API.
   **Must NOT do**: Do not keep implicit assumption that payload is always single `uint8 (H,W,C)` plane.
@@ -387,7 +387,7 @@ Wave 4: Cross-repo integration tests + rollout evidence
 
   **Commit**: YES | Message: `feat(py-client): add abi v2 parsing and depth plane exposure` | Files: [`cvmmap-python-client/src/cvmmap/msg.py`, `cvmmap-python-client/src/cvmmap/__init__.py`, `cvmmap-python-client/tests/*`]
 
-- [ ] 8. Add GUI client ABI v1/v2 parser and depth plane exposure path
+- [x] 8. Add GUI client ABI v1/v2 parser and depth plane exposure path
 
   **What to do**: Update GUI cvmmap client structs/parser for dual-version metadata, payload slicing by plane descriptors, and expose depth plane into render/application context (minimum: available for processing/view path with clear compatibility behavior for v1).
   **Must NOT do**: Do not break existing plane-0 texture render loop.
@@ -427,7 +427,7 @@ Wave 4: Cross-repo integration tests + rollout evidence
 
   **Commit**: YES | Message: `feat(gui): support abi v2 and expose depth plane path` | Files: [`cv-mmap-gui/app/cvmmap-client/*`, `cv-mmap-gui/app/main.cpp`, `cv-mmap-gui/app/aux-img/*`]
 
-- [ ] 9. Harmonize control/sync version compatibility policy for migration window
+- [x] 9. Harmonize control/sync version compatibility policy for migration window
 
   **What to do**: Decide and implement explicit compatibility policy: SHM metadata may be v2 while sync/control message major remains v1 during migration. Update validations and docs so mismatches are intentional and test-covered.
   **Must NOT do**: Do not introduce ambiguous implicit behavior where one component silently rejects migration traffic.
@@ -465,7 +465,7 @@ Wave 4: Cross-repo integration tests + rollout evidence
 
   **Commit**: YES | Message: `chore(protocol): codify version compatibility during v2 rollout` | Files: [`cv-mmap/src/main.cpp`, `cvmmap-python-client/src/cvmmap/msg.py`, `cv-mmap-gui/app/cvmmap-client/*`, docs/tests]
 
-- [ ] 10. Build golden fixture suite and parser tests for v1/v2 across consumers
+- [x] 10. Build golden fixture suite and parser tests for v1/v2 across consumers
 
   **What to do**: Add reproducible binary fixtures for v1 and v2 metadata+payload, plus malformed variants. Wire tests in Python and GUI repositories to validate parser behavior and invariants.
   **Must NOT do**: Do not rely only on ad-hoc runtime manual checks.
@@ -505,7 +505,7 @@ Wave 4: Cross-repo integration tests + rollout evidence
 
   **Commit**: YES | Message: `test(protocol): add shared v1/v2 fixtures and invariant checks` | Files: [`cvmmap-python-client/tests/*`, `cv-mmap-gui/*tests*`, fixture assets]
 
-- [ ] 11. Execute cross-repo runtime interoperability matrix
+- [x] 11. Execute cross-repo runtime interoperability matrix
 
   **What to do**: Run end-to-end matrix covering producer backends and consumer combinations, including ZED OFF/ON builds and network/local stream modes where available. Capture explicit pass/fail evidence for each matrix cell.
   **Must NOT do**: Do not declare completion without matrix evidence artifacts.
@@ -545,7 +545,7 @@ Wave 4: Cross-repo integration tests + rollout evidence
 
   **Commit**: YES | Message: `test(integration): add cross-repo abi v2 interoperability matrix` | Files: [matrix scripts/tests/evidence index]
 
-- [ ] 12. Final hardening, documentation sync, and release sequencing notes
+- [x] 12. Final hardening, documentation sync, and release sequencing notes
 
   **What to do**: Consolidate protocol docs, migration notes, and rollout order (consumer readiness before producer-only-v2 deployments). Ensure config examples and usage docs reflect strict validation and active ethernet behavior.
   **Must NOT do**: Do not leave conflicting docs between plan/spec/code.
@@ -584,7 +584,7 @@ Wave 4: Cross-repo integration tests + rollout evidence
 
   **Commit**: YES | Message: `docs(release): sync abi v2 rollout and zed ethernet behavior` | Files: [`cv-mmap/docs/*`, `cv-mmap/config_example.toml`, `cvmmap-python-client/README.md`, `cv-mmap-gui/README.md`]
 
-- [ ] 13. Final repository-level verification sweep and sign-off package
+- [x] 13. Final repository-level verification sweep and sign-off package
 
   **What to do**: Execute final build/test/package checklist per repo and produce a single sign-off report containing command outputs, matrix status, known limitations, and rollback notes.
   **Must NOT do**: Do not merge/release without complete evidence package.
@@ -623,10 +623,10 @@ Wave 4: Cross-repo integration tests + rollout evidence
   **Commit**: YES | Message: `chore(release): add final verification sign-off package` | Files: [verification scripts/reports]
 
 ## Final Verification Wave (4 parallel agents, ALL must APPROVE)
-- [ ] F1. Plan Compliance Audit — oracle
-- [ ] F2. Code Quality Review — unspecified-high
-- [ ] F3. Real Manual QA — unspecified-high (+ playwright if UI)
-- [ ] F4. Scope Fidelity Check — deep
+- [x] F1. Plan Compliance Audit — oracle
+- [x] F2. Code Quality Review — unspecified-high
+- [x] F3. Real Manual QA — unspecified-high (+ playwright if UI)
+- [x] F4. Scope Fidelity Check — deep
 
 ## Commit Strategy
 - Keep commits atomic by repo boundary:
