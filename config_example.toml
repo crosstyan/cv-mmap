@@ -3,14 +3,63 @@
 # convention over configuration
 # shm_name: cvmmap_{name}
 # zmq_addr: ipc:///tmp/{shm_name}
+# control_addr: ipc:///tmp/cvmmap_{name}_control
 name = 'example'
+
+# ABI VERSION NOTES:
+# This producer emits ABI v2 shared-memory metadata (256-byte header) while
+# maintaining control/sync wire compatibility at v1. This is the intended
+# migration window state during rollout.
+#
+# ROLLOUT SEQUENCING (CRITICAL):
+#   1. Deploy updated Python client and GUI consumer first (they parse v1/v2).
+#   2. Then deploy producer-only-v2 builds.
+#   3. Never deploy producer-v2 before consumers are ready.
+#
+# Control wire remains v1 throughout the migration window.
+# See docs/abi_v2_contract_checklist.md for full v2 field specifications.
 [video]
-# opencv | gstreamer
-backend = 'gstreamer'
+backend = 'zed'
 use_finite_as_infinite_stream = false
 finite_stream_ending_behavior = 'loop' # stop | loop
 [opencv]
 parameter = "example.mkv"
+
+[zed]
+# stream_mode accepts these values:
+#   - Local modes: "local", "usb", "device", "auto"
+#   - Network modes: "ethernet", "network", "stream" (all aliases for the same behavior)
+# When using network modes, ip_address is REQUIRED. port defaults to 30000.
+# Network modes do NOT accept serial or index identifiers.
+stream_mode = "local"
+
+# Network mode example (uncomment to use):
+# stream_mode = "ethernet"
+# ip_address = "192.168.1.100"
+# port = 30000
+# In ethernet/stream/network modes, the ZED StreamingReceiver API is used.
+# The producer acts as a receiver (consumer) of a sender's broadcast.
+
+# Local mode accepts serial (number) or index (camera index) to select a specific camera.
+# serial = 12345
+# index = 0
+
+# resolution: Canonical values are HD2K, HD1200, HD1080, HD720, SVGA, VGA, AUTO.
+# Aliases accepted: "2k" → HD2K, "1080p"/"fhd" → HD1080, "720p"/"hd" → HD720.
+# Invalid values (like "ultra", "4k") are rejected at config parse time.
+resolution = "auto"
+fps = 30
+
+# depth_mode: Canonical values are NONE, NEURAL, NEURAL_LIGHT, NEURAL_PLUS (case-insensitive).
+# Aliases accepted for neural variants: "neural light"/"neural-light", "neural plus"/"neural-plus".
+# Deprecated legacy modes (PERFORMANCE/QUALITY/ULTRA) are rejected at config parse time.
+depth_mode = "neural"
+open_timeout_ms = 10000
+warmup_frames = 15
+max_consecutive_failures = 30
+reconnect_interval_ms = 1000
+reconnect = true
+left_pixel_format = "bgr8"
 [gstreamer]
 pipeline = "filesrc location=example.mkv ! decodebin ! videoconvert ! appsink name=sink"
 

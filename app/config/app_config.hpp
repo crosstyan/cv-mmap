@@ -13,6 +13,7 @@ namespace app {
 enum class BackendType {
 	OpenCV,
 	GStreamer,
+	ZED,
 };
 
 enum class FiniteStreamEndingBehavior {
@@ -32,6 +33,23 @@ struct OpenCVConfig {
 struct GStreamerConfig {
 	/// GStreamer pipeline string
 	std::string pipeline;
+};
+
+struct ZedConfig {
+	std::optional<int> serial;
+	std::optional<int> index;
+	std::string stream_mode{"local"};
+	std::optional<std::string> ip_address;
+	std::optional<int> port;
+	std::string resolution;
+	int fps{};
+	std::string depth_mode;
+	int open_timeout_ms{10000};
+	int warmup_frames{15};
+	int max_consecutive_failures{30};
+	int reconnect_interval_ms{1000};
+	bool reconnect{true};
+	std::string left_pixel_format{"bgr8"};
 };
 
 struct VideoConfig {
@@ -73,6 +91,7 @@ struct Config {
 	/// GStreamer-specific config (used when backend == GStreamer)
 	std::optional<GStreamerConfig> gstreamer;
 	std::optional<PreprocessConfig> preprocess;
+	std::optional<ZedConfig> zed;
 
 	static Config Default();
 
@@ -109,5 +128,4 @@ FiniteStreamEndingBehavior finite_stream_ending_behavior_from_string(std::string
 
 std::string_view to_string(UndistortModel model);
 UndistortModel undistort_model_from_string(std::string_view s);
-
 }

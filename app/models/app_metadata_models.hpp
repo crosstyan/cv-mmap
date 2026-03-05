@@ -1,6 +1,9 @@
 #ifndef B27BB190_CEA4_455B_ADF1_3716521874B0
 #define B27BB190_CEA4_455B_ADF1_3716521874B0
+#include <algorithm>
+#include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <optional>
@@ -206,6 +209,111 @@ struct frame_metadata_t {
 };
 static_assert(sizeof(frame_metadata_t) < SHM_PAYLOAD_OFFSET, "frame_metadata_t size must be less than SHM_PAYLOAD_OFFSET");
 static_assert(std::alignment_of<frame_metadata_t>::value == 8, "frame_metadata_t must be 8-byte aligned");
+
+enum class FramePlaneType : uint8_t {
+	LEFT  = 0,
+	DEPTH = 1,
+};
+
+#pragma pack(push, 1)
+struct frame_plane_descriptor_v2_t {
+	FramePlaneType plane_type{FramePlaneType::LEFT};
+	PixelFormat pixel_format{PixelFormat::BGR};
+	Depth depth{Depth::U8};
+	uint8_t reserved_0{0};
+	uint32_t width{0};
+	uint32_t height{0};
+	uint32_t stride_bytes{0};
+	uint32_t offset_bytes{0};
+	uint32_t size_bytes{0};
+
+	[[nodiscard]]
+	bool is_empty_descriptor() const {
+		return width == 0 && height == 0 && stride_bytes == 0 && offset_bytes == 0 && size_bytes == 0;
+	}
+};
+
+struct frame_metadata_v2_header_t {
+	static constexpr std::array<uint8_t, 8> CV_MMAP_MAGIC = {'C', 'V', '-', 'M', 'M', 'A', 'P', '\0'};
+	static constexpr uint8_t VERSION_MAJOR_V2 = 2;
+	static constexpr uint16_t PLANE_DESCRIPTORS_OFFSET = 64;
+	static constexpr uint16_t PLANE_DESCRIPTOR_SIZE = 24;
+	static constexpr uint16_t PLANE_DESCRIPTOR_CAPACITY = 4;
+
+	void ensure_magic() {
+		std::copy(CV_MMAP_MAGIC.begin(), CV_MMAP_MAGIC.end(), magic);
+	}
+
+	[[nodiscard]]
+	uint8_t contiguous_mask_expected() const {
+		return static_cast<uint8_t>((1u << plane_count) - 1u);
+	}
+
+	[[nodiscard]]
+	bool contiguous_mask_valid() const {
+		return plane_presence_mask == contiguous_mask_expected();
+	}
+
+	uint8_t magic[CV_MMAP_MAGIC.size()];
+	uint8_t versions_major{VERSION_MAJOR_V2};
+	uint8_t versions_minor{VERSION_MINOR};
+	uint16_t flags{0};
+	uint32_t frame_id{0};
+	uint64_t capture_ts_ns{0};
+	uint64_t publish_seq{0};
+	uint8_t plane_count{1};
+	uint8_t plane_presence_mask{0x01};
+	uint16_t plane_descriptors_offset{PLANE_DESCRIPTORS_OFFSET};
+	uint16_t plane_descriptor_size{PLANE_DESCRIPTOR_SIZE};
+	uint16_t plane_descriptor_capacity{PLANE_DESCRIPTOR_CAPACITY};
+	uint32_t payload_size_bytes{0};
+	uint8_t reserved_0[20];
+};
+
+struct frame_metadata_v2_t {
+	frame_metadata_v2_header_t header;
+	frame_plane_descriptor_v2_t plane_descriptors[frame_metadata_v2_header_t::PLANE_DESCRIPTOR_CAPACITY];
+	uint8_t trailing_padding_to_payload[96];
+};
+#pragma pack(pop)
+
+static_assert(sizeof(frame_plane_descriptor_v2_t) == 24, "frame_plane_descriptor_v2_t must be 24 bytes");
+static_assert(offsetof(frame_plane_descriptor_v2_t, plane_type) == 0, "plane_type offset must be 0");
+static_assert(offsetof(frame_plane_descriptor_v2_t, pixel_format) == 1, "pixel_format offset must be 1");
+static_assert(offsetof(frame_plane_descriptor_v2_t, depth) == 2, "depth offset must be 2");
+static_assert(offsetof(frame_plane_descriptor_v2_t, reserved_0) == 3, "reserved_0 offset must be 3");
+static_assert(offsetof(frame_plane_descriptor_v2_t, width) == 4, "width offset must be 4");
+static_assert(offsetof(frame_plane_descriptor_v2_t, height) == 8, "height offset must be 8");
+static_assert(offsetof(frame_plane_descriptor_v2_t, stride_bytes) == 12, "stride_bytes offset must be 12");
+static_assert(offsetof(frame_plane_descriptor_v2_t, offset_bytes) == 16, "offset_bytes offset must be 16");
+static_assert(offsetof(frame_plane_descriptor_v2_t, size_bytes) == 20, "size_bytes offset must be 20");
+static_assert(alignof(frame_plane_descriptor_v2_t) == 1, "frame_plane_descriptor_v2_t must be packed");
+
+static_assert(sizeof(frame_metadata_v2_header_t) == 64, "frame_metadata_v2_header_t must be 64 bytes");
+static_assert(offsetof(frame_metadata_v2_header_t, magic) == 0x00, "magic offset must be 0x00");
+static_assert(offsetof(frame_metadata_v2_header_t, versions_major) == 0x08, "versions_major offset must be 0x08");
+static_assert(offsetof(frame_metadata_v2_header_t, versions_minor) == 0x09, "versions_minor offset must be 0x09");
+static_assert(offsetof(frame_metadata_v2_header_t, flags) == 0x0A, "flags offset must be 0x0A");
+static_assert(offsetof(frame_metadata_v2_header_t, frame_id) == 0x0C, "frame_id offset must be 0x0C");
+static_assert(offsetof(frame_metadata_v2_header_t, capture_ts_ns) == 0x10, "capture_ts_ns offset must be 0x10");
+static_assert(offsetof(frame_metadata_v2_header_t, publish_seq) == 0x18, "publish_seq offset must be 0x18");
+static_assert(offsetof(frame_metadata_v2_header_t, plane_count) == 0x20, "plane_count offset must be 0x20");
+static_assert(offsetof(frame_metadata_v2_header_t, plane_presence_mask) == 0x21, "plane_presence_mask offset must be 0x21");
+static_assert(offsetof(frame_metadata_v2_header_t, plane_descriptors_offset) == 0x22, "plane_descriptors_offset offset must be 0x22");
+static_assert(offsetof(frame_metadata_v2_header_t, plane_descriptor_size) == 0x24, "plane_descriptor_size offset must be 0x24");
+static_assert(offsetof(frame_metadata_v2_header_t, plane_descriptor_capacity) == 0x26, "plane_descriptor_capacity offset must be 0x26");
+static_assert(offsetof(frame_metadata_v2_header_t, payload_size_bytes) == 0x28, "payload_size_bytes offset must be 0x28");
+static_assert(offsetof(frame_metadata_v2_header_t, reserved_0) == 0x2C, "reserved_0 offset must be 0x2C");
+static_assert(alignof(frame_metadata_v2_header_t) == 1, "frame_metadata_v2_header_t must be packed");
+static_assert(frame_metadata_v2_header_t::PLANE_DESCRIPTORS_OFFSET == 64, "v2 plane descriptors offset must be 64");
+static_assert(frame_metadata_v2_header_t::PLANE_DESCRIPTOR_SIZE == 24, "v2 plane descriptor size must be 24");
+static_assert(frame_metadata_v2_header_t::PLANE_DESCRIPTOR_CAPACITY == 4, "v2 plane descriptor capacity must be 4");
+
+static_assert(sizeof(frame_metadata_v2_t) == SHM_PAYLOAD_OFFSET, "frame_metadata_v2_t must fully occupy metadata region");
+static_assert(offsetof(frame_metadata_v2_t, header) == 0, "v2 header must start at offset 0");
+static_assert(offsetof(frame_metadata_v2_t, plane_descriptors) == 64, "v2 descriptors must start at offset 64");
+static_assert(offsetof(frame_metadata_v2_t, trailing_padding_to_payload) == 160, "v2 trailing padding must start at offset 160");
+static_assert(alignof(frame_metadata_v2_t) == 1, "frame_metadata_v2_t must be packed");
 }
 
 #endif /* B27BB190_CEA4_455B_ADF1_3716521874B0 */

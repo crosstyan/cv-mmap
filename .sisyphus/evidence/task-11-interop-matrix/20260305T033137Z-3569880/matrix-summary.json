@@ -1,0 +1,90 @@
+[
+  {
+    "cell_id": "producer-build-zed-off",
+    "component": "producer-build",
+    "command": "cmake -B build -S . && cmake --build build",
+    "result": "PASS",
+    "reason": "exit code 0",
+    "evidence_path": "/workspaces/zed-playground/cv-mmap/.sisyphus/evidence/task-11-interop-matrix/20260305T033137Z-3569880/cells/producer-build-zed-off.log"
+  },
+  {
+    "cell_id": "producer-build-zed-on",
+    "component": "producer-build",
+    "command": "cmake -B build-zed -S . -DWITH_BACKEND_ZED=ON && cmake --build build-zed",
+    "result": "PASS",
+    "reason": "exit code 0",
+    "evidence_path": "/workspaces/zed-playground/cv-mmap/.sisyphus/evidence/task-11-interop-matrix/20260305T033137Z-3569880/cells/producer-build-zed-on.log"
+  },
+  {
+    "cell_id": "python-parser-full-suite",
+    "component": "python-parser",
+    "command": "uv run pytest -q",
+    "result": "PASS",
+    "reason": "exit code 0",
+    "evidence_path": "/workspaces/zed-playground/cv-mmap/.sisyphus/evidence/task-11-interop-matrix/20260305T033137Z-3569880/cells/python-parser-full-suite.log"
+  },
+  {
+    "cell_id": "python-v1-valid",
+    "component": "python-parser",
+    "command": "uv run pytest -q tests/test_import_and_protocol.py::test_v1_parse_pass",
+    "result": "PASS",
+    "reason": "exit code 0",
+    "evidence_path": "/workspaces/zed-playground/cv-mmap/.sisyphus/evidence/task-11-interop-matrix/20260305T033137Z-3569880/cells/python-v1-valid.log"
+  },
+  {
+    "cell_id": "python-v2-left-only-valid",
+    "component": "python-parser",
+    "command": "uv run pytest -q tests/test_import_and_protocol.py::test_v2_left_only_parse_pass",
+    "result": "PASS",
+    "reason": "exit code 0",
+    "evidence_path": "/workspaces/zed-playground/cv-mmap/.sisyphus/evidence/task-11-interop-matrix/20260305T033137Z-3569880/cells/python-v2-left-only-valid.log"
+  },
+  {
+    "cell_id": "python-v2-left-depth-valid",
+    "component": "python-parser",
+    "command": "uv run pytest -q tests/test_import_and_protocol.py::test_v2_left_depth_parse_pass",
+    "result": "PASS",
+    "reason": "exit code 0",
+    "evidence_path": "/workspaces/zed-playground/cv-mmap/.sisyphus/evidence/task-11-interop-matrix/20260305T033137Z-3569880/cells/python-v2-left-depth-valid.log"
+  },
+  {
+    "cell_id": "python-v2-malformed",
+    "component": "python-parser",
+    "command": "uv run pytest -q tests/test_import_and_protocol.py::test_v2_malformed_descriptor_rejected",
+    "result": "PASS",
+    "reason": "exit code 0",
+    "evidence_path": "/workspaces/zed-playground/cv-mmap/.sisyphus/evidence/task-11-interop-matrix/20260305T033137Z-3569880/cells/python-v2-malformed.log"
+  },
+  {
+    "cell_id": "gui-parser-fixture-checker",
+    "component": "gui-parser",
+    "command": "cmake -B build-fixture-check -S app/cvmmap-client/tests && cmake --build build-fixture-check && ./build-fixture-check/protocol_fixture_check",
+    "result": "PASS",
+    "reason": "exit code 0",
+    "evidence_path": "/workspaces/zed-playground/cv-mmap/.sisyphus/evidence/task-11-interop-matrix/20260305T033137Z-3569880/cells/gui-parser-fixture-checker.log"
+  },
+  {
+    "cell_id": "gui-full-build",
+    "component": "gui-build",
+    "command": "cmake -B build-matrix-task11 -S . && cmake --build build-matrix-task11",
+    "result": "PASS",
+    "reason": "exit code 0",
+    "evidence_path": "/workspaces/zed-playground/cv-mmap/.sisyphus/evidence/task-11-interop-matrix/20260305T033137Z-3569880/cells/gui-full-build.log"
+  },
+  {
+    "cell_id": "control-reset-compatibility",
+    "component": "control-wire",
+    "command": "build/cv-mmap -c config.toml (background) + PYTHONPATH=<python-client>/src uv run python reset_frame_count",
+    "result": "PASS",
+    "reason": "exit code 0",
+    "evidence_path": "/workspaces/zed-playground/cv-mmap/.sisyphus/evidence/task-11-interop-matrix/20260305T033137Z-3569880/cells/control-reset-compatibility.log"
+  },
+  {
+    "cell_id": "control-unsupported-major-rejection",
+    "component": "control-wire",
+    "command": "build/cv-mmap -c config.toml (background) + PYTHONPATH=<python-client>/src uv run python raw unsupported-major control request",
+    "result": "PASS",
+    "reason": "exit code 0",
+    "evidence_path": "/workspaces/zed-playground/cv-mmap/.sisyphus/evidence/task-11-interop-matrix/20260305T033137Z-3569880/cells/control-unsupported-major-rejection.log"
+  }
+]

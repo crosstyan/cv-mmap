@@ -1,0 +1,8 @@
+task-11 interop matrix run_id: 20260305T033137Z-3569880
+artifact_dir: /workspaces/zed-playground/cv-mmap/.sisyphus/evidence/task-11-interop-matrix/20260305T033137Z-3569880
+cells_total: 11
+cells_pass: 11
+cells_non_pass: 0
+
+matrix_summary_tsv:
+/workspaces/zed-playground/cv-mmap/.sisyphus/evidence/task-11-interop-matrix/20260305T033137Z-3569880/matrix-summary.tsv

@@ -1,0 +1,1 @@
+- [2026-03-04 15:10:12Z] Verification blocker: repository CMakeLists.txt does not define `kaitai-validate` or `kaitai-generate` targets in current Task-1 scope baseline, so both required commands fail with `No rule to make target`. Command attempts were executed and captured.

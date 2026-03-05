@@ -1,0 +1,71 @@
+{
+  "task": 13,
+  "run_id": "20260304T202651Z-2774027",
+  "generated_utc": "2026-03-04T20:29:30Z",
+  "evidence_root": "/workspaces/zed-playground/cv-mmap/.sisyphus/evidence/task-13-signoff/20260304T202651Z-2774027",
+  "status_counts": {
+    "PASS": 4,
+    "FAIL": 0,
+    "BLOCKED": 1,
+    "TOTAL": 5
+  },
+  "verifications": [
+    {
+      "repo": "cv-mmap",
+      "command": "cmake -B build -S . && cmake --build build",
+      "status": "PASS",
+      "exit_code": 0,
+      "utc_start": "2026-03-04T20:27:04Z",
+      "utc_end": "2026-03-04T20:27:05Z",
+      "reason": "Build completed successfully",
+      "log_path": "/workspaces/zed-playground/cv-mmap/.sisyphus/evidence/task-13-signoff/20260304T202651Z-2774027/logs/cv-mmap-build-default.log"
+    },
+    {
+      "repo": "cv-mmap",
+      "command": "cmake -B build-zed -S . -DWITH_BACKEND_ZED=ON && cmake --build build-zed",
+      "status": "PASS",
+      "exit_code": 0,
+      "utc_start": "2026-03-04T20:27:29Z",
+      "utc_end": "2026-03-04T20:27:30Z",
+      "reason": "Build completed successfully (dev warnings only)",
+      "log_path": "/workspaces/zed-playground/cv-mmap/.sisyphus/evidence/task-13-signoff/20260304T202651Z-2774027/logs/cv-mmap-build-zed-on.log"
+    },
+    {
+      "repo": "cvmmap-python-client",
+      "command": "uv run pytest -q",
+      "status": "PASS",
+      "exit_code": 0,
+      "utc_start": "2026-03-04T20:27:48Z",
+      "utc_end": "2026-03-04T20:27:48Z",
+      "reason": "8 passed in 0.09s",
+      "log_path": "/workspaces/zed-playground/cv-mmap/.sisyphus/evidence/task-13-signoff/20260304T202651Z-2774027/logs/python-client-pytest-q.log"
+    },
+    {
+      "repo": "cv-mmap-gui",
+      "command": "cmake -B build-fixture-check -S app/cvmmap-client/tests && cmake --build build-fixture-check && ./build-fixture-check/protocol_fixture_check",
+      "status": "PASS",
+      "exit_code": 0,
+      "utc_start": "2026-03-04T20:28:14Z",
+      "utc_end": "2026-03-04T20:28:14Z",
+      "reason": "protocol fixture parser checks passed",
+      "log_path": "/workspaces/zed-playground/cv-mmap/.sisyphus/evidence/task-13-signoff/20260304T202651Z-2774027/logs/gui-parser-fixture-checker.log"
+    },
+    {
+      "repo": "cv-mmap-gui",
+      "command": "cmake -B build-matrix-task13 -S . && cmake --build build-matrix-task13",
+      "status": "BLOCKED",
+      "exit_code": 1,
+      "utc_start": "2026-03-04T20:28:14Z",
+      "utc_end": "2026-03-04T20:28:15Z",
+      "reason": "Could NOT find OpenSSL (missing OPENSSL_CRYPTO_LIBRARY and OPENSSL_INCLUDE_DIR)",
+      "log_path": "/workspaces/zed-playground/cv-mmap/.sisyphus/evidence/task-13-signoff/20260304T202651Z-2774027/logs/gui-full-build.log"
+    }
+  ],
+  "known_blockers": [
+    "GUI full build environment dependency: OpenSSL not discoverable by CMake in current environment"
+  ],
+  "rollback_mitigation": {
+    "rollback": "No rollback required; task generated evidence/notepad artifacts only.",
+    "mitigation": "Provision OpenSSL development dependency and OPENSSL_* discovery variables, then rerun GUI full build command."
+  }
+}

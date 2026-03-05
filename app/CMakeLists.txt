@@ -101,7 +101,32 @@ if (WITH_BACKEND_GSTREAMER)
         target_include_directories(app_video_backends PRIVATE ${GST_INCLUDE_DIRS})
         target_link_libraries(app_video_backends PRIVATE ${GST_LIBRARIES})
 endif()
-if (NOT WITH_BACKEND_OPENCV AND NOT WITH_BACKEND_GSTREAMER)
+
+option(WITH_BACKEND_ZED "Build with ZED SDK support" OFF)
+if (WITH_BACKEND_ZED)
+        option(LINK_SHARED_ZED "Link with the ZED SDK shared executable" ON)
+        if (NOT LINK_SHARED_ZED AND MSVC)
+                message(FATAL_ERROR "LINK_SHARED_ZED OFF : ZED SDK static libraries not available on Windows")
+        endif()
+
+        find_package(ZED REQUIRED)
+        find_package(CUDA ${ZED_CUDA_VERSION} REQUIRED)
+
+        target_include_directories(app_video_backends PRIVATE ${CUDA_INCLUDE_DIRS} ${ZED_INCLUDE_DIRS})
+        target_link_directories(app_video_backends PRIVATE ${ZED_LIBRARY_DIR} ${CUDA_LIBRARY_DIRS})
+
+        if (LINK_SHARED_ZED)
+                set(ZED_LIBS ${ZED_LIBRARIES} ${CUDA_CUDA_LIBRARY} ${CUDA_CUDART_LIBRARY})
+        else()
+                set(ZED_LIBS ${ZED_STATIC_LIBRARIES} ${CUDA_CUDA_LIBRARY} ${CUDA_LIBRARY})
+        endif()
+
+        target_compile_definitions(app_video_backends PUBLIC WITH_BACKEND_ZED=1)
+        target_sources(app_video_backends PRIVATE backends/app_backends_zed.cpp)
+        target_link_libraries(app_video_backends PRIVATE ${ZED_LIBS})
+endif()
+
+if (NOT WITH_BACKEND_OPENCV AND NOT WITH_BACKEND_GSTREAMER AND NOT WITH_BACKEND_ZED)
         message(FATAL_ERROR "At least one backend must be enabled")
 endif()
 target_link_libraries(app_video_backends PUBLIC msft_proxy4::proxy)

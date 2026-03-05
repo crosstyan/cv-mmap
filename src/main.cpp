@@ -1,10 +1,14 @@
+#include <algorithm>
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
-#include <filesystem>
-#include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <csignal>
+#include <limits>
+#include <optional>
 #include <string_view>
 #include <string>
 #include <expected>
@@ -30,6 +34,9 @@
 #endif
 #ifdef WITH_BACKEND_GSTREAMER
 #include "backends/app_backends_gst.hpp"
+#endif
+#ifdef WITH_BACKEND_ZED
+#include "backends/app_backends_zed.hpp"
 #endif
 
 #if defined(__APPLE__) && defined(__MACH__)
@@ -260,7 +267,8 @@ int main(int argc, char **argv) {
 												_metadata_buffer(buf.subspan(0, SHM_PAYLOAD_OFFSET)),
 												_image_buffer(buf.subspan(SHM_PAYLOAD_OFFSET, buf.size() - SHM_PAYLOAD_OFFSET)) {
 			assert(total_buffer_size() == buf.size());
-			metadata().ensure_magic();
+			std::fill(_metadata_buffer.begin(), _metadata_buffer.end(), 0);
+			metadata().header.ensure_magic();
 		}
 		~frame_state_t() {
 			if (_mmap_ptr) {
@@ -301,8 +309,12 @@ int main(int argc, char **argv) {
 			return _metadata_buffer.size() + _image_buffer.size();
 		}
 
-		frame_metadata_t &metadata() {
-			return *reinterpret_cast<frame_metadata_t *>(_metadata_buffer.data());
+		frame_metadata_v2_t &metadata() {
+			return *reinterpret_cast<frame_metadata_v2_t *>(_metadata_buffer.data());
+		}
+
+		void write_metadata(const frame_metadata_v2_t &metadata) {
+			std::memcpy(_metadata_buffer.data(), &metadata, sizeof(metadata));
 		}
 
 		static std::expected<frame_state_t, int> open(int shm_fd, size_t size) {
@@ -322,15 +334,6 @@ int main(int argc, char **argv) {
 			return frame_state_t(std::span<uint8_t>(ptr, size));
 		}
 
-		void set_frame_count(uint32_t frame_count) {
-			metadata().frame_count_atomic().store(frame_count, std::memory_order::relaxed);
-		}
-
-		void set_timestamp_ns(uint64_t timestamp_ns) {
-			metadata().timestamp_ns_atomic().store(timestamp_ns, std::memory_order::relaxed);
-		}
-
-
 	private:
 		uint8_t *_mmap_ptr;
 		/** [0, SHM_PAYLOAD_OFFSET) (metadata) */
@@ -346,6 +349,134 @@ int main(int argc, char **argv) {
 	if (undistort_pass) {
 		spdlog::info("undistort preprocess pass is enabled");
 	}
+
+	const auto to_u32 = [](size_t value) -> std::optional<uint32_t> {
+		if (value > std::numeric_limits<uint32_t>::max()) {
+			return std::nullopt;
+		}
+		return static_cast<uint32_t>(value);
+	};
+
+	const auto now_ns = []() -> uint64_t {
+		return static_cast<uint64_t>(
+			std::chrono::duration_cast<std::chrono::nanoseconds>(
+				std::chrono::system_clock::now().time_since_epoch())
+				.count());
+	};
+
+	const auto build_v2_metadata = [&to_u32](const frame_metadata_t &source_metadata, size_t payload_size) -> std::optional<frame_metadata_v2_t> {
+		if (payload_size == 0 || source_metadata.info.width == 0 || source_metadata.info.height == 0 || source_metadata.info.channels == 0) {
+			return std::nullopt;
+		}
+
+		auto payload_size_u32 = to_u32(payload_size);
+		if (!payload_size_u32) {
+			return std::nullopt;
+		}
+
+		auto make_stride = [&to_u32](size_t plane_size, uint32_t height, size_t expected_min_stride) -> std::optional<uint32_t> {
+			if (height == 0) {
+				return std::nullopt;
+			}
+			size_t stride = expected_min_stride;
+			if (plane_size % height == 0) {
+				stride = std::max(expected_min_stride, plane_size / height);
+			}
+			return to_u32(stride);
+		};
+
+		frame_metadata_v2_t metadata_v2;
+		std::memset(&metadata_v2, 0, sizeof(metadata_v2));
+		metadata_v2.header.ensure_magic();
+		metadata_v2.header.versions_major            = frame_metadata_v2_header_t::VERSION_MAJOR_V2;
+		metadata_v2.header.versions_minor            = VERSION_MINOR;
+		metadata_v2.header.frame_id                  = source_metadata.frame_count;
+		metadata_v2.header.capture_ts_ns             = source_metadata.timestamp_ns;
+		metadata_v2.header.publish_seq               = source_metadata.frame_count;
+		metadata_v2.header.plane_count               = 1;
+		metadata_v2.header.plane_presence_mask       = 0x01;
+		metadata_v2.header.plane_descriptors_offset  = frame_metadata_v2_header_t::PLANE_DESCRIPTORS_OFFSET;
+		metadata_v2.header.plane_descriptor_size     = frame_metadata_v2_header_t::PLANE_DESCRIPTOR_SIZE;
+		metadata_v2.header.plane_descriptor_capacity = frame_metadata_v2_header_t::PLANE_DESCRIPTOR_CAPACITY;
+		metadata_v2.header.payload_size_bytes        = *payload_size_u32;
+
+		const size_t left_expected_stride =
+			static_cast<size_t>(source_metadata.info.width) *
+			static_cast<size_t>(source_metadata.info.channels) *
+			static_cast<size_t>(size_of(source_metadata.info.depth));
+
+		const size_t left_compact_size =
+			left_expected_stride * static_cast<size_t>(source_metadata.info.height);
+
+		size_t left_size        = payload_size;
+		size_t depth_size       = 0;
+		bool depth_plane_active = false;
+
+		const size_t depth_expected_stride =
+			static_cast<size_t>(source_metadata.info.width) * sizeof(float);
+		const size_t depth_compact_size =
+			depth_expected_stride * static_cast<size_t>(source_metadata.info.height);
+
+		const bool matches_packed_left_plus_depth_contract =
+			left_compact_size > 0 &&
+			depth_compact_size > 0 &&
+			payload_size >= left_compact_size &&
+			(payload_size - left_compact_size) == depth_compact_size;
+
+		if (matches_packed_left_plus_depth_contract) {
+			left_size          = left_compact_size;
+			depth_size         = depth_compact_size;
+			depth_plane_active = true;
+		}
+
+		auto left_size_u32 = to_u32(left_size);
+		if (!left_size_u32) {
+			return std::nullopt;
+		}
+
+		auto left_stride_u32 = make_stride(left_size, source_metadata.info.height, left_expected_stride);
+		if (!left_stride_u32) {
+			return std::nullopt;
+		}
+
+		auto &left_descriptor        = metadata_v2.plane_descriptors[0];
+		left_descriptor.plane_type   = FramePlaneType::LEFT;
+		left_descriptor.pixel_format = source_metadata.info.pixel_format;
+		left_descriptor.depth        = source_metadata.info.depth;
+		left_descriptor.width        = source_metadata.info.width;
+		left_descriptor.height       = source_metadata.info.height;
+		left_descriptor.stride_bytes = *left_stride_u32;
+		left_descriptor.offset_bytes = 0;
+		left_descriptor.size_bytes   = *left_size_u32;
+
+		if (depth_plane_active) {
+			auto depth_size_u32   = to_u32(depth_size);
+			auto depth_offset_u32 = to_u32(left_size);
+			if (!depth_size_u32 || !depth_offset_u32) {
+				return std::nullopt;
+			}
+
+			auto depth_stride_u32 = make_stride(depth_size, source_metadata.info.height, depth_expected_stride);
+			if (!depth_stride_u32) {
+				return std::nullopt;
+			}
+
+			auto &depth_descriptor        = metadata_v2.plane_descriptors[1];
+			depth_descriptor.plane_type   = FramePlaneType::DEPTH;
+			depth_descriptor.pixel_format = PixelFormat::GRAY;
+			depth_descriptor.depth        = Depth::F32;
+			depth_descriptor.width        = source_metadata.info.width;
+			depth_descriptor.height       = source_metadata.info.height;
+			depth_descriptor.stride_bytes = *depth_stride_u32;
+			depth_descriptor.offset_bytes = *depth_offset_u32;
+			depth_descriptor.size_bytes   = *depth_size_u32;
+
+			metadata_v2.header.plane_count         = 2;
+			metadata_v2.header.plane_presence_mask = 0x03;
+		}
+
+		return metadata_v2;
+	};
 
 	// Create backend based on config
 	pro::proxy<app::backends::IBackend> backend;
@@ -377,28 +508,55 @@ int main(int argc, char **argv) {
 		break;
 	}
 #endif
+	case app::BackendType::ZED: {
+#ifdef WITH_BACKEND_ZED
+		if (!config.zed) {
+			spdlog::error("ZED backend selected but [zed] config section missing");
+			return 1;
+		}
+		backend = pro::make_proxy<app::backends::IBackend, app::backends::ZedBackend>(
+			*config.zed,
+			config.video);
+		spdlog::info("using ZED backend");
+		break;
+#else
+		spdlog::error("ZED backend selected but unavailable in this build; reconfigure with -DWITH_BACKEND_ZED=ON");
+		return 1;
+#endif
+	}
 	default:
 		spdlog::error("selected backend is not available in this build");
 		return 1;
 	}
 
-	backend->SetOnMetadata([&shm_state, &frame_state, &sync_msg, &config](const frame_metadata_t &metadata) {
+	backend->SetOnMetadata([&shm_state, &frame_state, &sync_msg, &config, &build_v2_metadata, &now_ns](const frame_metadata_t &metadata) {
 		const auto picture_buffer_size = metadata.info.buffer_size;
-		const auto total_buffer_size   = SHM_PAYLOAD_OFFSET + picture_buffer_size;
+		if (picture_buffer_size == 0) {
+			spdlog::error("received zero-sized picture buffer in metadata callback");
+			return;
+		}
+		const auto total_buffer_size = SHM_PAYLOAD_OFFSET + picture_buffer_size;
 
 		auto fs = frame_state_t::open(shm_state.fd(), total_buffer_size);
 		if (not fs) {
 			spdlog::error("open frame state; {}", fs.error());
 			return;
 		}
-		fs->metadata().frame_count_atomic().store(0, std::memory_order::relaxed);
-		fs->metadata().timestamp_ns_atomic().store(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count(), std::memory_order::relaxed);
-		fs->metadata().info = metadata.info;
-		frame_state         = std::move(*fs);
+
+		auto initial_metadata         = metadata;
+		initial_metadata.frame_count  = 0;
+		initial_metadata.timestamp_ns = now_ns();
+		auto initial_metadata_v2      = build_v2_metadata(initial_metadata, picture_buffer_size);
+		if (!initial_metadata_v2) {
+			spdlog::error("build initial ABI v2 metadata failed");
+			return;
+		}
+		fs->write_metadata(*initial_metadata_v2);
+		frame_state = std::move(*fs);
 		sync_msg.emplace(config.name, 0);
 	});
 
-	backend->SetOnFrame([&frame_state, &sync_msg, &sock, &undistort_pass](std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata) {
+	backend->SetOnFrame([&frame_state, &sync_msg, &sock, &shm_state, &build_v2_metadata, &undistort_pass](std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata) {
 		if (not frame_state || not sync_msg) {
 			spdlog::error("[BUG] frame callback invoked before metadata callback (should not happen)");
 			return;
@@ -415,12 +573,37 @@ int main(int argc, char **argv) {
 		}
 
 		// Copy frame data to shared memory
-		auto &fs                       = *frame_state;
 		const auto picture_buffer_size = output_buffer.size();
-		assert(picture_buffer_size == fs.image_buffer().size());
-		std::copy(output_buffer.begin(), output_buffer.end(), fs.image_buffer().begin());
-		fs.set_frame_count(metadata.frame_count);
-		fs.set_timestamp_ns(metadata.timestamp_ns);
+		if (picture_buffer_size == 0) {
+			spdlog::error("received zero-sized frame buffer");
+			return;
+		}
+
+		if (picture_buffer_size > frame_state->image_buffer().size()) {
+			const auto total_buffer_size = SHM_PAYLOAD_OFFSET + picture_buffer_size;
+			auto resized_frame_state     = frame_state_t::open(shm_state.fd(), total_buffer_size);
+			if (!resized_frame_state) {
+				spdlog::error("resize shared memory for frame payload failed; {}", resized_frame_state.error());
+				return;
+			}
+			frame_state = std::move(*resized_frame_state);
+		}
+
+		auto metadata_v2 = build_v2_metadata(metadata, picture_buffer_size);
+		if (!metadata_v2) {
+			spdlog::error("build ABI v2 metadata failed for frame@{}", metadata.frame_count);
+			return;
+		}
+
+		auto &fs = *frame_state;
+		if (metadata_v2->header.payload_size_bytes > fs.image_buffer().size()) {
+			spdlog::error("frame payload ({}) exceeds shared memory payload capacity ({})",
+						  metadata_v2->header.payload_size_bytes,
+						  fs.image_buffer().size());
+			return;
+		}
+		std::copy_n(output_buffer.begin(), metadata_v2->header.payload_size_bytes, fs.image_buffer().begin());
+		fs.write_metadata(*metadata_v2);
 
 		// Send sync message
 		try {
@@ -545,8 +728,10 @@ int main(int argc, char **argv) {
 
 		spdlog::debug("received control message: command_id=0x{:04x}", req->command_id);
 
+		// Migration policy: shared-memory metadata may move to major v2 while
+		// sync/control wire messages stay at major v1; reject other control majors deterministically.
 		if (req->versions_major != VERSION_MAJOR) {
-			spdlog::warn("received control message with incompatible version: {}.{} (expected {}.x)",
+			spdlog::warn("received control message with incompatible version: {}.{} (expected control {}.x)",
 						 req->versions_major, req->versions_minor, VERSION_MAJOR);
 			send_response(req->command_id, CONTROL_RESPONSE_INVALID_VERSION);
 			continue;
