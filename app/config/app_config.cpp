@@ -1,6 +1,7 @@
 #include "app_config.hpp"
 #include <algorithm>
 #include <sstream>
+#include <cmath>
 #include <toml++/toml.hpp>
 #include <spdlog/spdlog.h>
 
@@ -18,6 +19,72 @@ std::string normalize_pipeline_string(std::string pipeline) {
 	pipeline.erase(std::remove(pipeline.begin(), pipeline.end(), '\r'), pipeline.end());
 	std::replace(pipeline.begin(), pipeline.end(), '\n', ' ');
 	return pipeline;
+}
+
+std::array<double, 9> parse_camera_matrix(const toml::node_view<toml::node> &node) {
+	auto arr = node.as_array();
+	if (!arr) {
+		throw std::invalid_argument("preprocess.undistort.camera_matrix must be an array");
+	}
+	if (arr->size() != 9) {
+		throw std::invalid_argument("preprocess.undistort.camera_matrix must have exactly 9 values");
+	}
+
+	std::array<double, 9> values{};
+	for (size_t i = 0; i < 9; ++i) {
+		auto value = (*arr)[i].value<double>();
+		if (!value) {
+			throw std::invalid_argument("preprocess.undistort.camera_matrix must contain only numeric values");
+		}
+		values[i] = *value;
+	}
+	return values;
+}
+
+std::vector<double> parse_dist_coeffs(const toml::node_view<toml::node> &node) {
+	auto arr = node.as_array();
+	if (!arr) {
+		throw std::invalid_argument("preprocess.undistort.dist_coeffs must be an array");
+	}
+	std::vector<double> values;
+	values.reserve(arr->size());
+	for (const auto &entry : *arr) {
+		auto value = entry.value<double>();
+		if (!value) {
+			throw std::invalid_argument("preprocess.undistort.dist_coeffs must contain only numeric values");
+		}
+		values.push_back(*value);
+	}
+	return values;
+}
+
+void validate_undistort_config(const app::UndistortConfig &cfg) {
+	if (!std::isfinite(cfg.alpha) || cfg.alpha < 0.0 || cfg.alpha > 1.0) {
+		throw std::invalid_argument("preprocess.undistort.alpha must be finite and in [0, 1]");
+	}
+
+	for (const auto value : cfg.camera_matrix) {
+		if (!std::isfinite(value)) {
+			throw std::invalid_argument("preprocess.undistort.camera_matrix contains non-finite value");
+		}
+	}
+
+	if (cfg.camera_matrix[0] <= 0.0 || cfg.camera_matrix[4] <= 0.0) {
+		throw std::invalid_argument("preprocess.undistort.camera_matrix requires fx>0 and fy>0");
+	}
+
+	constexpr std::array<size_t, 5> valid_coeff_lengths{4, 5, 8, 12, 14};
+	if (cfg.dist_coeffs.empty()) {
+		throw std::invalid_argument("preprocess.undistort.dist_coeffs is required when undistort is enabled");
+	}
+	if (std::find(valid_coeff_lengths.begin(), valid_coeff_lengths.end(), cfg.dist_coeffs.size()) == valid_coeff_lengths.end()) {
+		throw std::invalid_argument("preprocess.undistort.dist_coeffs length must be one of 4, 5, 8, 12, 14");
+	}
+	for (const auto value : cfg.dist_coeffs) {
+		if (!std::isfinite(value)) {
+			throw std::invalid_argument("preprocess.undistort.dist_coeffs contains non-finite value");
+		}
+	}
 }
 } // namespace
 
@@ -64,6 +131,22 @@ FiniteStreamEndingBehavior finite_stream_ending_behavior_from_string(std::string
 	throw invalid_argument("unknown finite_stream_ending_behavior: " + std::string(s));
 }
 
+std::string_view to_string(UndistortModel model) {
+	switch (model) {
+	case UndistortModel::Pinhole:
+		return "pinhole";
+	default:
+		return "unknown";
+	}
+}
+
+UndistortModel undistort_model_from_string(std::string_view s) {
+	if (s == "pinhole" || s == "Pinhole") {
+		return UndistortModel::Pinhole;
+	}
+	throw invalid_argument("unknown undistort model: " + std::string(s));
+}
+
 Config Config::Default() {
 	return {
 		.name  = "default",
@@ -76,6 +159,7 @@ Config Config::Default() {
 		.gstreamer = GStreamerConfig{
 			.pipeline = "videotestsrc ! timeoverlay ! videoconvert ! video/x-raw,format=BGR ! appsink name=opencvsink",
 		},
+		.preprocess = std::nullopt,
 	};
 }
 
@@ -158,6 +242,41 @@ Config Config::from_toml(const std::filesystem::path &path) {
 		config.gstreamer = gst_cfg;
 	}
 
+	if (auto preprocess = tbl["preprocess"].as_table(); preprocess) {
+		PreprocessConfig preprocess_cfg{};
+		if (auto undistort = (*preprocess)["undistort"].as_table(); undistort) {
+			UndistortConfig undistort_cfg{};
+			undistort_cfg.enabled = (*undistort)["enabled"].value_or(false);
+			if (auto model = (*undistort)["model"].value<std::string>(); model) {
+				undistort_cfg.model = undistort_model_from_string(*model);
+			}
+			if (auto camera_matrix = (*undistort)["camera_matrix"]; camera_matrix) {
+				undistort_cfg.camera_matrix = parse_camera_matrix(camera_matrix);
+			}
+			if (auto dist_coeffs = (*undistort)["dist_coeffs"]; dist_coeffs) {
+				undistort_cfg.dist_coeffs = parse_dist_coeffs(dist_coeffs);
+			}
+			undistort_cfg.use_optimal_new_camera_matrix = (*undistort)["use_optimal_new_camera_matrix"].value_or(true);
+			undistort_cfg.alpha                         = (*undistort)["alpha"].value_or(0.0);
+			undistort_cfg.crop_to_valid_roi             = (*undistort)["crop_to_valid_roi"].value_or(false);
+			undistort_cfg.strict_startup                = (*undistort)["strict_startup"].value_or(false);
+
+			if (undistort_cfg.enabled) {
+				try {
+					validate_undistort_config(undistort_cfg);
+				} catch (const std::exception &e) {
+					if (undistort_cfg.strict_startup) {
+						throw;
+					}
+					spdlog::warn("invalid undistort config; disabling pass: {}", e.what());
+					undistort_cfg.enabled = false;
+				}
+			}
+			preprocess_cfg.undistort = std::move(undistort_cfg);
+		}
+		config.preprocess = std::move(preprocess_cfg);
+	}
+
 	// Validate: ensure the selected backend has its config
 	if (config.video.backend == BackendType::OpenCV && !config.opencv) {
 		throw invalid_argument("[opencv] section is required when backend is 'opencv'");
@@ -193,6 +312,33 @@ std::string Config::to_toml() const {
 	if (gstreamer) {
 		ss << "[gstreamer]\n";
 		ss << "pipeline = \"" << gstreamer->pipeline << "\"\n";
+	}
+
+	if (preprocess && preprocess->undistort) {
+		const auto &undistort = *preprocess->undistort;
+		ss << "\n[preprocess.undistort]\n";
+		ss << "enabled = " << (undistort.enabled ? "true" : "false") << "\n";
+		ss << "model = \"" << to_string(undistort.model) << "\"\n";
+		ss << "camera_matrix = [";
+		for (size_t i = 0; i < undistort.camera_matrix.size(); ++i) {
+			if (i != 0) {
+				ss << ", ";
+			}
+			ss << undistort.camera_matrix[i];
+		}
+		ss << "]\n";
+		ss << "dist_coeffs = [";
+		for (size_t i = 0; i < undistort.dist_coeffs.size(); ++i) {
+			if (i != 0) {
+				ss << ", ";
+			}
+			ss << undistort.dist_coeffs[i];
+		}
+		ss << "]\n";
+		ss << "use_optimal_new_camera_matrix = " << (undistort.use_optimal_new_camera_matrix ? "true" : "false") << "\n";
+		ss << "alpha = " << undistort.alpha << "\n";
+		ss << "crop_to_valid_roi = " << (undistort.crop_to_valid_roi ? "true" : "false") << "\n";
+		ss << "strict_startup = " << (undistort.strict_startup ? "true" : "false") << "\n";
 	}
 
 	return ss.str();

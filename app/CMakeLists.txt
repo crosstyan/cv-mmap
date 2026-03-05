@@ -71,17 +71,22 @@ target_compile_definitions(app_version
 
 add_subdirectory(lib/proxy)
 
+####### PREPROCESS #######
+add_library(app_preprocess STATIC preprocess/app_preprocess_undistort.cpp)
+target_include_directories(app_preprocess PUBLIC preprocess)
+target_link_libraries(app_preprocess PUBLIC app_config app_models)
+
 ####### BACKENDS #######
 add_library(app_video_backends STATIC)
 target_include_directories(app_video_backends PUBLIC backends)
 
-option(WITH_BACKEND_OPENCV "Build with OpenCV support" ON)
+option(WITH_BACKEND_OPENCV "Build with OpenCV support" OFF)
 if (WITH_BACKEND_OPENCV)
-        find_package(OpenCV REQUIRED COMPONENTS videoio)
-        target_compile_definitions(app_video_backends PUBLIC WITH_BACKEND_OPENCV=1)
-        target_sources(app_video_backends PRIVATE backends/app_backends_opencv.cpp)
-        target_include_directories(app_video_backends PRIVATE ${OpenCV_INCLUDE_DIRS})
-        target_link_libraries(app_video_backends PRIVATE opencv_videoio)
+		find_package(OpenCV REQUIRED COMPONENTS videoio)
+		target_compile_definitions(app_video_backends PUBLIC WITH_BACKEND_OPENCV=1)
+		target_sources(app_video_backends PRIVATE backends/app_backends_opencv.cpp)
+		target_include_directories(app_video_backends PRIVATE ${OpenCV_INCLUDE_DIRS})
+		target_link_libraries(app_video_backends PRIVATE opencv_videoio)
 endif()
 
 option(WITH_BACKEND_GSTREAMER "Build with GStreamer support" ON)
@@ -105,5 +110,5 @@ target_link_libraries(app_video_backends PUBLIC app_config)
 
 add_library(app INTERFACE)
 target_include_directories(app INTERFACE .)
-target_link_libraries(app INTERFACE app_video_backends app_version app_models app_config)
+target_link_libraries(app INTERFACE app_video_backends app_version app_models app_config app_preprocess)
 target_compile_definitions(app INTERFACE $<$<CONFIG:Debug>:APP_DEBUG>)

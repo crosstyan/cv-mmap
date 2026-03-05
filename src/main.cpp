@@ -24,6 +24,7 @@
 #include "models/app_control_msg_models.hpp"
 #include "app_utils.hpp"
 #include "backends/app_backends_facade.hpp"
+#include "app_preprocess_undistort.hpp"
 #ifdef WITH_BACKEND_OPENCV
 #include "backends/app_backends_opencv.hpp"
 #endif
@@ -157,7 +158,7 @@ int main(int argc, char **argv) {
 	}
 	spdlog::info("bond to ZMQ control address: `{}`", config.zmq_control_address());
 
-	static auto is_running = std::atomic_bool{true};
+	static auto is_running   = std::atomic_bool{true};
 	static auto sigint_count = std::atomic_int{0};
 
 	/**
@@ -341,6 +342,10 @@ int main(int argc, char **argv) {
 	// Frame state will be initialized by on_metadata callback
 	std::optional<frame_state_t> frame_state;
 	std::optional<sync_message_t> sync_msg;
+	auto undistort_pass = app::preprocess::make_undistort_pass(config.preprocess);
+	if (undistort_pass) {
+		spdlog::info("undistort preprocess pass is enabled");
+	}
 
 	// Create backend based on config
 	pro::proxy<app::backends::IBackend> backend;
@@ -393,17 +398,27 @@ int main(int argc, char **argv) {
 		sync_msg.emplace(config.name, 0);
 	});
 
-	backend->SetOnFrame([&frame_state, &sync_msg, &sock](std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata) {
+	backend->SetOnFrame([&frame_state, &sync_msg, &sock, &undistort_pass](std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata) {
 		if (not frame_state || not sync_msg) {
 			spdlog::error("[BUG] frame callback invoked before metadata callback (should not happen)");
 			return;
 		}
 
+		std::span<const uint8_t> output_buffer(frame_buffer.data(), frame_buffer.size());
+		if (undistort_pass) {
+			try {
+				output_buffer = undistort_pass->apply(output_buffer, metadata.info);
+			} catch (const std::exception &e) {
+				spdlog::error("undistort preprocess failed: {}", e.what());
+				return;
+			}
+		}
+
 		// Copy frame data to shared memory
 		auto &fs                       = *frame_state;
-		const auto picture_buffer_size = frame_buffer.size();
+		const auto picture_buffer_size = output_buffer.size();
 		assert(picture_buffer_size == fs.image_buffer().size());
-		std::copy(frame_buffer.begin(), frame_buffer.end(), fs.image_buffer().begin());
+		std::copy(output_buffer.begin(), output_buffer.end(), fs.image_buffer().begin());
 		fs.set_frame_count(metadata.frame_count);
 		fs.set_timestamp_ns(metadata.timestamp_ns);
 

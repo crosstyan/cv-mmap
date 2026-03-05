@@ -13,3 +13,13 @@ finite_stream_ending_behavior = 'loop' # stop | loop
 parameter = "example.mkv"
 [gstreamer]
 pipeline = "filesrc location=example.mkv ! decodebin ! videoconvert ! appsink name=sink"
+
+[preprocess.undistort]
+enabled = false
+model = "pinhole"
+camera_matrix = [1000.0, 0.0, 640.0, 0.0, 1000.0, 360.0, 0.0, 0.0, 1.0]
+dist_coeffs = [0.0, 0.0, 0.0, 0.0, 0.0]
+use_optimal_new_camera_matrix = true
+alpha = 0.0
+crop_to_valid_roi = false
+strict_startup = false
