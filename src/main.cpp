@@ -36,7 +36,6 @@
 #endif
 #ifdef WITH_BACKEND_ZED
 #include "backends/app_backends_zed.hpp"
-#include "backends/app_backends_zed.cpp"
 #endif
 
 #if defined(__APPLE__) && defined(__MACH__)

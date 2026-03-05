@@ -119,26 +119,21 @@ sl::VIEW parse_left_view(std::string value) {
 	if (value == "gray8" || value == "mono8") {
 		return sl::VIEW::LEFT_GRAY;
 	}
-	return sl::VIEW::LEFT;
+	if (value == "bgr8" || value == "rgb8") {
+		return sl::VIEW::LEFT_BGR;
+	}
+	return sl::VIEW::LEFT_BGRA;
 }
 
-PixelFormat guess_pixel_format_for_zed(const sl::MAT_TYPE mat_type, const std::string &left_pixel_format) {
-	const auto format_hint = normalize_ascii_lower(left_pixel_format);
-
+PixelFormat guess_pixel_format_for_zed(const sl::MAT_TYPE mat_type) {
 	switch (mat_type) {
 	case sl::MAT_TYPE::U8_C1:
 		return PixelFormat::GRAY;
 	case sl::MAT_TYPE::U8_C2:
 		return PixelFormat::YUYV;
 	case sl::MAT_TYPE::U8_C3:
-		if (format_hint == "rgb8") {
-			return PixelFormat::RGB;
-		}
 		return PixelFormat::BGR;
 	case sl::MAT_TYPE::U8_C4:
-		if (format_hint == "rgba8") {
-			return PixelFormat::RGBA;
-		}
 		return PixelFormat::BGRA;
 	default:
 		return PixelFormat::BGR;
@@ -553,7 +548,7 @@ struct ZedBackendImpl {
 			.height       = static_cast<uint16_t>(height),
 			.channels     = channels,
 			.depth        = *depth,
-			.pixel_format = guess_pixel_format_for_zed(mat_type, options.zed_config.left_pixel_format),
+			.pixel_format = guess_pixel_format_for_zed(mat_type),
 			.buffer_size  = static_cast<uint32_t>(buffer_size),
 		};
 	}

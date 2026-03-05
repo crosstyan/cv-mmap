@@ -19,7 +19,7 @@ name = 'example'
 # Control wire remains v1 throughout the migration window.
 # See docs/abi_v2_contract_checklist.md for full v2 field specifications.
 [video]
-backend = 'gstreamer'
+backend = 'zed'
 use_finite_as_infinite_stream = false
 finite_stream_ending_behavior = 'loop' # stop | loop
 [opencv]
@@ -47,7 +47,7 @@ stream_mode = "local"
 # resolution: Canonical values are HD2K, HD1200, HD1080, HD720, SVGA, VGA, AUTO.
 # Aliases accepted: "2k" → HD2K, "1080p"/"fhd" → HD1080, "720p"/"hd" → HD720.
 # Invalid values (like "ultra", "4k") are rejected at config parse time.
-resolution = "hd1080"
+resolution = "auto"
 fps = 30
 
 # depth_mode: Canonical values are NONE, NEURAL, NEURAL_LIGHT, NEURAL_PLUS (case-insensitive).

@@ -117,6 +117,7 @@ if (WITH_BACKEND_ZED)
         endif()
 
         target_compile_definitions(app_video_backends PUBLIC WITH_BACKEND_ZED=1)
+        target_sources(app_video_backends PRIVATE backends/app_backends_zed.cpp)
         target_link_libraries(app_video_backends PRIVATE ${ZED_LIBS})
 endif()
 
