@@ -4,6 +4,7 @@
 #include <sstream>
 #include <cmath>
 #include <unordered_set>
+#include <ranges>
 #include <toml++/toml.hpp>
 #include <spdlog/spdlog.h>
 
@@ -103,6 +104,68 @@ std::string trim_ascii_spaces(std::string value) {
 	}
 	const auto last = value.find_last_not_of(" \t\r\n");
 	return value.substr(first, last - first + 1);
+}
+
+bool is_valid_ipc_token_char(const char ch) {
+	return std::isalnum(static_cast<unsigned char>(ch)) || ch == '.' || ch == '_' || ch == '-';
+}
+
+bool is_valid_ipc_token(const std::string &value, const size_t max_len) {
+	if (value.empty() || value.size() > max_len) {
+		return false;
+	}
+	if (!std::isalnum(static_cast<unsigned char>(value.front()))) {
+		return false;
+	}
+	return std::ranges::all_of(value, is_valid_ipc_token_char);
+}
+
+std::string validate_ipc_prefix(std::string prefix) {
+	if (prefix.empty() || prefix.front() != '/') {
+		throw std::invalid_argument("ipc.prefix must be an absolute path");
+	}
+	if (prefix.find('\\') != std::string::npos) {
+		throw std::invalid_argument("ipc.prefix must not contain backslashes");
+	}
+	if (prefix.find("//") != std::string::npos) {
+		throw std::invalid_argument("ipc.prefix must not contain empty path segments");
+	}
+	if (prefix.size() > 1 && prefix.back() == '/') {
+		prefix.pop_back();
+	}
+
+	size_t start = 1;
+	while (start <= prefix.size()) {
+		auto end = prefix.find('/', start);
+		if (end == std::string::npos) {
+			end = prefix.size();
+		}
+		auto segment = prefix.substr(start, end - start);
+		if (segment == "." || segment == "..") {
+			throw std::invalid_argument("ipc.prefix must not contain traversal segments");
+		}
+		if (end == prefix.size()) {
+			break;
+		}
+		start = end + 1;
+	}
+
+	return prefix;
+}
+
+void validate_ipc_config(const app::Config &config) {
+	if (!is_valid_ipc_token(config.ipc.name_space, 32)) {
+		throw std::invalid_argument("ipc.namespace must match [A-Za-z0-9][A-Za-z0-9._-]{0,31}");
+	}
+	if (!is_valid_ipc_token(config.name, 23)) {
+		throw std::invalid_argument("name must match [A-Za-z0-9][A-Za-z0-9._-]{0,22}");
+	}
+
+	auto control_path = config.ipc.prefix + "/" + config.shm_name() + "_control";
+	if (control_path.size() > 107) {
+		throw std::invalid_argument(
+			"ipc derived control path too long (>107 chars): " + control_path);
+	}
 }
 
 bool is_zed_network_stream_mode(const std::string_view mode) {
@@ -271,6 +334,23 @@ Config Config::from_toml(const std::filesystem::path &path) {
 		config.name = *val;
 	} else {
 		throw invalid_argument("name is required");
+	}
+
+	if (auto ipc = tbl["ipc"].as_table(); ipc) {
+		if (auto val = (*ipc)["namespace"].value<std::string>(); val) {
+			config.ipc.name_space = trim_ascii_spaces(*val);
+		} else {
+			config.ipc.name_space = "cvmmap";
+		}
+
+		if (auto val = (*ipc)["prefix"].value<std::string>(); val) {
+			config.ipc.prefix = validate_ipc_prefix(trim_ascii_spaces(*val));
+		} else {
+			config.ipc.prefix = "/tmp";
+		}
+	} else {
+		config.ipc.name_space = "cvmmap";
+		config.ipc.prefix = "/tmp";
 	}
 
 	// [video] section
@@ -527,12 +607,17 @@ Config Config::from_toml(const std::filesystem::path &path) {
 		throw invalid_argument("[zed] section is required when backend is 'zed'");
 	}
 
+	validate_ipc_config(config);
+
 	return config;
 }
 
 std::string Config::to_toml() const {
 	std::ostringstream ss;
 	ss << "name = \"" << name << "\"\n\n";
+	ss << "[ipc]\n";
+	ss << "namespace = \"" << ipc.name_space << "\"\n";
+	ss << "prefix = \"" << ipc.prefix << "\"\n\n";
 
 	ss << "[video]\n";
 	ss << "backend = \"" << to_string(video.backend) << "\"\n";

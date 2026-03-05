@@ -1,10 +1,15 @@
 # instance name
-# no longer need declare shm_name and zmq_addr
-# convention over configuration
-# shm_name: cvmmap_{name}
-# zmq_addr: ipc:///tmp/{shm_name}
-# control_addr: ipc:///tmp/cvmmap_{name}_control
 name = 'example'
+
+[ipc]
+# namespace and prefix defaults keep existing behavior
+namespace = 'cvmmap'
+prefix = '/tmp'
+
+# derived names/endpoints:
+# shm_name: {namespace}_{name}
+# zmq_addr: ipc://{prefix}/{namespace}_{name}
+# control_addr: ipc://{prefix}/{namespace}_{name}_control
 
 # ABI VERSION NOTES:
 # This producer emits ABI v2 shared-memory metadata (256-byte header) while

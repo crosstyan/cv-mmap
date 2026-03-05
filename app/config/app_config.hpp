@@ -81,11 +81,17 @@ struct PreprocessConfig {
 	std::optional<UndistortConfig> undistort;
 };
 
+struct IpcConfig {
+	std::string name_space{"cvmmap"};
+	std::string prefix{"/tmp"};
+};
+
 struct Config {
 	/// name of cvmmap server instance
 	std::string name;
 	/// video capture configuration
 	VideoConfig video;
+	IpcConfig ipc;
 	/// OpenCV-specific config (used when backend == OpenCV)
 	std::optional<OpenCVConfig> opencv;
 	/// GStreamer-specific config (used when backend == GStreamer)
@@ -102,17 +108,17 @@ struct Config {
 
 	[[nodiscard]]
 	std::string shm_name() const {
-		return "cvmmap_" + name;
+		return ipc.name_space + "_" + name;
 	}
 
 	[[nodiscard]]
 	std::string zmq_address() const {
-		return "ipc:///tmp/" + shm_name();
+		return "ipc://" + ipc.prefix + "/" + shm_name();
 	}
 
 	[[nodiscard]]
 	std::string zmq_control_address() const {
-		return "ipc:///tmp/" + shm_name() + "_control";
+		return "ipc://" + ipc.prefix + "/" + shm_name() + "_control";
 	}
 };
 
