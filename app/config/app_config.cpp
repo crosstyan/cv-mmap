@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cctype>
 #include <sstream>
+#include <unordered_set>
 #include <toml++/toml.hpp>
 #include <spdlog/spdlog.h>
 
@@ -53,6 +54,58 @@ bool is_valid_zed_stream_mode(const std::string_view mode) {
 
 std::string canonical_zed_stream_mode(const std::string_view mode) {
 	return is_zed_network_stream_mode(mode) ? "network" : "local";
+}
+
+std::string validate_and_canonicalize_zed_resolution(const std::string_view resolution) {
+	const auto normalized = normalize_ascii_lower(std::string(resolution));
+
+	if (normalized == "2k") {
+		return "HD2K";
+	}
+	if (normalized == "1080p" || normalized == "fhd") {
+		return "HD1080";
+	}
+	if (normalized == "720p" || normalized == "hd") {
+		return "HD720";
+	}
+
+	static const std::unordered_set<std::string> valid_resolutions = {
+		"hd2k", "hd1200", "hd1080", "hd720", "svga", "vga", "auto"};
+
+	if (valid_resolutions.find(normalized) != valid_resolutions.end()) {
+		std::string result = normalized;
+		std::transform(result.begin(), result.end(), result.begin(), [](unsigned char c) {
+			return static_cast<char>(std::toupper(c));
+		});
+		return result;
+	}
+
+	throw std::invalid_argument(
+		"invalid zed.resolution: '" + std::string(resolution) +
+		"'. Allowed values: HD2K, HD1200, HD1080, HD720, SVGA, VGA, AUTO "
+		"(aliases: 2k, 1080p, fhd, 720p, hd)");
+}
+
+std::string validate_and_canonicalize_zed_depth_mode(const std::string_view depth_mode) {
+	auto normalized = normalize_ascii_lower(std::string(depth_mode));
+	std::replace(normalized.begin(), normalized.end(), '-', '_');
+	std::replace(normalized.begin(), normalized.end(), ' ', '_');
+
+	static const std::unordered_set<std::string> valid_depth_modes = {
+		"none", "neural", "neural_light", "neural_plus"};
+
+	if (valid_depth_modes.find(normalized) != valid_depth_modes.end()) {
+		std::string result = normalized;
+		std::transform(result.begin(), result.end(), result.begin(), [](unsigned char c) {
+			return static_cast<char>(std::toupper(c));
+		});
+		return result;
+	}
+
+	throw std::invalid_argument(
+		"invalid zed.depth_mode: '" + std::string(depth_mode) +
+		"'. Allowed values: NONE, NEURAL, NEURAL_LIGHT, NEURAL_PLUS "
+		"(aliases: neural light, neural-light, neural plus, neural-plus)");
 }
 } // namespace
 
@@ -255,11 +308,11 @@ Config Config::from_toml(const std::filesystem::path &path) {
 			}
 		}
 
-		if (auto val = (*zed)["resolution"].value<std::string>(); val) {
-			zed_cfg.resolution = *val;
-		} else {
-			throw invalid_argument("zed.resolution is required when [zed] section exists");
-		}
+	if (auto val = (*zed)["resolution"].value<std::string>(); val) {
+		zed_cfg.resolution = validate_and_canonicalize_zed_resolution(*val);
+	} else {
+		throw invalid_argument("zed.resolution is required when [zed] section exists");
+	}
 
 		if (auto val = (*zed)["fps"].value<int>(); val) {
 			zed_cfg.fps = *val;
@@ -267,11 +320,11 @@ Config Config::from_toml(const std::filesystem::path &path) {
 			throw invalid_argument("zed.fps is required when [zed] section exists and must be integer");
 		}
 
-		if (auto val = (*zed)["depth_mode"].value<std::string>(); val) {
-			zed_cfg.depth_mode = *val;
-		} else {
-			throw invalid_argument("zed.depth_mode is required when [zed] section exists");
-		}
+	if (auto val = (*zed)["depth_mode"].value<std::string>(); val) {
+		zed_cfg.depth_mode = validate_and_canonicalize_zed_depth_mode(*val);
+	} else {
+		throw invalid_argument("zed.depth_mode is required when [zed] section exists");
+	}
 
 		if (auto val = (*zed)["open_timeout_ms"]; val) {
 			if (auto v = val.value<int>(); v) {
