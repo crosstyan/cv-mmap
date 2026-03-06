@@ -71,16 +71,38 @@ target_compile_definitions(app_version
 
 add_subdirectory(lib/proxy)
 
+####### BACKEND OPTIONS #######
+option(WITH_BACKEND_OPENCV "Build with OpenCV support" OFF)
+option(WITH_BACKEND_GSTREAMER "Build with GStreamer support" ON)
+option(WITH_BACKEND_ZED "Build with ZED SDK support" OFF)
+
 ####### PREPROCESS #######
 add_library(app_preprocess STATIC preprocess/app_preprocess_undistort.cpp)
 target_include_directories(app_preprocess PUBLIC preprocess)
 target_link_libraries(app_preprocess PUBLIC app_config app_models)
 
+set(_WITH_PREPROCESS_UNDISTORT_OPENCV_DEFAULT OFF)
+if (DEFINED WITH_PREPROCESS_UNDISTORT_OPENCV)
+	set(_WITH_PREPROCESS_UNDISTORT_OPENCV_DEFAULT ${WITH_PREPROCESS_UNDISTORT_OPENCV})
+else()
+	set(_WITH_PREPROCESS_UNDISTORT_OPENCV_DEFAULT ${WITH_BACKEND_OPENCV})
+endif()
+option(WITH_PREPROCESS_UNDISTORT_OPENCV "Build OpenCV-accelerated undistort preprocess support" ${_WITH_PREPROCESS_UNDISTORT_OPENCV_DEFAULT})
+if (WITH_PREPROCESS_UNDISTORT_OPENCV)
+	find_package(OpenCV REQUIRED COMPONENTS calib3d imgproc core)
+	message(STATUS "undistort preprocess: enabling OpenCV remap path")
+	target_compile_definitions(app_preprocess PUBLIC WITH_PREPROCESS_UNDISTORT_OPENCV=1)
+	target_include_directories(app_preprocess PRIVATE ${OpenCV_INCLUDE_DIRS})
+	target_link_libraries(app_preprocess PRIVATE opencv_calib3d opencv_imgproc opencv_core)
+else()
+	message(WARNING "undistort preprocess: building internal fallback algorithm; repeated-frame performance will be significantly slower than the OpenCV remap path")
+	target_compile_definitions(app_preprocess PRIVATE WITH_PREPROCESS_UNDISTORT_INTERNAL_FALLBACK=1)
+endif()
+
 ####### BACKENDS #######
 add_library(app_video_backends STATIC)
 target_include_directories(app_video_backends PUBLIC backends)
 
-option(WITH_BACKEND_OPENCV "Build with OpenCV support" OFF)
 if (WITH_BACKEND_OPENCV)
 		find_package(OpenCV REQUIRED COMPONENTS videoio)
 		target_compile_definitions(app_video_backends PUBLIC WITH_BACKEND_OPENCV=1)
@@ -88,8 +110,6 @@ if (WITH_BACKEND_OPENCV)
 		target_include_directories(app_video_backends PRIVATE ${OpenCV_INCLUDE_DIRS})
 		target_link_libraries(app_video_backends PRIVATE opencv_videoio)
 endif()
-
-option(WITH_BACKEND_GSTREAMER "Build with GStreamer support" ON)
 if (WITH_BACKEND_GSTREAMER)
         find_package(PkgConfig REQUIRED)
         pkg_check_modules(GST REQUIRED 
@@ -102,7 +122,6 @@ if (WITH_BACKEND_GSTREAMER)
         target_link_libraries(app_video_backends PRIVATE ${GST_LIBRARIES})
 endif()
 
-option(WITH_BACKEND_ZED "Build with ZED SDK support" OFF)
 if (WITH_BACKEND_ZED)
         option(LINK_SHARED_ZED "Link with the ZED SDK shared executable" ON)
         if (NOT LINK_SHARED_ZED AND MSVC)
@@ -137,3 +156,13 @@ add_library(app INTERFACE)
 target_include_directories(app INTERFACE .)
 target_link_libraries(app INTERFACE app_video_backends app_version app_models app_config app_preprocess)
 target_compile_definitions(app INTERFACE $<$<CONFIG:Debug>:APP_DEBUG>)
+
+option(BUILD_PREPROCESS_BENCHMARKS "Build preprocess benchmark executables" OFF)
+if (BUILD_PREPROCESS_BENCHMARKS)
+	add_executable(app_preprocess_benchmark preprocess/benchmark_undistort.cpp)
+	target_include_directories(app_preprocess_benchmark PRIVATE .)
+	target_link_libraries(app_preprocess_benchmark PRIVATE app_preprocess spdlog fmt::fmt)
+	if (WITH_PREPROCESS_UNDISTORT_OPENCV)
+		target_compile_definitions(app_preprocess_benchmark PRIVATE WITH_PREPROCESS_UNDISTORT_OPENCV=1)
+	endif()
+endif()

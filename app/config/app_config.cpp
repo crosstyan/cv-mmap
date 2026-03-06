@@ -350,7 +350,7 @@ Config Config::from_toml(const std::filesystem::path &path) {
 		}
 	} else {
 		config.ipc.name_space = "cvmmap";
-		config.ipc.prefix = "/tmp";
+		config.ipc.prefix     = "/tmp";
 	}
 
 	// [video] section
