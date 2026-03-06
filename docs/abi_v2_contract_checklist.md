@@ -1,6 +1,6 @@
 # ABI v2 Contract Checklist
 
-**Source of Truth:** `docs/cvmmap.ksy`  
+**Source of Truth:** `docs/cvmmap_shm_metadata_v1_v2.ksy`  
 **Contract Version:** v2 (major=2)  
 **Generated:** 2026-03-04
 
@@ -182,7 +182,7 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 - [x] static assertions exist for 24-byte descriptor
 - [x] static assertions exist for 256-byte metadata region
 - [x] parser logic validates presence masks and plane ordering invariants
-- [x] `docs/cvmmap.ksy` remains the normative format document
+- [x] `docs/cvmmap_shm_metadata_v1_v2.ksy` is the versioned SHM format document
 
 ---
 
@@ -227,7 +227,7 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 Run this grep to verify all normative fields are present in ksy:
 
 ```bash
-grep -n "plane_descriptor_size\|plane_descriptor_capacity\|plane_presence_mask" docs/cvmmap.ksy
+grep -n "plane_descriptor_size\|plane_descriptor_capacity\|plane_presence_mask" docs/cvmmap_shm_metadata_v1_v2.ksy
 ```
 
 Expected output should include:

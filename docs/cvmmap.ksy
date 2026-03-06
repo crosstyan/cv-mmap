@@ -4,10 +4,17 @@ meta:
   endian: le
   license: MIT
 doc: |
-  Authoritative binary contract for cv-mmap IPC payloads.
+  Aggregate legacy Kaitai reference for cv-mmap IPC payloads.
+
+  Prefer the split, version-tagged schemas for new work:
+  - `docs/cvmmap_sync_v1.ksy`
+  - `docs/cvmmap_control_v1.ksy`
+  - `docs/cvmmap_shm_metadata_v1_v2.ksy`
+  - `docs/cvmmap_body_tracking_v1.ksy`
 
   This schema freezes the ABI for:
   - ZMQ PUB/SUB sync + module status messages,
+  - ZMQ PUB/SUB ZED body tracking messages,
   - ZMQ REQ/REP control messages,
   - POSIX SHM metadata region at bytes [0, 256).
 
@@ -24,6 +31,7 @@ enums:
     90: module_status      # 0x5A
     60: control_request    # 0x3C
     61: control_response   # 0x3D
+    98: body_tracking      # 0x62
 
   status_code:
     161: online            # 0xA1
@@ -52,6 +60,35 @@ enums:
   frame_plane_type:
     0: left
     1: depth
+
+  body_tracking_model:
+    0: human_body_fast
+    1: human_body_medium
+    2: human_body_accurate
+
+  body_format:
+    0: body_18
+    1: body_34
+    2: body_38
+
+  body_keypoint_selection:
+    0: full
+    1: upper_body
+
+  inference_precision:
+    0: fp32
+    1: fp16
+    2: int8
+
+  object_tracking_state:
+    0: off
+    1: ok
+    2: searching
+    3: terminate
+
+  object_action_state:
+    0: idle
+    1: moving
 
 types:
   sync_message:
@@ -167,6 +204,194 @@ types:
         size: response_message_size
         if: response_message_size > 0
 
+  body_tracking_message:
+    doc: |
+      ZMQ PUB/SUB body tracking message (64-byte header + fixed-size body records).
+      Produced only by the ZED backend when `[zed.body_tracking].enabled=true`.
+    seq:
+      - id: header
+        type: body_tracking_message_header
+      - id: bodies
+        type: body_tracking_body
+        repeat: expr
+        repeat-expr: header.body_count
+
+  body_tracking_message_header:
+    doc: |
+      Fixed-size body tracking header (64 bytes, packed).
+      Total packet size is `64 + body_count * body_record_size`.
+    seq:
+      - id: magic
+        type: u1
+        enum: topic_magic
+        valid: topic_magic::body_tracking
+      - id: reserved_0
+        type: u1
+      - id: versions_major
+        type: u1
+        valid: _ == 1
+      - id: versions_minor
+        type: u1
+        valid: _ == 0
+      - id: frame_count
+        type: u4
+      - id: timestamp_ns
+        type: u8
+      - id: sdk_timestamp_ns
+        type: u8
+      - id: body_count
+        type: u2
+      - id: body_record_size
+        type: u2
+        valid: _ == 3248
+      - id: body_format
+        type: u1
+        enum: body_format
+      - id: body_selection
+        type: u1
+        enum: body_keypoint_selection
+      - id: detection_model
+        type: u1
+        enum: body_tracking_model
+      - id: inference_precision
+        type: u1
+        enum: inference_precision
+      - id: flags
+        type: u2
+      - id: reserved_1
+        type: u2
+      - id: payload_size_bytes
+        type: u4
+      - id: label
+        type: strz
+        size: 24
+        encoding: ASCII
+    instances:
+      payload_size_valid:
+        value: payload_size_bytes == (body_count * body_record_size)
+
+  body_tracking_body:
+    doc: |
+      Fixed-size body record (3248 bytes).
+      Unavailable scalar/vector values are encoded as IEEE-754 NaN.
+      All keypoint arrays are padded to capacity 38 to keep a stable ABI across
+      BODY_18, BODY_34, BODY_38, and UPPER_BODY selections.
+    seq:
+      - id: id
+        type: s4
+      - id: tracking_state
+        type: u1
+        enum: object_tracking_state
+      - id: action_state
+        type: u1
+        enum: object_action_state
+      - id: reserved_0
+        size: 2
+      - id: confidence
+        type: f4
+      - id: position
+        type: f4
+        repeat: expr
+        repeat-expr: 3
+      - id: velocity
+        type: f4
+        repeat: expr
+        repeat-expr: 3
+      - id: position_covariance
+        type: f4
+        repeat: expr
+        repeat-expr: 6
+      - id: bounding_box_2d
+        type: vec2_f32
+        repeat: expr
+        repeat-expr: 4
+      - id: bounding_box_3d
+        type: vec3_f32
+        repeat: expr
+        repeat-expr: 8
+      - id: dimensions
+        type: f4
+        repeat: expr
+        repeat-expr: 3
+      - id: keypoint_2d
+        type: vec2_f32
+        repeat: expr
+        repeat-expr: 38
+      - id: keypoint_3d
+        type: vec3_f32
+        repeat: expr
+        repeat-expr: 38
+      - id: keypoint_confidence
+        type: f4
+        repeat: expr
+        repeat-expr: 38
+      - id: keypoint_covariance
+        type: covariance6_f32
+        repeat: expr
+        repeat-expr: 38
+      - id: head_bounding_box_2d
+        type: vec2_f32
+        repeat: expr
+        repeat-expr: 4
+      - id: head_bounding_box_3d
+        type: vec3_f32
+        repeat: expr
+        repeat-expr: 8
+      - id: head_position
+        type: f4
+        repeat: expr
+        repeat-expr: 3
+      - id: local_position_per_joint
+        type: vec3_f32
+        repeat: expr
+        repeat-expr: 38
+      - id: local_orientation_per_joint
+        type: vec4_f32
+        repeat: expr
+        repeat-expr: 38
+      - id: global_root_orientation
+        type: f4
+        repeat: expr
+        repeat-expr: 4
+      - id: keypoint_count
+        type: u2
+      - id: flags
+        type: u2
+
+  vec2_f32:
+    seq:
+      - id: x
+        type: f4
+      - id: y
+        type: f4
+
+  vec3_f32:
+    seq:
+      - id: x
+        type: f4
+      - id: y
+        type: f4
+      - id: z
+        type: f4
+
+  vec4_f32:
+    seq:
+      - id: x
+        type: f4
+      - id: y
+        type: f4
+      - id: z
+        type: f4
+      - id: w
+        type: f4
+
+  covariance6_f32:
+    seq:
+      - id: values
+        type: f4
+        repeat: expr
+        repeat-expr: 6
+
   frame_info:
     doc: |
       v1 frame information (12 bytes), mirrors `app::frame_info_t` exactly.
@@ -267,11 +492,11 @@ types:
         doc: Reserved bytes in [40..255]; payload starts at byte 256.
     instances:
       depth_size_bytes:
-        value: info.depth == depth::u8 ? 1 : info.depth == depth::s8 ? 1 : info.depth == depth::u16 ? 2 : info.depth == depth::s16 ? 2 : info.depth == depth::s32 ? 4 : info.depth == depth::f32 ? 4 : info.depth == depth::f64 ? 8 : 2
+        value: 'info.depth == depth::u8 ? 1 : info.depth == depth::s8 ? 1 : info.depth == depth::u16 ? 2 : info.depth == depth::s16 ? 2 : info.depth == depth::s32 ? 4 : info.depth == depth::f32 ? 4 : info.depth == depth::f64 ? 8 : 2'
       expected_min_stride_bytes:
         value: info.width * info.channels * depth_size_bytes
       normalized_stride_bytes:
-        value: info.height > 0 and (info.buffer_size % info.height) == 0 ? (info.buffer_size / info.height) : 0
+        value: 'info.height > 0 and (info.buffer_size % info.height) == 0 ? (info.buffer_size / info.height) : 0'
       normalization_valid:
         value: info.height > 0 and normalized_stride_bytes > 0 and normalized_stride_bytes >= expected_min_stride_bytes and (normalized_stride_bytes * info.height) == info.buffer_size
 
@@ -414,20 +639,20 @@ types:
       plane_0_expected_active:
         value: header.plane_count >= 1 and plane_0.is_empty_descriptor == false and plane_0.offset_bytes == 0
       plane_0_type_valid:
-        value: plane_0.plane_type == frame_plane_type::left
+        value: 'plane_0.plane_type == frame_plane_type::left'
       plane_0_nonzero_when_active:
-        value: header.plane_count < 1 ? true : (plane_0.width > 0 and plane_0.height > 0 and plane_0.stride_bytes > 0 and plane_0.size_bytes > 0)
+        value: 'header.plane_count < 1 ? true : (plane_0.width > 0 and plane_0.height > 0 and plane_0.stride_bytes > 0 and plane_0.size_bytes > 0)'
       plane_1_state_valid:
-        value: header.plane_count < 2 ? plane_1.is_empty_descriptor : (plane_1.is_empty_descriptor == false and plane_1.offset_bytes == (plane_0.offset_bytes + plane_0.size_bytes))
+        value: 'header.plane_count < 2 ? plane_1.is_empty_descriptor : (plane_1.is_empty_descriptor == false and plane_1.offset_bytes == (plane_0.offset_bytes + plane_0.size_bytes))'
       plane_1_type_valid:
-        value: header.plane_count < 2 ? true : plane_1.plane_type == frame_plane_type::depth
+        value: 'header.plane_count < 2 ? true : plane_1.plane_type == frame_plane_type::depth'
       plane_1_nonzero_when_active:
-        value: header.plane_count < 2 ? true : (plane_1.width > 0 and plane_1.height > 0 and plane_1.stride_bytes > 0 and plane_1.size_bytes > 0)
+        value: 'header.plane_count < 2 ? true : (plane_1.width > 0 and plane_1.height > 0 and plane_1.stride_bytes > 0 and plane_1.size_bytes > 0)'
       plane_2_state_valid:
-        value: header.plane_count < 3 ? plane_2.is_empty_descriptor : (plane_2.is_empty_descriptor == false and plane_2.offset_bytes == (plane_1.offset_bytes + plane_1.size_bytes))
+        value: 'header.plane_count < 3 ? plane_2.is_empty_descriptor : (plane_2.is_empty_descriptor == false and plane_2.offset_bytes == (plane_1.offset_bytes + plane_1.size_bytes))'
       plane_2_nonzero_when_active:
-        value: header.plane_count < 3 ? true : (plane_2.width > 0 and plane_2.height > 0 and plane_2.stride_bytes > 0 and plane_2.size_bytes > 0)
+        value: 'header.plane_count < 3 ? true : (plane_2.width > 0 and plane_2.height > 0 and plane_2.stride_bytes > 0 and plane_2.size_bytes > 0)'
       plane_3_state_valid:
-        value: header.plane_count < 4 ? plane_3.is_empty_descriptor : (plane_3.is_empty_descriptor == false and plane_3.offset_bytes == (plane_2.offset_bytes + plane_2.size_bytes))
+        value: 'header.plane_count < 4 ? plane_3.is_empty_descriptor : (plane_3.is_empty_descriptor == false and plane_3.offset_bytes == (plane_2.offset_bytes + plane_2.size_bytes))'
       plane_3_nonzero_when_active:
-        value: header.plane_count < 4 ? true : (plane_3.width > 0 and plane_3.height > 0 and plane_3.stride_bytes > 0 and plane_3.size_bytes > 0)
+        value: 'header.plane_count < 4 ? true : (plane_3.width > 0 and plane_3.height > 0 and plane_3.stride_bytes > 0 and plane_3.size_bytes > 0)'

@@ -168,6 +168,7 @@ cvmmap_target_t resolve_cvmmap_target_or_throw(const std::string &name_or_uri) {
 	target.shm_name     = resolved.base_name;
 	target.zmq_addr     = std::format("ipc://{}/{}", resolved.prefix, resolved.base_name);
 	target.zmq_control_addr = std::format("ipc://{}/{}_control", resolved.prefix, resolved.base_name);
+	target.zmq_body_addr = std::format("ipc://{}/{}_body", resolved.prefix, resolved.base_name);
 	return target;
 }
 

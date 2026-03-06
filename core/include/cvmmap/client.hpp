@@ -18,6 +18,8 @@ public:
 		const frame_metadata_t &metadata, std::span<const uint8_t> buffer)>;
 	using OnFramePlanesCallback = std::move_only_function<void(
 		const frame_metadata_t &metadata, frame_planes_view_t planes)>;
+	using OnBodyTrackingCallback = std::move_only_function<void(
+		const body_tracking_frame_t &frame)>;
 	using OnEventCallback = std::move_only_function<void(ModuleStatus status)>;
 
 	static constexpr auto DEFAULT_CONTROL_TIMEOUT =
@@ -38,6 +40,7 @@ public:
 
 	void SetFrameCallback(OnFrameCallback &&cb);
 	void SetFramePlanesCallback(OnFramePlanesCallback &&cb);
+	void SetBodyTrackingCallback(OnBodyTrackingCallback &&cb);
 	void SetEventCallback(OnEventCallback &&cb);
 
 	[[nodiscard]]

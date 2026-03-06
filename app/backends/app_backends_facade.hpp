@@ -6,6 +6,7 @@
 #include "proxy/v4/proxy.h"
 #include <proxy/proxy.h>
 #include "app_metadata_models.hpp"
+#include <cvmmap/ipc.hpp>
 
 namespace app::backends {
 /// @brief POSIX style error code
@@ -18,6 +19,7 @@ constexpr error_t ERR_EOS = ERR_OK;
 using on_metadata_fn_t = std::move_only_function<void(const frame_metadata_t &metadata)>;
 /// @brief Callback invoked for each captured frame with frame buffer and current metadata
 using on_frame_fn_t = std::move_only_function<void(std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata)>;
+using on_body_tracking_fn_t = std::move_only_function<void(const cvmmap::body_tracking_frame_t &frame)>;
 /// @brief Callback invoked on backend errors (e.g., capture failure, device disconnection)
 using on_error_fn_t = std::move_only_function<void(error_t error_code, std::string_view message)>;
 
@@ -25,6 +27,7 @@ PRO_DEF_MEM_DISPATCH(MemInit, Init);
 PRO_DEF_MEM_DISPATCH(MemShutdown, Shutdown);
 PRO_DEF_MEM_DISPATCH(MemSetOnMetadata, SetOnMetadata);
 PRO_DEF_MEM_DISPATCH(MemSetOnFrame, SetOnFrame);
+PRO_DEF_MEM_DISPATCH(MemSetOnBodyTracking, SetOnBodyTracking);
 PRO_DEF_MEM_DISPATCH(MemSetOnError, SetOnError);
 PRO_DEF_MEM_DISPATCH(MemSeekFrame, SeekFrame);
 PRO_DEF_MEM_DISPATCH(MemResetFrameCount, ResetFrameCount);
@@ -35,6 +38,7 @@ struct IBackend : pro::facade_builder
     ::add_convention<MemShutdown, void()>
     ::add_convention<MemSetOnMetadata, void(on_metadata_fn_t)>
     ::add_convention<MemSetOnFrame, void(on_frame_fn_t)>
+    ::add_convention<MemSetOnBodyTracking, void(on_body_tracking_fn_t)>
     ::add_convention<MemSetOnError, void(on_error_fn_t)>
     ::add_convention<MemSeekFrame, error_t(size_t)>
     ::add_convention<MemResetFrameCount, error_t()>

@@ -127,6 +127,10 @@ Test harnesses:
 ## Reference Documents
 
 - `docs/abi_v2_contract_checklist.md` - Full v2 field specifications
-- `docs/cvmmap.ksy` - Kaitai Struct specification (normative)
+- `docs/cvmmap_shm_metadata_v1_v2.ksy` - versioned SHM metadata Kaitai schema
+- `docs/cvmmap_sync_v1.ksy` - versioned sync message Kaitai schema
+- `docs/cvmmap_control_v1.ksy` - versioned control message Kaitai schema
+- `docs/cvmmap_body_tracking_v1.ksy` - versioned body tracking Kaitai schema
+- `docs/cvmmap.ksy` - aggregate legacy Kaitai reference
 - `docs/python-client.md` - Python client documentation
 - `core/fixtures/uri_targets.json` - installed URI resolution fixture contract

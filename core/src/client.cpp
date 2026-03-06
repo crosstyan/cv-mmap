@@ -3,6 +3,7 @@
 
 #include <spdlog/spdlog.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cassert>
 #include <cstring>
@@ -143,18 +144,21 @@ struct CvMmapClient::impl {
   std::string instance_name{};
   std::string shm_name{};
   std::string zmq_addr{};
+  std::string zmq_body_addr{};
   std::string zmq_control_addr{};
 
   bool has_init = false;
   std::atomic_bool is_running = false;
 
   zmq::socket_t socket{};
+  zmq::socket_t body_socket{};
   zmq::socket_t control_socket{};
   std::mutex control_mutex{}; // protect control_socket for thread-safe access
 
   std::unique_ptr<SharedBuffer> shared_buffer{};
   CvMmapClient::OnFrameCallback on_frame_callback{};
   CvMmapClient::OnFramePlanesCallback on_frame_planes_callback{};
+  CvMmapClient::OnBodyTrackingCallback on_body_tracking_callback{};
   CvMmapClient::OnEventCallback on_event_callback{};
 
   std::unique_ptr<std::thread> polling_thread{};
@@ -190,6 +194,7 @@ void CvMmapClient::impl::init() {
     return;
   }
   socket = zmq::socket_t(app::global_zmq_context(), zmq::socket_type::sub);
+  body_socket = zmq::socket_t(app::global_zmq_context(), zmq::socket_type::sub);
   control_socket = zmq::socket_t(app::global_zmq_context(), zmq::socket_type::req);
   has_init = true;
 }
@@ -202,6 +207,13 @@ void CvMmapClient::impl::start() {
   socket.set(zmq::sockopt::rcvtimeo_t{}, 100); // 100ms timeout
   socket.connect(zmq_addr);
   socket.set(zmq::sockopt::subscribe_t{}, "");
+
+  if (on_body_tracking_callback) {
+    body_socket.set(zmq::sockopt::conflate_t{}, true);
+    body_socket.set(zmq::sockopt::rcvtimeo_t{}, 100);
+    body_socket.connect(zmq_body_addr);
+    body_socket.set(zmq::sockopt::subscribe_t{}, "");
+  }
 
   // Connect control socket (lazy connect, actual timeout set per-request)
   control_socket.connect(zmq_control_addr);
@@ -231,8 +243,41 @@ void CvMmapClient::impl::stop() {
 
 void CvMmapClient::impl::polling_task_() {
   while (is_running.load(std::memory_order_acquire)) {
+    std::array<zmq::pollitem_t, 2> poll_items{{
+        {socket.handle(), 0, ZMQ_POLLIN, 0},
+        {on_body_tracking_callback ? body_socket.handle() : nullptr, 0, ZMQ_POLLIN, 0},
+    }};
+    try {
+      zmq::poll(poll_items, std::chrono::milliseconds{100});
+    } catch (const zmq::error_t &e) {
+      spdlog::error("client poll error: {}", e.what());
+      continue;
+    }
+
+    if (on_body_tracking_callback && (poll_items[1].revents & ZMQ_POLLIN)) {
+      auto body_message = zmq::message_t{};
+      auto body_res = body_socket.recv(body_message, zmq::recv_flags::dontwait);
+      if (body_res) {
+        const auto body_buf = std::span<const uint8_t>(
+            static_cast<uint8_t *>(body_message.data()), *body_res);
+        if (!body_buf.empty() && body_buf[0] == BODY_TRACKING_MAGIC &&
+            on_body_tracking_callback) {
+          auto parsed = parse_body_tracking_message(body_buf);
+          if (!parsed) {
+            spdlog::error("body packet parse error: {}", parsed.error());
+          } else {
+            on_body_tracking_callback(*parsed);
+          }
+        }
+      }
+    }
+
+    if (!(poll_items[0].revents & ZMQ_POLLIN)) {
+      continue;
+    }
+
     auto message = zmq::message_t{};
-    auto res = socket.recv(message, zmq::recv_flags::none);
+    auto res = socket.recv(message, zmq::recv_flags::dontwait);
     if (not res) {
       continue;
     }
@@ -433,6 +478,7 @@ CvMmapClient::CvMmapClient(const std::string &instance_name)
   pimpl_->instance_name = resolved.instance;
   pimpl_->shm_name = resolved.shm_name;
   pimpl_->zmq_addr = resolved.zmq_addr;
+  pimpl_->zmq_body_addr = resolved.zmq_body_addr;
   pimpl_->zmq_control_addr = resolved.zmq_control_addr;
   pimpl_->init();
 }
@@ -470,6 +516,10 @@ void CvMmapClient::SetFrameCallback(OnFrameCallback &&cb) {
 
 void CvMmapClient::SetFramePlanesCallback(OnFramePlanesCallback &&cb) {
   pimpl_->on_frame_planes_callback = std::move(cb);
+}
+
+void CvMmapClient::SetBodyTrackingCallback(OnBodyTrackingCallback &&cb) {
+  pimpl_->on_body_tracking_callback = std::move(cb);
 }
 
 void CvMmapClient::SetEventCallback(OnEventCallback &&cb) {

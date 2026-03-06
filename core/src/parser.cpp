@@ -343,4 +343,80 @@ parse_frame_metadata_regions(std::span<const uint8_t> metadata_region,
   return out;
 }
 
+std::expected<body_tracking_frame_t, std::string>
+parse_body_tracking_message(std::span<const uint8_t> message) {
+  if (message.size() < sizeof(body_tracking_message_header_t)) {
+    return std::unexpected(std::format(
+        "body message too small: {} < {}", message.size(),
+        sizeof(body_tracking_message_header_t)));
+  }
+
+  body_tracking_message_header_t header{};
+  std::memcpy(&header, message.data(), sizeof(header));
+
+  if (header._magic != BODY_TRACKING_MAGIC) {
+    return std::unexpected(std::format(
+        "invalid body message magic: expected 0x{:02x}, got 0x{:02x}",
+        BODY_TRACKING_MAGIC, header._magic));
+  }
+  if (header.versions_major != VERSION_MAJOR) {
+    return std::unexpected(std::format(
+        "unsupported body message major version: expected {}, got {}",
+        VERSION_MAJOR, header.versions_major));
+  }
+  if (header.body_record_size != sizeof(body_tracking_body_t)) {
+    return std::unexpected(std::format(
+        "invalid body_record_size: expected {}, got {}",
+        sizeof(body_tracking_body_t), header.body_record_size));
+  }
+
+  const auto expected_payload_size =
+      static_cast<size_t>(header.body_count) * sizeof(body_tracking_body_t);
+  if (expected_payload_size != header.payload_size_bytes) {
+    return std::unexpected(std::format(
+        "invalid payload_size_bytes: expected {}, got {}", expected_payload_size,
+        header.payload_size_bytes));
+  }
+
+  const auto total_size = sizeof(body_tracking_message_header_t) +
+                          static_cast<size_t>(header.payload_size_bytes);
+  if (message.size() < total_size) {
+    return std::unexpected(std::format(
+        "body message truncated: {} < {}", message.size(), total_size));
+  }
+
+  auto body_format_value = static_cast<uint8_t>(header.body_format);
+  if (body_format_value > static_cast<uint8_t>(BodyFormat::Body38)) {
+    return std::unexpected(
+        std::format("unsupported body_format={}", body_format_value));
+  }
+  auto body_selection_value = static_cast<uint8_t>(header.body_selection);
+  if (body_selection_value >
+      static_cast<uint8_t>(BodyKeypointSelection::UpperBody)) {
+    return std::unexpected(
+        std::format("unsupported body_selection={}", body_selection_value));
+  }
+  auto detection_model_value = static_cast<uint8_t>(header.detection_model);
+  if (detection_model_value >
+      static_cast<uint8_t>(BodyTrackingModel::HumanBodyAccurate)) {
+    return std::unexpected(
+        std::format("unsupported detection_model={}", detection_model_value));
+  }
+  auto precision_value = static_cast<uint8_t>(header.inference_precision);
+  if (precision_value > static_cast<uint8_t>(InferencePrecision::INT8)) {
+    return std::unexpected(
+        std::format("unsupported inference_precision={}", precision_value));
+  }
+
+  body_tracking_frame_t out{};
+  out.header = header;
+  out.bodies.resize(header.body_count);
+  if (header.body_count > 0) {
+    std::memcpy(out.bodies.data(),
+                message.data() + sizeof(body_tracking_message_header_t),
+                expected_payload_size);
+  }
+  return out;
+}
+
 } // namespace cvmmap

@@ -229,6 +229,91 @@ std::string validate_and_canonicalize_zed_depth_mode(const std::string_view dept
 		"'. Allowed values: NONE, NEURAL, NEURAL_LIGHT, NEURAL_PLUS "
 		"(aliases: neural light, neural-light, neural plus, neural-plus)");
 }
+
+std::string canonicalize_zed_body_tracking_model(const std::string_view detection_model) {
+	auto normalized = normalize_ascii_lower(trim_ascii_spaces(std::string(detection_model)));
+	std::replace(normalized.begin(), normalized.end(), '-', '_');
+	std::replace(normalized.begin(), normalized.end(), ' ', '_');
+
+	if (normalized == "fast" || normalized == "human_body_fast") {
+		return "HUMAN_BODY_FAST";
+	}
+	if (normalized == "medium" || normalized == "human_body_medium") {
+		return "HUMAN_BODY_MEDIUM";
+	}
+	if (normalized == "accurate" || normalized == "human_body_accurate") {
+		return "HUMAN_BODY_ACCURATE";
+	}
+
+	throw std::invalid_argument(
+		"invalid zed.body_tracking.detection_model: '" + std::string(detection_model) +
+		"'. Allowed values: HUMAN_BODY_FAST, HUMAN_BODY_MEDIUM, HUMAN_BODY_ACCURATE");
+}
+
+std::string canonicalize_zed_body_format(const std::string_view body_format) {
+	auto normalized = normalize_ascii_lower(trim_ascii_spaces(std::string(body_format)));
+	std::replace(normalized.begin(), normalized.end(), '-', '_');
+	std::replace(normalized.begin(), normalized.end(), ' ', '_');
+
+	if (normalized == "body_18" || normalized == "18") {
+		return "BODY_18";
+	}
+	if (normalized == "body_34" || normalized == "34") {
+		return "BODY_34";
+	}
+	if (normalized == "body_38" || normalized == "38") {
+		return "BODY_38";
+	}
+
+	throw std::invalid_argument(
+		"invalid zed.body_tracking.body_format: '" + std::string(body_format) +
+		"'. Allowed values: BODY_18, BODY_34, BODY_38");
+}
+
+std::string canonicalize_zed_body_selection(const std::string_view body_selection) {
+	auto normalized = normalize_ascii_lower(trim_ascii_spaces(std::string(body_selection)));
+	std::replace(normalized.begin(), normalized.end(), '-', '_');
+	std::replace(normalized.begin(), normalized.end(), ' ', '_');
+
+	if (normalized == "full") {
+		return "FULL";
+	}
+	if (normalized == "upper_body" || normalized == "upper") {
+		return "UPPER_BODY";
+	}
+
+	throw std::invalid_argument(
+		"invalid zed.body_tracking.body_selection: '" + std::string(body_selection) +
+		"'. Allowed values: FULL, UPPER_BODY");
+}
+
+void validate_zed_body_tracking_config(const app::ZedConfig::BodyTrackingConfig &cfg) {
+	if (!std::isfinite(cfg.max_range)) {
+		throw std::invalid_argument("zed.body_tracking.max_range must be finite");
+	}
+	if (cfg.max_range != -1.0f && cfg.max_range <= 0.0f) {
+		throw std::invalid_argument("zed.body_tracking.max_range must be -1 or positive");
+	}
+	if (!std::isfinite(cfg.prediction_timeout_s) || cfg.prediction_timeout_s < 0.0f) {
+		throw std::invalid_argument("zed.body_tracking.prediction_timeout_s must be finite and non-negative");
+	}
+	if (!std::isfinite(cfg.detection_confidence_threshold) ||
+		cfg.detection_confidence_threshold < 1.0f ||
+		cfg.detection_confidence_threshold > 100.0f) {
+		throw std::invalid_argument("zed.body_tracking.detection_confidence_threshold must be in [1, 100]");
+	}
+	if (cfg.minimum_keypoints_threshold < 0) {
+		throw std::invalid_argument("zed.body_tracking.minimum_keypoints_threshold must be non-negative");
+	}
+	if (!std::isfinite(cfg.skeleton_smoothing) ||
+		cfg.skeleton_smoothing < 0.0f ||
+		cfg.skeleton_smoothing > 1.0f) {
+		throw std::invalid_argument("zed.body_tracking.skeleton_smoothing must be in [0, 1]");
+	}
+	if (cfg.body_format == "BODY_34" && !cfg.enable_body_fitting) {
+		throw std::invalid_argument("zed.body_tracking.enable_body_fitting must be true when body_format=BODY_34");
+	}
+}
 } // namespace
 
 namespace app {
@@ -603,6 +688,44 @@ Config Config::from_toml(const std::filesystem::path &path) {
 			zed_cfg.left_pixel_format = "bgr8";
 		}
 
+		if (auto body_tracking = (*zed)["body_tracking"].as_table(); body_tracking) {
+			ZedConfig::BodyTrackingConfig body_tracking_cfg{};
+			body_tracking_cfg.enabled = (*body_tracking)["enabled"].value_or(false);
+
+			if (auto val = (*body_tracking)["detection_model"].value<std::string>(); val) {
+				body_tracking_cfg.detection_model = canonicalize_zed_body_tracking_model(*val);
+			}
+			if (auto val = (*body_tracking)["body_format"].value<std::string>(); val) {
+				body_tracking_cfg.body_format = canonicalize_zed_body_format(*val);
+			}
+			if (auto val = (*body_tracking)["body_selection"].value<std::string>(); val) {
+				body_tracking_cfg.body_selection = canonicalize_zed_body_selection(*val);
+			}
+
+			body_tracking_cfg.enable_body_fitting =
+				(*body_tracking)["enable_body_fitting"].value_or(body_tracking_cfg.enable_body_fitting);
+			body_tracking_cfg.allow_reduced_precision_inference =
+				(*body_tracking)["allow_reduced_precision_inference"].value_or(
+					body_tracking_cfg.allow_reduced_precision_inference);
+			body_tracking_cfg.max_range =
+				(*body_tracking)["max_range"].value_or(body_tracking_cfg.max_range);
+			body_tracking_cfg.prediction_timeout_s =
+				(*body_tracking)["prediction_timeout_s"].value_or(
+					body_tracking_cfg.prediction_timeout_s);
+			body_tracking_cfg.detection_confidence_threshold =
+				(*body_tracking)["detection_confidence_threshold"].value_or(
+					body_tracking_cfg.detection_confidence_threshold);
+			body_tracking_cfg.minimum_keypoints_threshold =
+				(*body_tracking)["minimum_keypoints_threshold"].value_or(
+					body_tracking_cfg.minimum_keypoints_threshold);
+			body_tracking_cfg.skeleton_smoothing =
+				(*body_tracking)["skeleton_smoothing"].value_or(
+					body_tracking_cfg.skeleton_smoothing);
+
+			validate_zed_body_tracking_config(body_tracking_cfg);
+			zed_cfg.body_tracking = std::move(body_tracking_cfg);
+		}
+
 		if (zed_cfg.serial && zed_cfg.index) {
 			throw invalid_argument("zed.serial and zed.index are mutually exclusive");
 		}
@@ -736,6 +859,23 @@ std::string Config::to_toml() const {
 		ss << "reconnect_interval_ms = " << zed->reconnect_interval_ms << "\n";
 		ss << "reconnect = " << (zed->reconnect ? "true" : "false") << "\n";
 		ss << "left_pixel_format = \"" << zed->left_pixel_format << "\"\n";
+
+		if (zed->body_tracking) {
+			const auto &body_tracking = *zed->body_tracking;
+			ss << "\n[zed.body_tracking]\n";
+			ss << "enabled = " << (body_tracking.enabled ? "true" : "false") << "\n";
+			ss << "detection_model = \"" << body_tracking.detection_model << "\"\n";
+			ss << "body_format = \"" << body_tracking.body_format << "\"\n";
+			ss << "body_selection = \"" << body_tracking.body_selection << "\"\n";
+			ss << "enable_body_fitting = " << (body_tracking.enable_body_fitting ? "true" : "false") << "\n";
+			ss << "allow_reduced_precision_inference = "
+			   << (body_tracking.allow_reduced_precision_inference ? "true" : "false") << "\n";
+			ss << "max_range = " << body_tracking.max_range << "\n";
+			ss << "prediction_timeout_s = " << body_tracking.prediction_timeout_s << "\n";
+			ss << "detection_confidence_threshold = " << body_tracking.detection_confidence_threshold << "\n";
+			ss << "minimum_keypoints_threshold = " << body_tracking.minimum_keypoints_threshold << "\n";
+			ss << "skeleton_smoothing = " << body_tracking.skeleton_smoothing << "\n";
+		}
 	}
 
 	return ss.str();

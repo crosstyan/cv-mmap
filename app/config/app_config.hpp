@@ -48,6 +48,20 @@ struct DummyConfig {
 };
 
 struct ZedConfig {
+	struct BodyTrackingConfig {
+		bool enabled{false};
+		std::string detection_model{"HUMAN_BODY_ACCURATE"};
+		std::string body_format{"BODY_18"};
+		std::string body_selection{"FULL"};
+		bool enable_body_fitting{false};
+		bool allow_reduced_precision_inference{false};
+		float max_range{-1.0f};
+		float prediction_timeout_s{0.2f};
+		float detection_confidence_threshold{20.0f};
+		int minimum_keypoints_threshold{0};
+		float skeleton_smoothing{0.0f};
+	};
+
 	std::optional<int> serial;
 	std::optional<int> index;
 	std::string stream_mode{"local"};
@@ -62,6 +76,7 @@ struct ZedConfig {
 	int reconnect_interval_ms{1000};
 	bool reconnect{true};
 	std::string left_pixel_format{"bgr8"};
+	std::optional<BodyTrackingConfig> body_tracking;
 };
 
 struct VideoConfig {
@@ -138,6 +153,13 @@ struct Config {
 		return cvmmap::resolve_cvmmap_target_or_throw(
 			std::format("cvmmap://{}@{}?namespace={}", name, ipc.prefix, ipc.name_space))
 			.zmq_control_addr;
+	}
+
+	[[nodiscard]]
+	std::string zmq_body_address() const {
+		return cvmmap::resolve_cvmmap_target_or_throw(
+			std::format("cvmmap://{}@{}?namespace={}", name, ipc.prefix, ipc.name_space))
+			.zmq_body_addr;
 	}
 };
 

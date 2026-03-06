@@ -9,6 +9,7 @@
       "base_name": "cvmmap_default",
       "shm_name": "cvmmap_default",
       "zmq_addr": "ipc:///tmp/cvmmap_default",
+      "zmq_body_addr": "ipc:///tmp/cvmmap_default_body",
       "zmq_control_addr": "ipc:///tmp/cvmmap_default_control"
     },
     {
@@ -19,6 +20,7 @@
       "base_name": "zed_camera0",
       "shm_name": "zed_camera0",
       "zmq_addr": "ipc:///run/cvmmap/zed_camera0",
+      "zmq_body_addr": "ipc:///run/cvmmap/zed_camera0_body",
       "zmq_control_addr": "ipc:///run/cvmmap/zed_camera0_control"
     }
   ],

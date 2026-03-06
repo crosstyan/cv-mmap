@@ -7,6 +7,7 @@
 #include <optional>
 #include <span>
 #include <string_view>
+#include <vector>
 
 namespace cvmmap {
 
@@ -18,6 +19,7 @@ constexpr uint8_t MODULE_STATUS_MAGIC = 0x5a;
 
 constexpr uint8_t CONTROL_MESSAGE_REQUEST_MAGIC = 0x3c;
 constexpr uint8_t CONTROL_MESSAGE_RESPONSE_MAGIC = 0x3d;
+constexpr uint8_t BODY_TRACKING_MAGIC = 0x62;
 
 constexpr int32_t CONTROL_MSG_CMD_GENERIC = 0;
 constexpr int32_t CONTROL_MSG_CMD_RESET_FRAME_COUNT = 0x1001;
@@ -73,6 +75,53 @@ enum class ModuleStatus : int32_t {
 	Offline = MODULE_STATUS_OFFLINE,
 	StreamReset = MODULE_STATUS_STREAM_RESET,
 };
+
+enum class BodyTrackingModel : uint8_t {
+	HumanBodyFast = 0,
+	HumanBodyMedium = 1,
+	HumanBodyAccurate = 2,
+};
+
+enum class BodyFormat : uint8_t {
+	Body18 = 0,
+	Body34 = 1,
+	Body38 = 2,
+};
+
+enum class BodyKeypointSelection : uint8_t {
+	Full = 0,
+	UpperBody = 1,
+};
+
+enum class InferencePrecision : uint8_t {
+	FP32 = 0,
+	FP16 = 1,
+	INT8 = 2,
+};
+
+enum class ObjectTrackingState : uint8_t {
+	Off = 0,
+	Ok = 1,
+	Searching = 2,
+	Terminate = 3,
+};
+
+enum class ObjectActionState : uint8_t {
+	Idle = 0,
+	Moving = 1,
+};
+
+constexpr uint16_t BODY_TRACKING_FLAG_IS_NEW = 0x0001;
+constexpr uint16_t BODY_TRACKING_FLAG_IS_TRACKED = 0x0002;
+constexpr uint16_t BODY_TRACKING_FLAG_BODY_FITTING_ENABLED = 0x0004;
+constexpr uint16_t BODY_TRACKING_FLAG_REDUCED_PRECISION_REQUESTED = 0x0008;
+
+constexpr uint16_t BODY_TRACKING_BODY_FLAG_HAS_LOCAL_JOINTS = 0x0001;
+constexpr uint16_t BODY_TRACKING_BODY_FLAG_HAS_ROOT_ORIENTATION = 0x0002;
+
+constexpr size_t BODY_KEYPOINT_CAPACITY = 38;
+constexpr size_t BODY_BOX2D_POINTS = 4;
+constexpr size_t BODY_BOX3D_POINTS = 8;
 
 constexpr int size_of(Depth depth) {
 	switch (depth) {
@@ -266,5 +315,67 @@ struct control_message_response_t {
 };
 static_assert(sizeof(control_message_response_t) == 40,
 			  "control_message_response_t must be 40 bytes");
+
+#pragma pack(push, 1)
+struct body_tracking_message_header_t {
+	[[nodiscard]]
+	std::string_view label() const {
+		return std::string_view{reinterpret_cast<const char *>(_label)};
+	}
+
+	uint8_t _magic{BODY_TRACKING_MAGIC};
+	uint8_t _reserved_0{0};
+	uint8_t versions_major{VERSION_MAJOR};
+	uint8_t versions_minor{VERSION_MINOR};
+	uint32_t frame_count{0};
+	uint64_t timestamp_ns{0};
+	uint64_t sdk_timestamp_ns{0};
+	uint16_t body_count{0};
+	uint16_t body_record_size{0};
+	BodyFormat body_format{BodyFormat::Body18};
+	BodyKeypointSelection body_selection{BodyKeypointSelection::Full};
+	BodyTrackingModel detection_model{BodyTrackingModel::HumanBodyAccurate};
+	InferencePrecision inference_precision{InferencePrecision::FP32};
+	uint16_t flags{0};
+	uint16_t _reserved_1{0};
+	uint32_t payload_size_bytes{0};
+	uint8_t _label[LABEL_LEN_MAX]{};
+};
+static_assert(sizeof(body_tracking_message_header_t) == 64,
+			  "body_tracking_message_header_t must be 64 bytes");
+
+struct body_tracking_body_t {
+	int32_t id{-1};
+	ObjectTrackingState tracking_state{ObjectTrackingState::Off};
+	ObjectActionState action_state{ObjectActionState::Idle};
+	uint8_t _reserved_0[2]{};
+	float confidence{0.0f};
+	std::array<float, 3> position{};
+	std::array<float, 3> velocity{};
+	std::array<float, 6> position_covariance{};
+	std::array<std::array<float, 2>, BODY_BOX2D_POINTS> bounding_box_2d{};
+	std::array<std::array<float, 3>, BODY_BOX3D_POINTS> bounding_box_3d{};
+	std::array<float, 3> dimensions{};
+	std::array<std::array<float, 2>, BODY_KEYPOINT_CAPACITY> keypoint_2d{};
+	std::array<std::array<float, 3>, BODY_KEYPOINT_CAPACITY> keypoint_3d{};
+	std::array<float, BODY_KEYPOINT_CAPACITY> keypoint_confidence{};
+	std::array<std::array<float, 6>, BODY_KEYPOINT_CAPACITY> keypoint_covariance{};
+	std::array<std::array<float, 2>, BODY_BOX2D_POINTS> head_bounding_box_2d{};
+	std::array<std::array<float, 3>, BODY_BOX3D_POINTS> head_bounding_box_3d{};
+	std::array<float, 3> head_position{};
+	std::array<std::array<float, 3>, BODY_KEYPOINT_CAPACITY> local_position_per_joint{};
+	std::array<std::array<float, 4>, BODY_KEYPOINT_CAPACITY> local_orientation_per_joint{};
+	std::array<float, 4> global_root_orientation{};
+	uint16_t keypoint_count{0};
+	uint16_t flags{0};
+};
+static_assert(sizeof(body_tracking_body_t) == 3248,
+			  "body_tracking_body_t must be 3248 bytes");
+#pragma pack(pop)
+
+struct body_tracking_frame_t {
+	body_tracking_message_header_t header{};
+	std::vector<body_tracking_body_t> bodies{};
+};
 
 } // namespace cvmmap

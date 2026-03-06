@@ -3,6 +3,10 @@ project(cv-mmap)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+option(CVMMAP_BUILD_TESTS "Build cv-mmap test targets" OFF)
+if(CVMMAP_BUILD_TESTS)
+	enable_testing()
+endif()
 
 # brew install cppzmq
 # or

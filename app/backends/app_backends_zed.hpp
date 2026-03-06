@@ -23,6 +23,7 @@ struct ZedBackend {
 	void Shutdown();
 	void SetOnMetadata(on_metadata_fn_t on_metadata);
 	void SetOnFrame(on_frame_fn_t on_frame);
+	void SetOnBodyTracking(on_body_tracking_fn_t on_body_tracking);
 	void SetOnError(on_error_fn_t on_error);
 	error_t SeekFrame(size_t frame_index);
 	error_t ResetFrameCount();

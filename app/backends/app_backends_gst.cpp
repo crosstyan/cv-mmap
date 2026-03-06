@@ -513,6 +513,8 @@ struct GStreamerBackendImpl {
 		_on_frame = std::move(on_frame_);
 	}
 
+	void SetOnBodyTracking(on_body_tracking_fn_t) {}
+
 	void SetOnError(on_error_fn_t on_error_) {
 		_on_error = std::move(on_error_);
 	}
@@ -591,6 +593,10 @@ void GStreamerBackend::SetOnMetadata(on_metadata_fn_t on_metadata) {
 
 void GStreamerBackend::SetOnFrame(on_frame_fn_t on_frame) {
 	impl->SetOnFrame(std::move(on_frame));
+}
+
+void GStreamerBackend::SetOnBodyTracking(on_body_tracking_fn_t on_body_tracking) {
+	impl->SetOnBodyTracking(std::move(on_body_tracking));
 }
 
 void GStreamerBackend::SetOnError(on_error_fn_t on_error) {

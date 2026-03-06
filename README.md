@@ -57,7 +57,11 @@ The current protocol state is intentionally mixed-version:
 
 Normative spec documents live under `docs/`, especially:
 
-- `docs/cvmmap.ksy`
+- `docs/cvmmap_sync_v1.ksy`
+- `docs/cvmmap_control_v1.ksy`
+- `docs/cvmmap_shm_metadata_v1_v2.ksy`
+- `docs/cvmmap_body_tracking_v1.ksy`
+- `docs/cvmmap.ksy` (aggregate legacy reference)
 - `docs/abi_v2_contract_checklist.md`
 - `docs/abi_v2_migration_guide.md`
 - `docs/python-client.md`

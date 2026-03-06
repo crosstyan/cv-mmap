@@ -88,3 +88,8 @@ install(
 		"${CMAKE_CURRENT_BINARY_DIR}/cvmmap-coreConfigVersion.cmake"
 	DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/cvmmap-core"
 )
+
+if (CVMMAP_BUILD_TESTS)
+	enable_testing()
+	add_subdirectory(tests)
+endif()

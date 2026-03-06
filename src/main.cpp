@@ -12,6 +12,7 @@
 #include <string_view>
 #include <string>
 #include <expected>
+#include <vector>
 #include <span>
 #include <CLI/CLI.hpp>
 #include <spdlog/spdlog.h>
@@ -97,11 +98,21 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 
+	const bool body_stream_enabled =
+		config.video.backend == app::BackendType::ZED &&
+		config.zed &&
+		config.zed->body_tracking &&
+		config.zed->body_tracking->enabled;
+
 	// https://libzmq.readthedocs.io/en/latest/zmq_ipc.html
 	// https://libzmq.readthedocs.io/en/latest/zmq_inproc.html
 	// note that `zmq::socket_t` is RAII aware already
 	zmq::context_t ctx;
 	zmq::socket_t sock(ctx, zmq::socket_type::pub);
+	std::optional<zmq::socket_t> body_sock;
+	if (body_stream_enabled) {
+		body_sock.emplace(ctx, zmq::socket_type::pub);
+	}
 	deferrer zmq_deferrer([&sock, &ctx, zmq_address = config.zmq_address()] {
 		if (zmq_address.starts_with(IPC_PREFIX)) {
 			const auto path = zmq_address.substr(std::string_view(IPC_PREFIX).size());
@@ -136,6 +147,36 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 	spdlog::info("bond to ZMQ address: `{}`", config.zmq_address());
+
+	deferrer zmq_body_deferrer([&body_sock, zmq_body_address = config.zmq_body_address()] {
+		if (!body_sock) {
+			return;
+		}
+		if (zmq_body_address.starts_with(IPC_PREFIX)) {
+			const auto path = zmq_body_address.substr(std::string_view(IPC_PREFIX).size());
+			const auto err  = unlink(path.c_str());
+			if (err == -1) {
+				spdlog::error("unlink ZMQ body address `{}` because of `{} ({})`", path, strerror(errno), errno);
+			}
+		}
+	});
+
+	if (body_stream_enabled) {
+		try {
+			body_sock->bind(config.zmq_body_address());
+			if (config.zmq_body_address().starts_with(IPC_PREFIX)) {
+				const auto path = config.zmq_body_address().substr(std::string_view(IPC_PREFIX).size());
+				const auto ok = chmod(path.c_str(), S_IRWXU | S_IRWXG | S_IRWXO);
+				if (ok == -1) {
+					spdlog::warn("chmod ZMQ body address `{}` because of `{}`", path, strerror(errno));
+				}
+			}
+		} catch (const zmq::error_t &e) {
+			spdlog::error("bind to ZMQ body address: `{}`", e.what());
+			return 1;
+		}
+		spdlog::info("bond to ZMQ body address: `{}`", config.zmq_body_address());
+	}
 
 	// Control socket (REQ/REP pattern)
 	zmq::socket_t control_sock(ctx, zmq::socket_type::rep);
@@ -362,7 +403,34 @@ int main(int argc, char **argv) {
 		return static_cast<uint64_t>(
 			std::chrono::duration_cast<std::chrono::nanoseconds>(
 				std::chrono::system_clock::now().time_since_epoch())
-				.count());
+			.count());
+	};
+
+	const auto serialize_body_tracking_frame = [&config](const cvmmap::body_tracking_frame_t &frame) -> std::vector<uint8_t> {
+		auto header = frame.header;
+		header._magic = cvmmap::BODY_TRACKING_MAGIC;
+		header.versions_major = VERSION_MAJOR;
+		header.versions_minor = VERSION_MINOR;
+		std::memset(header._label, 0, sizeof(header._label));
+		std::memcpy(
+			header._label,
+			config.name.data(),
+			std::min(sizeof(header._label), config.name.size()));
+		header.body_count = static_cast<uint16_t>(frame.bodies.size());
+		header.body_record_size = sizeof(cvmmap::body_tracking_body_t);
+		header.payload_size_bytes = static_cast<uint32_t>(
+			frame.bodies.size() * sizeof(cvmmap::body_tracking_body_t));
+
+		std::vector<uint8_t> bytes(
+			sizeof(cvmmap::body_tracking_message_header_t) + header.payload_size_bytes);
+		std::memcpy(bytes.data(), &header, sizeof(header));
+		if (!frame.bodies.empty()) {
+			std::memcpy(
+				bytes.data() + sizeof(header),
+				frame.bodies.data(),
+				header.payload_size_bytes);
+		}
+		return bytes;
 	};
 
 	const auto build_v2_metadata = [&to_u32](const frame_metadata_t &source_metadata, size_t payload_size) -> std::optional<frame_metadata_v2_t> {
@@ -632,6 +700,18 @@ int main(int argc, char **argv) {
 			sock.send(zmq::buffer(buffer), zmq::send_flags::none);
 		} catch (const zmq::error_t &e) {
 			spdlog::error("send synchronization message for frame@{}; {}", metadata.frame_count, e.what());
+		}
+	});
+
+	backend->SetOnBodyTracking([&body_sock, &serialize_body_tracking_frame](const cvmmap::body_tracking_frame_t &frame) {
+		if (!body_sock) {
+			return;
+		}
+		try {
+			auto bytes = serialize_body_tracking_frame(frame);
+			body_sock->send(zmq::buffer(bytes), zmq::send_flags::none);
+		} catch (const zmq::error_t &e) {
+			spdlog::error("send body tracking message for frame@{}; {}", frame.header.frame_count, e.what());
 		}
 	});
 
