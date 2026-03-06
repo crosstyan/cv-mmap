@@ -477,22 +477,39 @@ int main(int argc, char **argv) {
 		const size_t left_compact_size =
 			left_expected_stride * static_cast<size_t>(source_metadata.info.height);
 
-		size_t left_size        = payload_size;
-		size_t depth_size       = 0;
-		bool depth_plane_active = false;
+		size_t left_size             = payload_size;
+		size_t depth_size            = 0;
+		size_t confidence_size       = 0;
+		bool depth_plane_active      = false;
+		bool confidence_plane_active = false;
 
 		const size_t depth_expected_stride =
 			static_cast<size_t>(source_metadata.info.width) * sizeof(float);
 		const size_t depth_compact_size =
 			depth_expected_stride * static_cast<size_t>(source_metadata.info.height);
 
-		const bool matches_packed_left_plus_depth_contract =
+		const size_t packed_extra_size =
+			payload_size >= left_compact_size ? (payload_size - left_compact_size) : 0;
+		const bool has_exact_depth_tail =
 			left_compact_size > 0 &&
 			depth_compact_size > 0 &&
 			payload_size >= left_compact_size &&
-			(payload_size - left_compact_size) == depth_compact_size;
+			packed_extra_size == depth_compact_size;
+		const bool has_exact_depth_and_confidence_tail =
+			left_compact_size > 0 &&
+			depth_compact_size > 0 &&
+			payload_size >= left_compact_size &&
+			packed_extra_size == (depth_compact_size * 2);
 
-		if (matches_packed_left_plus_depth_contract) {
+		// The ZED backend emits compact payloads as:
+		// left | depth | optional confidence
+		if (has_exact_depth_and_confidence_tail) {
+			left_size               = left_compact_size;
+			depth_size              = depth_compact_size;
+			confidence_size         = depth_compact_size;
+			depth_plane_active      = true;
+			confidence_plane_active = true;
+		} else if (has_exact_depth_tail) {
 			left_size          = left_compact_size;
 			depth_size         = depth_compact_size;
 			depth_plane_active = true;
@@ -542,6 +559,33 @@ int main(int argc, char **argv) {
 
 			metadata_v2.header.plane_count         = 2;
 			metadata_v2.header.plane_presence_mask = 0x03;
+		}
+
+		if (confidence_plane_active) {
+			auto confidence_size_u32 = to_u32(confidence_size);
+			auto confidence_offset_u32 = to_u32(left_size + depth_size);
+			if (!confidence_size_u32 || !confidence_offset_u32) {
+				return std::nullopt;
+			}
+
+			auto confidence_stride_u32 =
+				make_stride(confidence_size, source_metadata.info.height, depth_expected_stride);
+			if (!confidence_stride_u32) {
+				return std::nullopt;
+			}
+
+			auto &confidence_descriptor        = metadata_v2.plane_descriptors[2];
+			confidence_descriptor.plane_type   = FramePlaneType::CONFIDENCE;
+			confidence_descriptor.pixel_format = PixelFormat::GRAY;
+			confidence_descriptor.depth        = Depth::F32;
+			confidence_descriptor.width        = source_metadata.info.width;
+			confidence_descriptor.height       = source_metadata.info.height;
+			confidence_descriptor.stride_bytes = *confidence_stride_u32;
+			confidence_descriptor.offset_bytes = *confidence_offset_u32;
+			confidence_descriptor.size_bytes   = *confidence_size_u32;
+
+			metadata_v2.header.plane_count         = 3;
+			metadata_v2.header.plane_presence_mask = 0x07;
 		}
 
 		return metadata_v2;

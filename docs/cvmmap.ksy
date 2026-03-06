@@ -60,6 +60,7 @@ enums:
   frame_plane_type:
     0: left
     1: depth
+    2: confidence
 
   body_tracking_model:
     0: human_body_fast
@@ -610,6 +611,7 @@ types:
       - Active descriptors are contiguous from slot 0.
       - Slot 0 is always LEFT plane.
       - Slot 1 is DEPTH plane when `plane_count >= 2`.
+      - Slot 2 is CONFIDENCE plane when `plane_count >= 3`.
       - Slots >= plane_count are inactive and must be empty descriptors.
       - Active planes are packed in payload order: each next offset equals the
         previous offset + previous size.
@@ -650,6 +652,8 @@ types:
         value: 'header.plane_count < 2 ? true : (plane_1.width > 0 and plane_1.height > 0 and plane_1.stride_bytes > 0 and plane_1.size_bytes > 0)'
       plane_2_state_valid:
         value: 'header.plane_count < 3 ? plane_2.is_empty_descriptor : (plane_2.is_empty_descriptor == false and plane_2.offset_bytes == (plane_1.offset_bytes + plane_1.size_bytes))'
+      plane_2_type_valid:
+        value: 'header.plane_count < 3 ? true : plane_2.plane_type == frame_plane_type::confidence'
       plane_2_nonzero_when_active:
         value: 'header.plane_count < 3 ? true : (plane_2.width > 0 and plane_2.height > 0 and plane_2.stride_bytes > 0 and plane_2.size_bytes > 0)'
       plane_3_state_valid:

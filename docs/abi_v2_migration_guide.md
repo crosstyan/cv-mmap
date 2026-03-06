@@ -115,6 +115,7 @@ Both Python and C++ client consumers use deterministic protocol fixtures for tes
 | v1 valid | Verify v1 backward compatibility |
 | v2 left-only valid | Verify v2 single-plane parsing |
 | v2 left+depth valid | Verify v2 two-plane parsing |
+| v2 left+depth+confidence valid | Verify optional v2 confidence-plane parsing |
 | v2 malformed | Verify rejection of out-of-bounds descriptors |
 
 Test harnesses:

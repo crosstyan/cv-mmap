@@ -454,6 +454,7 @@ struct ZedBackendImpl {
 	sl::VIEW left_view{sl::VIEW::LEFT};
 	sl::Mat left_frame;
 	sl::Mat depth_frame;
+	sl::Mat confidence_frame;
 	std::vector<uint8_t> packed_frame;
 	std::optional<cvmmap::body_tracking_frame_t> pending_body_tracking_frame;
 	std::jthread worker_thread;
@@ -468,6 +469,7 @@ struct ZedBackendImpl {
 	int consecutive_failures{0};
 	size_t packed_left_size{0};
 	size_t packed_depth_size{0};
+	size_t packed_confidence_size{0};
 	std::vector<uint8_t> last_good_depth_plane;
 
 	// =======================================================================
@@ -804,8 +806,10 @@ struct ZedBackendImpl {
 			return false;
 		}
 		packed_depth_size = 0;
+		packed_confidence_size = 0;
 
 		std::vector<uint8_t> depth_plane_payload;
+		std::vector<uint8_t> confidence_plane_payload;
 
 		if (depth_enabled) {
 			const size_t depth_row_bytes   = static_cast<size_t>(left_frame.getWidth()) * sizeof(float);
@@ -855,11 +859,52 @@ struct ZedBackendImpl {
 					std::fill(depth_plane_payload.begin(), depth_plane_payload.end(), 0);
 				}
 			}
+
+			confidence_plane_payload.resize(depth_total_bytes);
+
+			const auto confidence_result = camera.retrieveMeasure(
+				confidence_frame,
+				sl::MEASURE::CONFIDENCE,
+				sl::MEM::CPU,
+				sl::Resolution(left_frame.getWidth(), left_frame.getHeight()));
+
+			const auto confidence_geometry_valid =
+				confidence_frame.getDataType() == sl::MAT_TYPE::F32_C1 &&
+				confidence_frame.getWidth() == left_frame.getWidth() &&
+				confidence_frame.getHeight() == left_frame.getHeight();
+
+			const auto confidence_copy_ok =
+				confidence_result == sl::ERROR_CODE::SUCCESS &&
+				confidence_geometry_valid &&
+				copy_compact_plane(confidence_frame, depth_row_bytes, std::span<uint8_t>(confidence_plane_payload));
+
+			if (confidence_copy_ok) {
+				packed_confidence_size = depth_total_bytes;
+			} else if (confidence_result != sl::ERROR_CODE::SUCCESS) {
+				spdlog::debug(
+					"ZED retrieveMeasure(CONFIDENCE) unavailable: code={}; publishing left/depth only",
+					static_cast<int>(confidence_result));
+			} else if (!confidence_geometry_valid) {
+				spdlog::warn(
+					"ZED confidence plane shape/type mismatch (type={}, {}x{} vs left {}x{}); publishing left/depth only",
+					static_cast<int>(confidence_frame.getDataType()),
+					confidence_frame.getWidth(),
+					confidence_frame.getHeight(),
+					left_frame.getWidth(),
+					left_frame.getHeight());
+			} else {
+				spdlog::warn("ZED confidence plane compaction failed; publishing left/depth only");
+			}
 		}
 
-		const auto packed_size = packed_left_size + packed_depth_size;
+		const auto packed_size = packed_left_size + packed_depth_size + packed_confidence_size;
 		if (packed_size == 0 || packed_size > std::numeric_limits<uint32_t>::max()) {
-			spdlog::error("invalid packed frame size: left={} depth={} total={}", packed_left_size, packed_depth_size, packed_size);
+			spdlog::error(
+				"invalid packed frame size: left={} depth={} confidence={} total={}",
+				packed_left_size,
+				packed_depth_size,
+				packed_confidence_size,
+				packed_size);
 			return false;
 		}
 
@@ -878,6 +923,19 @@ struct ZedBackendImpl {
 				packed_frame.data() + packed_left_size,
 				depth_plane_payload.data(),
 				packed_depth_size);
+		}
+		if (packed_confidence_size > 0) {
+			if (confidence_plane_payload.size() < packed_confidence_size) {
+				spdlog::error(
+					"confidence payload size mismatch: got={} expected={}",
+					confidence_plane_payload.size(),
+					packed_confidence_size);
+				return false;
+			}
+			std::memcpy(
+				packed_frame.data() + packed_left_size + packed_depth_size,
+				confidence_plane_payload.data(),
+				packed_confidence_size);
 		}
 
 		if (packed_frame.empty()) {

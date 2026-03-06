@@ -213,6 +213,7 @@ static_assert(std::alignment_of<frame_metadata_t>::value == 8, "frame_metadata_t
 enum class FramePlaneType : uint8_t {
 	LEFT  = 0,
 	DEPTH = 1,
+	CONFIDENCE = 2,
 };
 
 #pragma pack(push, 1)

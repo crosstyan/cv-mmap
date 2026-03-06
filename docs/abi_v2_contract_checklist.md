@@ -96,8 +96,9 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 **Rule 1:** Active descriptors are contiguous from slot 0.  
 **Rule 2:** Slot 0 is always LEFT plane.  
 **Rule 3:** Slot 1 is DEPTH plane when `plane_count >= 2`.  
-**Rule 4:** Slots >= plane_count are inactive and must be empty descriptors.  
-**Rule 5:** Active planes are packed in payload order: each next offset equals the previous offset + previous size.
+**Rule 4:** Slot 2 is CONFIDENCE plane when `plane_count >= 3`.  
+**Rule 5:** Slots >= plane_count are inactive and must be empty descriptors.  
+**Rule 6:** Active planes are packed in payload order: each next offset equals the previous offset + previous size.
 
 ### Plane Slot Semantics
 
@@ -105,7 +106,7 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 |------|------------|-----------|
 | 0 | `left` | Always active (plane_count >= 1) |
 | 1 | `depth` | Active when plane_count >= 2 |
-| 2 | Reserved | Active when plane_count >= 3 |
+| 2 | `confidence` | Active when plane_count >= 3 |
 | 3 | Reserved | Active when plane_count == 4 |
 
 ---
@@ -194,6 +195,7 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 |-------|------|
 | 0 | `left` |
 | 1 | `depth` |
+| 2 | `confidence` |
 
 ### `pixel_format` (u1)
 
