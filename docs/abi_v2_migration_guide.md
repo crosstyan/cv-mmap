@@ -108,7 +108,7 @@ This is passive reception, not active sender coordination. Sender management is 
 
 ## Fixture-Driven Parser Validation
 
-Both Python and GUI consumers use deterministic protocol fixtures for testing:
+Both Python and external client-library consumers use deterministic protocol fixtures for testing:
 
 | Fixture | Purpose |
 |---------|---------|
@@ -119,7 +119,7 @@ Both Python and GUI consumers use deterministic protocol fixtures for testing:
 
 Test harnesses:
 - Python: `pytest tests/test_import_and_protocol.py`
-- GUI: `cmake -S app/cvmmap-client/tests -B build && cmake --build build && ./build/protocol_fixture_check`
+- C++ client library (external repo `/home/crosstyan/Code/cv-mmap-gui`, under `app/lib/cvmmap-client-cpp`): `cmake -S app/lib/cvmmap-client-cpp/tests -B build-protocol-fixture-check && cmake --build build-protocol-fixture-check && (cd app/lib/cvmmap-client-cpp && ../../../build-protocol-fixture-check/protocol_fixture_check)`
 
 ---
 
