@@ -12,6 +12,7 @@ find_package(fmt REQUIRED)
 set(APP_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/app/lib)
 
 add_subdirectory(${APP_LIB_DIR}/CLI11)
+add_subdirectory(core)
 
 
 add_executable(cv-mmap src/main.cpp)

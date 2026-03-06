@@ -20,7 +20,7 @@ target_include_directories(app_models PUBLIC models)
 add_library(app_config STATIC config/app_config.cpp)
 target_include_directories(app_config PUBLIC config)
 add_subdirectory(${APP_LIB_DIR}/tomlplusplus)
-target_link_libraries(app_config PUBLIC app_models tomlplusplus::tomlplusplus)
+target_link_libraries(app_config PUBLIC app_models tomlplusplus::tomlplusplus cvmmap_target)
 
 ####### VERSION #######
 add_library(app_version STATIC version/app_version.cpp)
@@ -102,6 +102,7 @@ endif()
 ####### BACKENDS #######
 add_library(app_video_backends STATIC)
 target_include_directories(app_video_backends PUBLIC backends)
+target_sources(app_video_backends PRIVATE backends/app_backends_dummy.cpp)
 
 if (WITH_BACKEND_OPENCV)
 		find_package(OpenCV REQUIRED COMPONENTS videoio)
@@ -145,9 +146,6 @@ if (WITH_BACKEND_ZED)
         target_link_libraries(app_video_backends PRIVATE ${ZED_LIBS})
 endif()
 
-if (NOT WITH_BACKEND_OPENCV AND NOT WITH_BACKEND_GSTREAMER AND NOT WITH_BACKEND_ZED)
-        message(FATAL_ERROR "At least one backend must be enabled")
-endif()
 target_link_libraries(app_video_backends PUBLIC msft_proxy4::proxy)
 target_link_libraries(app_video_backends PUBLIC app_models)
 target_link_libraries(app_video_backends PUBLIC app_config)

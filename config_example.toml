@@ -24,9 +24,16 @@ prefix = '/tmp'
 # Control wire remains v1 throughout the migration window.
 # See docs/abi_v2_contract_checklist.md for full v2 field specifications.
 [video]
-backend = 'zed'
+backend = 'dummy'
 use_finite_as_infinite_stream = false
 finite_stream_ending_behavior = 'loop' # stop | loop
+[dummy]
+width = 1280
+height = 720
+fps = 30
+frames = 0 # 0 means infinite
+startup_delay_ms = 0
+
 [opencv]
 parameter = "example.mkv"
 

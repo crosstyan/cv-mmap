@@ -1,10 +1,11 @@
 #include "app_config.hpp"
 #include <algorithm>
 #include <cctype>
-#include <sstream>
 #include <cmath>
-#include <unordered_set>
+#include <limits>
 #include <ranges>
+#include <sstream>
+#include <unordered_set>
 #include <toml++/toml.hpp>
 #include <spdlog/spdlog.h>
 
@@ -110,16 +111,6 @@ bool is_valid_ipc_token_char(const char ch) {
 	return std::isalnum(static_cast<unsigned char>(ch)) || ch == '.' || ch == '_' || ch == '-';
 }
 
-bool is_valid_ipc_token(const std::string &value, const size_t max_len) {
-	if (value.empty() || value.size() > max_len) {
-		return false;
-	}
-	if (!std::isalnum(static_cast<unsigned char>(value.front()))) {
-		return false;
-	}
-	return std::ranges::all_of(value, is_valid_ipc_token_char);
-}
-
 std::string validate_ipc_prefix(std::string prefix) {
 	if (prefix.empty() || prefix.front() != '/') {
 		throw std::invalid_argument("ipc.prefix must be an absolute path");
@@ -153,18 +144,19 @@ std::string validate_ipc_prefix(std::string prefix) {
 	return prefix;
 }
 
-void validate_ipc_config(const app::Config &config) {
-	if (!is_valid_ipc_token(config.ipc.name_space, 32)) {
-		throw std::invalid_argument("ipc.namespace must match [A-Za-z0-9][A-Za-z0-9._-]{0,31}");
-	}
-	if (!is_valid_ipc_token(config.name, 23)) {
-		throw std::invalid_argument("name must match [A-Za-z0-9][A-Za-z0-9._-]{0,22}");
-	}
+std::string make_config_target_uri(const app::Config &config) {
+	return std::format(
+		"cvmmap://{}@{}?namespace={}",
+		config.name,
+		config.ipc.prefix,
+		config.ipc.name_space);
+}
 
-	auto control_path = config.ipc.prefix + "/" + config.shm_name() + "_control";
-	if (control_path.size() > 107) {
-		throw std::invalid_argument(
-			"ipc derived control path too long (>107 chars): " + control_path);
+void validate_ipc_config(const app::Config &config) {
+	try {
+		(void)cvmmap::resolve_cvmmap_target_or_throw(make_config_target_uri(config));
+	} catch (const std::exception &e) {
+		throw std::invalid_argument(std::string("invalid cvmmap target configuration: ") + e.what());
 	}
 }
 
@@ -244,6 +236,8 @@ using invalid_argument = std::invalid_argument;
 
 std::string_view to_string(BackendType backend) {
 	switch (backend) {
+	case BackendType::Dummy:
+		return "dummy";
 	case BackendType::OpenCV:
 		return "opencv";
 	case BackendType::GStreamer:
@@ -256,7 +250,9 @@ std::string_view to_string(BackendType backend) {
 }
 
 BackendType backend_from_string(std::string_view s) {
-	if (s == "opencv" || s == "OpenCV") {
+	if (s == "dummy" || s == "Dummy") {
+		return BackendType::Dummy;
+	} else if (s == "opencv" || s == "OpenCV") {
 		return BackendType::OpenCV;
 	} else if (s == "gstreamer" || s == "GStreamer" || s == "gst") {
 		return BackendType::GStreamer;
@@ -306,13 +302,18 @@ Config Config::Default() {
 	return {
 		.name  = "default",
 		.video = VideoConfig{
-			.backend                       = BackendType::GStreamer,
+			.backend                       = BackendType::Dummy,
 			.use_finite_as_infinite_stream = false,
 			.finite_stream_ending_behavior = FiniteStreamEndingBehavior::Stop,
 		},
-		.opencv    = std::nullopt,
-		.gstreamer = GStreamerConfig{
-			.pipeline = "videotestsrc ! timeoverlay ! videoconvert ! video/x-raw,format=BGR ! appsink name=opencvsink",
+		.opencv = std::nullopt,
+		.gstreamer = std::nullopt,
+		.dummy = DummyConfig{
+			.width            = 1280,
+			.height           = 720,
+			.fps              = 30,
+			.frames           = 0,
+			.startup_delay_ms = 0,
 		},
 		.preprocess = std::nullopt,
 	};
@@ -412,6 +413,37 @@ Config Config::from_toml(const std::filesystem::path &path) {
 		}
 
 		config.gstreamer = gst_cfg;
+	}
+
+	if (auto dummy = tbl["dummy"].as_table(); dummy) {
+		DummyConfig dummy_cfg{};
+
+		dummy_cfg.width = (*dummy)["width"].value_or(dummy_cfg.width);
+		dummy_cfg.height = (*dummy)["height"].value_or(dummy_cfg.height);
+		dummy_cfg.fps = (*dummy)["fps"].value_or(dummy_cfg.fps);
+		dummy_cfg.frames = (*dummy)["frames"].value_or(dummy_cfg.frames);
+		dummy_cfg.startup_delay_ms = (*dummy)["startup_delay_ms"].value_or(dummy_cfg.startup_delay_ms);
+
+		if (dummy_cfg.width <= 0) {
+			throw invalid_argument("dummy.width must be positive");
+		}
+		if (dummy_cfg.height <= 0) {
+			throw invalid_argument("dummy.height must be positive");
+		}
+		if (dummy_cfg.fps <= 0) {
+			throw invalid_argument("dummy.fps must be positive");
+		}
+		if (dummy_cfg.startup_delay_ms < 0) {
+			throw invalid_argument("dummy.startup_delay_ms must be non-negative");
+		}
+
+		const auto buffer_size = static_cast<uint64_t>(dummy_cfg.width) *
+								 static_cast<uint64_t>(dummy_cfg.height) * 3ull;
+		if (buffer_size == 0 || buffer_size > std::numeric_limits<uint32_t>::max()) {
+			throw invalid_argument("dummy frame buffer size exceeds ABI limits");
+		}
+
+		config.dummy = dummy_cfg;
 	}
 
 	if (auto preprocess = tbl["preprocess"].as_table(); preprocess) {
@@ -600,6 +632,9 @@ Config Config::from_toml(const std::filesystem::path &path) {
 	if (config.video.backend == BackendType::OpenCV && !config.opencv) {
 		throw invalid_argument("[opencv] section is required when backend is 'opencv'");
 	}
+	if (config.video.backend == BackendType::Dummy && !config.dummy) {
+		throw invalid_argument("[dummy] section is required when backend is 'dummy'");
+	}
 	if (config.video.backend == BackendType::GStreamer && !config.gstreamer) {
 		throw invalid_argument("[gstreamer] section is required when backend is 'gstreamer'");
 	}
@@ -639,6 +674,15 @@ std::string Config::to_toml() const {
 	if (gstreamer) {
 		ss << "[gstreamer]\n";
 		ss << "pipeline = \"" << gstreamer->pipeline << "\"\n";
+	}
+
+	if (dummy) {
+		ss << "[dummy]\n";
+		ss << "width = " << dummy->width << "\n";
+		ss << "height = " << dummy->height << "\n";
+		ss << "fps = " << dummy->fps << "\n";
+		ss << "frames = " << dummy->frames << "\n";
+		ss << "startup_delay_ms = " << dummy->startup_delay_ms << "\n";
 	}
 
 	if (preprocess && preprocess->undistort) {

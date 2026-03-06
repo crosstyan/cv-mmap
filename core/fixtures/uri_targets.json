@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "input": "default",
+      "instance": "default",
+      "namespace": "cvmmap",
+      "prefix": "/tmp",
+      "base_name": "cvmmap_default",
+      "shm_name": "cvmmap_default",
+      "zmq_addr": "ipc:///tmp/cvmmap_default",
+      "zmq_control_addr": "ipc:///tmp/cvmmap_default_control"
+    },
+    {
+      "input": "cvmmap://camera0@/run/cvmmap?namespace=zed",
+      "instance": "camera0",
+      "namespace": "zed",
+      "prefix": "/run/cvmmap",
+      "base_name": "zed_camera0",
+      "shm_name": "zed_camera0",
+      "zmq_addr": "ipc:///run/cvmmap/zed_camera0",
+      "zmq_control_addr": "ipc:///run/cvmmap/zed_camera0_control"
+    }
+  ],
+  "invalid_cases": [
+    {
+      "input": "bad/name",
+      "error_contains": "plain cvmmap instance names"
+    },
+    {
+      "input": "cvmmap://camera0@tmp",
+      "error_contains": "absolute path"
+    }
+  ]
+}

@@ -6,11 +6,15 @@
 #include <vector>
 #include <app_enum_models.hpp>
 #include <filesystem>
+#include <format>
+
+#include <cvmmap/target.hpp>
 
 namespace app {
 
 /// Backend type for video capture
 enum class BackendType {
+	Dummy,
 	OpenCV,
 	GStreamer,
 	ZED,
@@ -33,6 +37,14 @@ struct OpenCVConfig {
 struct GStreamerConfig {
 	/// GStreamer pipeline string
 	std::string pipeline;
+};
+
+struct DummyConfig {
+	int width{1280};
+	int height{720};
+	int fps{30};
+	uint32_t frames{0};
+	int startup_delay_ms{0};
 };
 
 struct ZedConfig {
@@ -96,6 +108,7 @@ struct Config {
 	std::optional<OpenCVConfig> opencv;
 	/// GStreamer-specific config (used when backend == GStreamer)
 	std::optional<GStreamerConfig> gstreamer;
+	std::optional<DummyConfig> dummy;
 	std::optional<PreprocessConfig> preprocess;
 	std::optional<ZedConfig> zed;
 
@@ -108,17 +121,23 @@ struct Config {
 
 	[[nodiscard]]
 	std::string shm_name() const {
-		return ipc.name_space + "_" + name;
+		return cvmmap::resolve_cvmmap_target_or_throw(
+			std::format("cvmmap://{}@{}?namespace={}", name, ipc.prefix, ipc.name_space))
+			.shm_name;
 	}
 
 	[[nodiscard]]
 	std::string zmq_address() const {
-		return "ipc://" + ipc.prefix + "/" + shm_name();
+		return cvmmap::resolve_cvmmap_target_or_throw(
+			std::format("cvmmap://{}@{}?namespace={}", name, ipc.prefix, ipc.name_space))
+			.zmq_addr;
 	}
 
 	[[nodiscard]]
 	std::string zmq_control_address() const {
-		return "ipc://" + ipc.prefix + "/" + shm_name() + "_control";
+		return cvmmap::resolve_cvmmap_target_or_throw(
+			std::format("cvmmap://{}@{}?namespace={}", name, ipc.prefix, ipc.name_space))
+			.zmq_control_addr;
 	}
 };
 

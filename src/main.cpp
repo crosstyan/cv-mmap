@@ -28,6 +28,7 @@
 #include "models/app_control_msg_models.hpp"
 #include "app_utils.hpp"
 #include "backends/app_backends_facade.hpp"
+#include "backends/app_backends_dummy.hpp"
 #include "app_preprocess_undistort.hpp"
 #ifdef WITH_BACKEND_OPENCV
 #include "backends/app_backends_opencv.hpp"
@@ -481,6 +482,17 @@ int main(int argc, char **argv) {
 	// Create backend based on config
 	pro::proxy<app::backends::IBackend> backend;
 	switch (config.video.backend) {
+	case app::BackendType::Dummy: {
+		if (!config.dummy) {
+			spdlog::error("Dummy backend selected but [dummy] config section missing");
+			return 1;
+		}
+		backend = pro::make_proxy<app::backends::IBackend, app::backends::DummyBackend>(
+			*config.dummy,
+			config.video);
+		spdlog::info("using Dummy backend");
+		break;
+	}
 #ifdef WITH_BACKEND_OPENCV
 	case app::BackendType::OpenCV: {
 		if (!config.opencv) {
