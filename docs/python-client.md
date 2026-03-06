@@ -29,4 +29,11 @@ Optional extras are used for non-core tasks:
 
 ## Protocol compatibility note
 
-The Python package must stay aligned with producer-side IPC structures under `app/models/` and `doc/cvmmap.ksy`.
+The Python package remains independent, but it must stay aligned with:
+
+- the normative ABI spec in `docs/cvmmap.ksy`
+- the installed `cvmmap-core` fixture contract in `core/fixtures/`
+- the producer-side ABI structures in `app/models/`
+- the consumer-facing C++ contract in `core/include/cvmmap/`
+
+The Python package is not expected to link the C++ library. Its correctness comes from keeping its own protocol test suite in sync with the same ABI and URI contract.

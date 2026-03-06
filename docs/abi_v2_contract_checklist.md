@@ -110,26 +110,26 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 
 ---
 
-## Implementation Target Mapping: cv-mmap
+## Implementation Target Mapping: cv-mmap / cvmmap-core
 
-### Current v1 Implementation (Legacy)
+### Current v2 Implementation
 
-| KSY v2 Field | Current C++ Location | Status | Notes |
-|--------------|---------------------|--------|-------|
-| `magic[8]` | `app/models/app_metadata_models.hpp:199` | EXISTS | `uint8_t magic[CV_MMAP_MAGIC.size()]` |
-| `versions_major` | `app/models/app_metadata_models.hpp:200` | EXISTS v1 | `uint8_t versions_major{VERSION_MAJOR}` |
-| `versions_minor` | `app/models/app_metadata_models.hpp:201` | EXISTS v1 | `uint8_t versions_minor{VERSION_MINOR}` |
-| `flags` | - | **TODO** | Add u16 flags field |
-| `frame_id` | - | **TODO** | Replace `frame_count` with `frame_id` |
-| `capture_ts_ns` | `app/models/app_metadata_models.hpp:204` | EXISTS | `uint64_t timestamp_ns` |
-| `publish_seq` | - | **TODO** | Add u64 publish sequence |
-| `plane_count` | - | **TODO** | Add u8 plane count (1..4) |
-| `plane_presence_mask` | - | **TODO** | Add u8 presence mask |
-| `plane_descriptors_offset` | - | **TODO** | Add u16 descriptor offset (fixed 64) |
-| `plane_descriptor_size` | - | **TODO** | Add u16 descriptor size (fixed 24) |
-| `plane_descriptor_capacity` | - | **TODO** | Add u16 descriptor capacity (fixed 4) |
-| `payload_size_bytes` | - | **TODO** | Add u32 payload size |
-| `reserved_0[20]` | - | **TODO** | Add 20 reserved bytes |
+| KSY v2 Field | Producer-side C++ Location | Consumer-side C++ Location | Status |
+|--------------|----------------------------|----------------------------|--------|
+| `magic[8]` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
+| `versions_major` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
+| `versions_minor` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
+| `flags` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
+| `frame_id` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
+| `capture_ts_ns` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
+| `publish_seq` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
+| `plane_count` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
+| `plane_presence_mask` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
+| `plane_descriptors_offset` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
+| `plane_descriptor_size` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
+| `plane_descriptor_capacity` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
+| `payload_size_bytes` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
+| `reserved_0[20]` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
 
 ### Current v1 `frame_info_t` (12 bytes)
 
@@ -147,42 +147,42 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 
 | Constant | Current Value | Location | Target v2 |
 |----------|---------------|----------|-----------|
-| `VERSION_MAJOR` | `1` | `app/models/app_common_models.hpp:35` | `2` |
+| `FRAME_METADATA_V2_MAJOR` | `2` | `core/include/cvmmap/ipc.hpp` | `2` |
 | `VERSION_MINOR` | `0` | `app/models/app_common_models.hpp:36` | `0` |
 
 ---
 
-## Migration Checklist: cv-mmap C++ Implementation
+## Current Verification Checklist: cv-mmap C++ Implementation
 
-### Phase 1: Header Structure Update
+### Header Structure
 
-- [ ] Create `frame_metadata_v2_header_t` struct (64 bytes)
-- [ ] Create `frame_plane_descriptor_v2_t` struct (24 bytes)
-- [ ] Create `frame_metadata_v2_t` struct (256 bytes total)
-- [ ] Update `VERSION_MAJOR` to `2` in `app_common_models.hpp`
+- [x] `frame_metadata_v2_header_t` exists (64 bytes)
+- [x] `frame_plane_descriptor_v2_t` exists (24 bytes)
+- [x] `frame_metadata_v2_t` exists (256 bytes total)
+- [x] consumer-side public definitions are exported through `core/include/cvmmap/ipc.hpp`
 
-### Phase 2: Validation Logic
+### Validation Logic
 
-- [ ] Implement `plane_presence_mask` validation: `(_ & 0xF0) == 0`
-- [ ] Implement `plane_count` validation: `_ >= 1 && _ <= 4`
-- [ ] Implement `contiguous_mask_valid` check
-- [ ] Implement `is_empty_descriptor` check for inactive slots
-- [ ] Implement plane bounds validation (`plane_N_in_bounds`)
-- [ ] Implement plane slot 0 validation (`plane_0_type_valid`, etc.)
+- [x] `plane_presence_mask` validation implemented in parser
+- [x] `plane_count` validation implemented in parser
+- [x] contiguous mask validation implemented in parser
+- [x] empty-descriptor validation implemented in parser
+- [x] plane bounds validation implemented in parser
+- [x] plane slot ordering validation implemented in parser
 
-### Phase 3: Serialization
+### Serialization / Layout
 
-- [ ] Implement `marshal()` for v2 header
-- [ ] Implement `unmarshal()` for v2 header
-- [ ] Ensure no implicit padding (use packed attribute or static_asserts)
+- [x] producer-side v2 layout is defined with explicit offsets and static assertions
+- [x] consumer-side parser accepts v1 and v2 SHM metadata
+- [x] no implicit layout drift is allowed for the exported v2 structs
 
-### Phase 4: Tests
+### Tests / Contract Sources
 
-- [ ] Add static_assert for header size: `sizeof(frame_metadata_v2_header_t) == 64`
-- [ ] Add static_assert for descriptor size: `sizeof(frame_plane_descriptor_v2_t) == 24`
-- [ ] Add static_assert for full metadata: `sizeof(frame_metadata_v2_t) == 256`
-- [ ] Add tests for presence mask validation
-- [ ] Add tests for plane ordering invariants
+- [x] static assertions exist for 64-byte header
+- [x] static assertions exist for 24-byte descriptor
+- [x] static assertions exist for 256-byte metadata region
+- [x] parser logic validates presence masks and plane ordering invariants
+- [x] `docs/cvmmap.ksy` remains the normative format document
 
 ---
 

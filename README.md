@@ -1,63 +1,134 @@
-# OpenCV IPC capture
+# cv-mmap
 
-Capture video frames from a camera using OpenCV and share them with other processes using shared memory.
-The stream could be a GStreamer pipeline or a camera device, depending on the platform/API.
-Use [ZeroMQ](https://zeromq.org/) to notify other processes when a new frame is available. (for synchronization)
-The consumer process SHOULD NOT write to the shared memory, only read/clone the data.
+`cv-mmap` is the producer/runtime repository for the cvmmap shared-memory video IPC stack.
+It captures frames from a real backend or a built-in synthetic backend, writes them into POSIX shared memory, and publishes sync and control messages over ZeroMQ IPC.
 
-## Python client
+This repo also installs the reusable C++ package `cvmmap-core`, which is the canonical consumer-facing API used by:
 
-The Python client has been extracted into a standalone project for independent packaging/versioning:
+- `cvmmap-streamer`
+- `cv-mmap-gui`
+- any other C++ consumer that needs cvmmap target resolution, ABI structs, metadata parsing, or client access
 
-- local path: `/home/crosstyan/Code/cvmmap-python-client`
-- docs in this repo: `docs/python-client.md`
+The Python consumer remains a separate project at `/home/crosstyan/Code/cvmmap-python-client`.
 
-- [ajaygunalan/IPC_SHM](https://github.com/ajaygunalan/IPC_SHM)
-- [khomin/electron_camera_ffmpeg](https://github.com/khomin/electron_camera_ffmpeg)
-- [khomin/electron_ffmpeg_addon_camera](https://github.com/khomin/electron_ffmpeg_addon_camera)
-- [OpenIPC/wiki](https://github.com/OpenIPC/wiki/blob/master/en/faq.md)
+## Architecture
 
-```bash
-# opencv/build
-cmake .. -DOPENCV_EXTRA_MODULES_PATH=/Volumes/External/Code/opencv_contrib/modules/ \
-    -DCMAKE_CXX_STANDARD=17 \
-    -DBUILD_JASPER=OFF \
-    -DBUILD_JPEG=OFF \
-    -DBUILD_OPENEXR=OFF \
-    -DBUILD_OPENJPEG=OFF \
-    -DBUILD_PERF_TESTS=OFF \
-    -DBUILD_PNG=OFF \
-    -DBUILD_PROTOBUF=OFF \
-    -DBUILD_TBB=OFF \
-    -DBUILD_TESTS=OFF \
-    -DBUILD_TIFF=OFF \
-    -DBUILD_WEBP=OFF \
-    -DBUILD_ZLIB=OFF \
-    -DBUILD_opencv_hdf=OFF \
-    -DBUILD_opencv_java=OFF \
-    -DBUILD_opencv_text=ON \
-    -DOPENCV_ENABLE_NONFREE=ON \
-    -DOPENCV_GENERATE_PKGCONFIG=ON \
-    -DPROTOBUF_UPDATE_FILES=ON \
-    -DWITH_1394=OFF \
-    -DWITH_CUDA=OFF \
-    -DWITH_EIGEN=ON \
-    -DWITH_FFMPEG=ON \
-    -DWITH_GPHOTO2=OFF \
-    -DWITH_GSTREAMER=ON \
-    -DWITH_JASPER=OFF \
-    -DWITH_OPENEXR=ON \
-    -DWITH_OPENGL=OFF \
-    -DWITH_OPENVINO=ON \
-    -DWITH_QT=OFF \
-    -DWITH_TBB=ON \
-    -DWITH_VTK=ON \
-    -DBUILD_opencv_python2=OFF \
-    -DBUILD_opencv_python3=ON
+The current split is:
+
+- `cv-mmap` executable: producer runtime, config parsing, backend orchestration
+- `core/`: installable `cvmmap-core` package
+- `app/`: producer-only implementation modules
+
+`cvmmap-core` exports three CMake targets:
+
+- `cvmmap::target`
+- `cvmmap::ipc`
+- `cvmmap::client`
+
+Public headers are installed under `include/cvmmap/`:
+
+- `<cvmmap/target.hpp>`
+- `<cvmmap/ipc.hpp>`
+- `<cvmmap/parser.hpp>`
+- `<cvmmap/client.hpp>`
+
+The public C++ namespace is `cvmmap`.
+
+What stays in `cv-mmap` and is not part of `cvmmap-core`:
+
+- capture backends (`opencv`, `gstreamer`, `zed`, `dummy`)
+- producer runtime loop
+- CLI and TOML config loading
+- shared-memory creation and producer-side publish orchestration
+
+## ABI Policy
+
+The current protocol state is intentionally mixed-version:
+
+- shared-memory frame metadata: v1 and v2 layouts exist, consumers are expected to handle both
+- sync/control wire messages: v1
+
+`cvmmap-core` owns the shared consumer-side protocol surface for:
+
+- target and URI resolution
+- IPC wire structs and constants
+- SHM metadata parsing and validation
+- C++ client access
+
+Normative spec documents live under `docs/`, especially:
+
+- `docs/cvmmap.ksy`
+- `docs/abi_v2_contract_checklist.md`
+- `docs/abi_v2_migration_guide.md`
+- `docs/python-client.md`
+
+## Dummy Backend
+
+`cv-mmap` now includes a built-in `dummy` backend for deterministic testing, replacing the need for downstream consumers to simulate their own producer.
+
+Minimal example:
+
+```toml
+name = "example"
+
+[video]
+backend = "dummy"
+use_finite_as_infinite_stream = false
+finite_stream_ending_behavior = "loop"
+
+[dummy]
+width = 1280
+height = 720
+fps = 30
+frames = 0
+startup_delay_ms = 0
 ```
 
+Dummy backend notes:
+
+- output format is fixed to BGR8 / U8 / 3 channels
+- `frames = 0` means infinite stream
+- `startup_delay_ms` delays first publish
+- when used with finite-stream handling, it is suitable for acceptance and fault scenarios
+
+## Build
+
 ```bash
-HOMEBREW_DEVELOPER=1 brew install --build-from-source -v --formula ./opencv.rb
+cmake -B build -S .
+cmake --build build
+```
+
+This builds:
+
+- `build/cv-mmap`
+- the internal `app` producer libraries
+- the installable `cvmmap-core` package targets
+
+## Install `cvmmap-core`
+
+```bash
+cmake -B build -S .
+cmake --build build
+cmake --install build --prefix /tmp/cvmmap-core-prefix
+```
+
+Downstream CMake consumers can then use:
+
+```cmake
+find_package(cvmmap-core CONFIG REQUIRED)
+
+target_link_libraries(my_consumer
+	PRIVATE
+		cvmmap::target
+		cvmmap::ipc
+		cvmmap::client)
+```
+
+## Run
+
+```bash
+./build/cv-mmap
+./build/cv-mmap --config config_example.toml
 ```
 
 ## Dependencies
@@ -66,20 +137,31 @@ HOMEBREW_DEVELOPER=1 brew install --build-from-source -v --formula ./opencv.rb
 
 ```bash
 sudo pacman -S opencv \
-    gst-plugins-base  \
-    gst-plugins-good  \
-    gst-plugins-bad  \
-    gst-plugins-ugly  \
-    gstreamer  \
-    cppzmq  \
-    spdlog \
-    vtk \
-    glew \
-    hdf5
+	gst-plugins-base \
+	gst-plugins-good \
+	gst-plugins-bad \
+	gst-plugins-ugly \
+	gstreamer \
+	cppzmq \
+	spdlog \
+	vtk \
+	glew \
+	hdf5
 ```
+
+### Notes
+
+- OpenCV, GStreamer, and ZED support are optional build/runtime concerns depending on backend selection.
+- `dummy` is the lowest-friction backend for local testing.
+
+## Related Repositories
+
+- Python client: `/home/crosstyan/Code/cvmmap-python-client`
+- GUI consumer: `/home/crosstyan/Code/cv-mmap-gui`
+- Streamer consumer: `/home/crosstyan/Code/cvmmap-streamer`
 
 ## TODO
 
-- [ ] migrate to [iceoryx2](https://github.com/eclipse-iceoryx/iceoryx2)
-- [ ] add unit tests
-- [ ] link to gstreamer directly (have more freedom over the pipeline, like sidecar RTP/NAL packets extraction)
+- [ ] migrate transport/runtime to `iceoryx2`
+- [ ] expand automated protocol and runtime coverage
+- [x] improve direct GStreamer-side integration where backend-specific control is needed

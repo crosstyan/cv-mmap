@@ -108,7 +108,7 @@ This is passive reception, not active sender coordination. Sender management is 
 
 ## Fixture-Driven Parser Validation
 
-Both Python and external client-library consumers use deterministic protocol fixtures for testing:
+Both Python and C++ client consumers use deterministic protocol fixtures for testing:
 
 | Fixture | Purpose |
 |---------|---------|
@@ -119,7 +119,8 @@ Both Python and external client-library consumers use deterministic protocol fix
 
 Test harnesses:
 - Python: `pytest tests/test_import_and_protocol.py`
-- C++ client library (external repo `/home/crosstyan/Code/cv-mmap-gui`, under `app/lib/cvmmap-client-cpp`): `cmake -S app/lib/cvmmap-client-cpp/tests -B build-protocol-fixture-check && cmake --build build-protocol-fixture-check && (cd app/lib/cvmmap-client-cpp && ../../../build-protocol-fixture-check/protocol_fixture_check)`
+- `cvmmap-core`: build/install `cv-mmap`, then run downstream builds against the installed package
+- downstream C++ consumers: `cvmmap-streamer` and `cv-mmap-gui` now validate ABI v2 support through their normal builds against `find_package(cvmmap-core CONFIG REQUIRED)`
 
 ---
 
@@ -128,3 +129,4 @@ Test harnesses:
 - `docs/abi_v2_contract_checklist.md` - Full v2 field specifications
 - `docs/cvmmap.ksy` - Kaitai Struct specification (normative)
 - `docs/python-client.md` - Python client documentation
+- `core/fixtures/uri_targets.json` - installed URI resolution fixture contract
