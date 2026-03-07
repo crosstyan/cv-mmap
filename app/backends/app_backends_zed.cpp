@@ -157,6 +157,36 @@ sl::BODY_KEYPOINTS_SELECTION parse_body_selection(const std::string &value) {
 	return sl::BODY_KEYPOINTS_SELECTION::FULL;
 }
 
+sl::COORDINATE_SYSTEM parse_coordinate_system(const std::string &value) {
+	auto normalized = normalize_ascii_lower(value);
+	std::replace(normalized.begin(), normalized.end(), '-', '_');
+	std::replace(normalized.begin(), normalized.end(), ' ', '_');
+	if (normalized == "image") {
+		return sl::COORDINATE_SYSTEM::IMAGE;
+	}
+	if (normalized == "right_handed_y_up") {
+		return sl::COORDINATE_SYSTEM::RIGHT_HANDED_Y_UP;
+	}
+	throw std::invalid_argument(
+		"unsupported ZED coordinate_system: " + value +
+		"; supported values: IMAGE|RIGHT_HANDED_Y_UP");
+}
+
+sl::REFERENCE_FRAME parse_body_reference_frame(const std::string &value) {
+	auto normalized = normalize_ascii_lower(value);
+	std::replace(normalized.begin(), normalized.end(), '-', '_');
+	std::replace(normalized.begin(), normalized.end(), ' ', '_');
+	if (normalized == "camera") {
+		return sl::REFERENCE_FRAME::CAMERA;
+	}
+	if (normalized == "world") {
+		return sl::REFERENCE_FRAME::WORLD;
+	}
+	throw std::invalid_argument(
+		"unsupported ZED reference_frame: " + value +
+		"; supported values: CAMERA|WORLD");
+}
+
 cvmmap::BodyTrackingModel to_body_tracking_model(const sl::BODY_TRACKING_MODEL value) {
 	switch (value) {
 	case sl::BODY_TRACKING_MODEL::HUMAN_BODY_FAST:
@@ -188,6 +218,30 @@ cvmmap::BodyKeypointSelection to_body_selection(const sl::BODY_KEYPOINTS_SELECTI
 	case sl::BODY_KEYPOINTS_SELECTION::FULL:
 	default:
 		return cvmmap::BodyKeypointSelection::Full;
+	}
+}
+
+cvmmap::BodyCoordinateSystem to_body_coordinate_system(
+	const sl::COORDINATE_SYSTEM value) {
+	switch (value) {
+	case sl::COORDINATE_SYSTEM::IMAGE:
+		return cvmmap::BodyCoordinateSystem::Image;
+	case sl::COORDINATE_SYSTEM::RIGHT_HANDED_Y_UP:
+		return cvmmap::BodyCoordinateSystem::RightHandedYUp;
+	default:
+		return cvmmap::BodyCoordinateSystem::Unknown;
+	}
+}
+
+cvmmap::BodyReferenceFrame to_body_reference_frame(
+	const sl::REFERENCE_FRAME value) {
+	switch (value) {
+	case sl::REFERENCE_FRAME::CAMERA:
+		return cvmmap::BodyReferenceFrame::Camera;
+	case sl::REFERENCE_FRAME::WORLD:
+		return cvmmap::BodyReferenceFrame::World;
+	default:
+		return cvmmap::BodyReferenceFrame::Unknown;
 	}
 }
 
@@ -449,6 +503,7 @@ struct ZedBackendImpl {
 	sl::BodyTrackingParameters body_tracking_parameters{};
 	sl::BodyTrackingRuntimeParameters body_tracking_runtime_parameters{};
 	sl::Bodies bodies{};
+	sl::PositionalTrackingParameters positional_tracking_parameters{};
 	bool depth_enabled{false};
 	bool body_tracking_enabled{false};
 	sl::VIEW left_view{sl::VIEW::LEFT};
@@ -471,6 +526,7 @@ struct ZedBackendImpl {
 	size_t packed_depth_size{0};
 	size_t packed_confidence_size{0};
 	std::vector<uint8_t> last_good_depth_plane;
+	sl::REFERENCE_FRAME body_reference_frame{sl::REFERENCE_FRAME::CAMERA};
 
 	// =======================================================================
 	// TASK 10 EXTENSION POINTS: Ethernet-ready placeholder stubs
@@ -543,8 +599,11 @@ struct ZedBackendImpl {
 
 		if (body_tracking_enabled) {
 			init_parameters.coordinate_units = sl::UNIT::METER;
-			init_parameters.coordinate_system = sl::COORDINATE_SYSTEM::IMAGE;
-			runtime_parameters.measure3D_reference_frame = sl::REFERENCE_FRAME::CAMERA;
+			init_parameters.coordinate_system =
+				parse_coordinate_system(options.zed_config.coordinate_system);
+			body_reference_frame = parse_body_reference_frame(
+				options.zed_config.body_tracking->reference_frame);
+			runtime_parameters.measure3D_reference_frame = body_reference_frame;
 		}
 
 		const auto stream_mode = normalize_ascii_lower(options.zed_config.stream_mode);
@@ -602,7 +661,9 @@ struct ZedBackendImpl {
 			open_result = camera.open(init_parameters);
 			if (open_result == sl::ERROR_CODE::SUCCESS) {
 				if (body_tracking_enabled) {
-					auto positional_tracking_parameters = sl::PositionalTrackingParameters{};
+					positional_tracking_parameters = sl::PositionalTrackingParameters{};
+					positional_tracking_parameters.set_floor_as_origin =
+						options.zed_config.body_tracking->set_floor_as_origin;
 					auto positional_result =
 						camera.enablePositionalTracking(positional_tracking_parameters);
 					if (positional_result != sl::ERROR_CODE::SUCCESS) {
@@ -743,6 +804,13 @@ struct ZedBackendImpl {
 		frame.header.detection_model = to_body_tracking_model(body_tracking_parameters.detection_model);
 		frame.header.inference_precision = to_inference_precision(bodies.inference_precision_mode);
 		frame.header.flags = 0;
+		frame.header.set_coordinate_system(
+			to_body_coordinate_system(init_parameters.coordinate_system));
+		frame.header.set_reference_frame(
+			to_body_reference_frame(body_reference_frame));
+		frame.header.set_floor_as_origin(
+			options.zed_config.body_tracking &&
+			options.zed_config.body_tracking->set_floor_as_origin);
 		if (bodies.is_new) {
 			frame.header.flags |= cvmmap::BODY_TRACKING_FLAG_IS_NEW;
 		}

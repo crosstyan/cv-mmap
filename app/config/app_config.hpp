@@ -53,6 +53,8 @@ struct ZedConfig {
 		std::string detection_model{"HUMAN_BODY_ACCURATE"};
 		std::string body_format{"BODY_18"};
 		std::string body_selection{"FULL"};
+		std::string reference_frame{"CAMERA"};
+		bool set_floor_as_origin{false};
 		bool enable_body_fitting{false};
 		bool allow_reduced_precision_inference{false};
 		float max_range{-1.0f};
@@ -76,6 +78,7 @@ struct ZedConfig {
 	int reconnect_interval_ms{1000};
 	bool reconnect{true};
 	std::string left_pixel_format{"bgr8"};
+	std::string coordinate_system{"IMAGE"};
 	std::optional<BodyTrackingConfig> body_tracking;
 };
 

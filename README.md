@@ -62,9 +62,29 @@ Normative spec documents live under `docs/`, especially:
 - `docs/cvmmap_shm_metadata_v1_v2.ksy`
 - `docs/cvmmap_body_tracking_v1.ksy`
 - `docs/cvmmap.ksy` (aggregate legacy reference)
+- `docs/abi_changelog.md`
 - `docs/abi_v2_contract_checklist.md`
 - `docs/abi_v2_migration_guide.md`
 - `docs/python-client.md`
+
+## ZED Body Tracking Frame Metadata
+
+When the ZED backend publishes body-tracking packets, the fixed 64-byte body
+header now carries native 3D frame metadata without changing header size:
+
+- `coordinate_system_code` byte: `coordinate_system`
+- `reference_frame_code` byte: `reference_frame`
+- `flags & 0x0010`: `floor_as_origin`
+
+The v1 producer config surface is intentionally small:
+
+- `zed.coordinate_system`: `IMAGE` or `RIGHT_HANDED_Y_UP`
+- `zed.body_tracking.reference_frame`: `CAMERA` or `WORLD`
+- `zed.body_tracking.set_floor_as_origin`: `true` or `false`
+
+See `config_example.toml` and
+`docs/cvmmap_body_tracking_v1.ksy` for the wire-level layout, and
+`docs/abi_changelog.md` for ABI-level change history.
 
 ## Dummy Backend
 

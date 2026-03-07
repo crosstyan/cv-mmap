@@ -99,6 +99,18 @@ enum class InferencePrecision : uint8_t {
 	INT8 = 2,
 };
 
+enum class BodyCoordinateSystem : uint8_t {
+	Unknown = 0,
+	Image = 1,
+	RightHandedYUp = 2,
+};
+
+enum class BodyReferenceFrame : uint8_t {
+	Unknown = 0,
+	Camera = 1,
+	World = 2,
+};
+
 enum class ObjectTrackingState : uint8_t {
 	Off = 0,
 	Ok = 1,
@@ -115,6 +127,7 @@ constexpr uint16_t BODY_TRACKING_FLAG_IS_NEW = 0x0001;
 constexpr uint16_t BODY_TRACKING_FLAG_IS_TRACKED = 0x0002;
 constexpr uint16_t BODY_TRACKING_FLAG_BODY_FITTING_ENABLED = 0x0004;
 constexpr uint16_t BODY_TRACKING_FLAG_REDUCED_PRECISION_REQUESTED = 0x0008;
+constexpr uint16_t BODY_TRACKING_FLAG_FLOOR_AS_ORIGIN = 0x0010;
 
 constexpr uint16_t BODY_TRACKING_BODY_FLAG_HAS_LOCAL_JOINTS = 0x0001;
 constexpr uint16_t BODY_TRACKING_BODY_FLAG_HAS_ROOT_ORIENTATION = 0x0002;
@@ -323,8 +336,39 @@ struct body_tracking_message_header_t {
 		return std::string_view{reinterpret_cast<const char *>(_label)};
 	}
 
+	[[nodiscard]]
+	BodyCoordinateSystem coordinate_system() const {
+		return static_cast<BodyCoordinateSystem>(coordinate_system_code);
+	}
+
+	void set_coordinate_system(const BodyCoordinateSystem value) {
+		coordinate_system_code = static_cast<uint8_t>(value);
+	}
+
+	[[nodiscard]]
+	BodyReferenceFrame reference_frame() const {
+		return static_cast<BodyReferenceFrame>(reference_frame_code);
+	}
+
+	void set_reference_frame(const BodyReferenceFrame value) {
+		reference_frame_code = static_cast<uint8_t>(value);
+	}
+
+	[[nodiscard]]
+	bool floor_as_origin() const {
+		return (flags & BODY_TRACKING_FLAG_FLOOR_AS_ORIGIN) != 0;
+	}
+
+	void set_floor_as_origin(const bool enabled) {
+		if (enabled) {
+			flags |= BODY_TRACKING_FLAG_FLOOR_AS_ORIGIN;
+		} else {
+			flags &= static_cast<uint16_t>(~BODY_TRACKING_FLAG_FLOOR_AS_ORIGIN);
+		}
+	}
+
 	uint8_t _magic{BODY_TRACKING_MAGIC};
-	uint8_t _reserved_0{0};
+	uint8_t coordinate_system_code{0};
 	uint8_t versions_major{VERSION_MAJOR};
 	uint8_t versions_minor{VERSION_MINOR};
 	uint32_t frame_count{0};
@@ -337,12 +381,19 @@ struct body_tracking_message_header_t {
 	BodyTrackingModel detection_model{BodyTrackingModel::HumanBodyAccurate};
 	InferencePrecision inference_precision{InferencePrecision::FP32};
 	uint16_t flags{0};
-	uint16_t _reserved_1{0};
+	uint8_t reference_frame_code{0};
+	uint8_t body_header_reserved_0{0};
 	uint32_t payload_size_bytes{0};
 	uint8_t _label[LABEL_LEN_MAX]{};
 };
 static_assert(sizeof(body_tracking_message_header_t) == 64,
 			  "body_tracking_message_header_t must be 64 bytes");
+static_assert(offsetof(body_tracking_message_header_t, coordinate_system_code) == 0x01,
+			  "coordinate_system_code offset must be 0x01");
+static_assert(offsetof(body_tracking_message_header_t, reference_frame_code) == 0x22,
+			  "reference_frame_code offset must be 0x22");
+static_assert(offsetof(body_tracking_message_header_t, body_header_reserved_0) == 0x23,
+			  "body_header_reserved_0 offset must be 0x23");
 
 struct body_tracking_body_t {
 	int32_t id{-1};

@@ -30,6 +30,9 @@ std::vector<uint8_t> make_valid_body_message() {
 	header.detection_model     = cvmmap::BodyTrackingModel::HumanBodyAccurate;
 	header.inference_precision = cvmmap::InferencePrecision::FP32;
 	header.flags               = cvmmap::BODY_TRACKING_FLAG_IS_NEW;
+	header.set_coordinate_system(cvmmap::BodyCoordinateSystem::RightHandedYUp);
+	header.set_reference_frame(cvmmap::BodyReferenceFrame::World);
+	header.set_floor_as_origin(true);
 	header.payload_size_bytes  = sizeof(cvmmap::body_tracking_body_t);
 	std::memcpy(header._label, kLabel, std::strlen(kLabel));
 
@@ -82,6 +85,11 @@ bool test_valid_body_parse() {
 		   parsed->header.body_count == 1 &&
 		   parsed->header.body_record_size ==
 			   sizeof(cvmmap::body_tracking_body_t) &&
+		   parsed->header.coordinate_system() ==
+			   cvmmap::BodyCoordinateSystem::RightHandedYUp &&
+		   parsed->header.reference_frame() ==
+			   cvmmap::BodyReferenceFrame::World &&
+		   parsed->header.floor_as_origin() &&
 		   parsed->header.label() == kLabel &&
 		   parsed->bodies.size() == 1 &&
 		   parsed->bodies.front().id == 7 &&
@@ -103,6 +111,32 @@ bool test_invalid_record_size_rejected() {
 			   std::string::npos;
 }
 
+bool test_invalid_coordinate_system_rejected() {
+	auto message = make_valid_body_message();
+	auto *header =
+		reinterpret_cast<cvmmap::body_tracking_message_header_t *>(message.data());
+	header->set_coordinate_system(
+		static_cast<cvmmap::BodyCoordinateSystem>(99));
+
+	const auto parsed = cvmmap::parse_body_tracking_message(message);
+	return !parsed &&
+		   parsed.error().find("unsupported coordinate_system") !=
+			   std::string::npos;
+}
+
+bool test_invalid_reference_frame_rejected() {
+	auto message = make_valid_body_message();
+	auto *header =
+		reinterpret_cast<cvmmap::body_tracking_message_header_t *>(message.data());
+	header->set_reference_frame(
+		static_cast<cvmmap::BodyReferenceFrame>(99));
+
+	const auto parsed = cvmmap::parse_body_tracking_message(message);
+	return !parsed &&
+		   parsed.error().find("unsupported reference_frame") !=
+			   std::string::npos;
+}
+
 } // namespace
 
 int main() {
@@ -116,6 +150,14 @@ int main() {
 	}
 	if (!test_invalid_record_size_rejected()) {
 		std::cerr << "invalid body record size test failed\n";
+		return 1;
+	}
+	if (!test_invalid_coordinate_system_rejected()) {
+		std::cerr << "invalid coordinate system test failed\n";
+		return 1;
+	}
+	if (!test_invalid_reference_frame_rejected()) {
+		std::cerr << "invalid reference frame test failed\n";
 		return 1;
 	}
 	return 0;

@@ -34,6 +34,16 @@ enums:
     1: fp16
     2: int8
 
+  body_coordinate_system:
+    0: unknown
+    1: image
+    2: right_handed_y_up
+
+  body_reference_frame:
+    0: unknown
+    1: camera
+    2: world
+
   object_tracking_state:
     0: off
     1: ok
@@ -58,8 +68,9 @@ types:
       - id: magic
         type: u1
         enum: topic_magic
-      - id: reserved_0
+      - id: coordinate_system
         type: u1
+        enum: body_coordinate_system
       - id: versions_major
         type: u1
       - id: versions_minor
@@ -88,14 +99,20 @@ types:
         enum: inference_precision
       - id: flags
         type: u2
-      - id: reserved_1
-        type: u2
+      - id: reference_frame
+        type: u1
+        enum: body_reference_frame
+      - id: reserved_1_high
+        type: u1
       - id: payload_size_bytes
         type: u4
       - id: label
         type: strz
         size: 24
         encoding: ASCII
+    instances:
+      floor_as_origin:
+        value: (flags & 0x0010) != 0
 
   body_tracking_body:
     seq:

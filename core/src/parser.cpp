@@ -45,6 +45,30 @@ bool is_empty_descriptor(const frame_plane_descriptor_v2_t &desc) {
          desc.offset_bytes == 0 && desc.size_bytes == 0;
 }
 
+constexpr bool is_supported_body_coordinate_system(
+    const BodyCoordinateSystem value) {
+  switch (value) {
+  case BodyCoordinateSystem::Unknown:
+  case BodyCoordinateSystem::Image:
+  case BodyCoordinateSystem::RightHandedYUp:
+    return true;
+  default:
+    return false;
+  }
+}
+
+constexpr bool is_supported_body_reference_frame(
+    const BodyReferenceFrame value) {
+  switch (value) {
+  case BodyReferenceFrame::Unknown:
+  case BodyReferenceFrame::Camera:
+  case BodyReferenceFrame::World:
+    return true;
+  default:
+    return false;
+  }
+}
+
 std::expected<frame_info_t, std::string>
 frame_info_from_v2_descriptor(const frame_plane_descriptor_v2_t &desc) {
   if (desc.width > std::numeric_limits<uint16_t>::max()) {
@@ -406,6 +430,16 @@ parse_body_tracking_message(std::span<const uint8_t> message) {
   if (precision_value > static_cast<uint8_t>(InferencePrecision::INT8)) {
     return std::unexpected(
         std::format("unsupported inference_precision={}", precision_value));
+  }
+  if (!is_supported_body_coordinate_system(header.coordinate_system())) {
+    return std::unexpected(std::format(
+        "unsupported coordinate_system={}",
+        static_cast<uint8_t>(header.coordinate_system())));
+  }
+  if (!is_supported_body_reference_frame(header.reference_frame())) {
+    return std::unexpected(std::format(
+        "unsupported reference_frame={}",
+        static_cast<uint8_t>(header.reference_frame())));
   }
 
   body_tracking_frame_t out{};

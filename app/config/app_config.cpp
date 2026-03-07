@@ -287,6 +287,40 @@ std::string canonicalize_zed_body_selection(const std::string_view body_selectio
 		"'. Allowed values: FULL, UPPER_BODY");
 }
 
+std::string canonicalize_zed_coordinate_system(const std::string_view coordinate_system) {
+	auto normalized = normalize_ascii_lower(trim_ascii_spaces(std::string(coordinate_system)));
+	std::replace(normalized.begin(), normalized.end(), '-', '_');
+	std::replace(normalized.begin(), normalized.end(), ' ', '_');
+
+	if (normalized == "image") {
+		return "IMAGE";
+	}
+	if (normalized == "right_handed_y_up" || normalized == "y_up") {
+		return "RIGHT_HANDED_Y_UP";
+	}
+
+	throw std::invalid_argument(
+		"invalid zed.coordinate_system: '" + std::string(coordinate_system) +
+		"'. Allowed values: IMAGE, RIGHT_HANDED_Y_UP");
+}
+
+std::string canonicalize_zed_body_reference_frame(const std::string_view reference_frame) {
+	auto normalized = normalize_ascii_lower(trim_ascii_spaces(std::string(reference_frame)));
+	std::replace(normalized.begin(), normalized.end(), '-', '_');
+	std::replace(normalized.begin(), normalized.end(), ' ', '_');
+
+	if (normalized == "camera") {
+		return "CAMERA";
+	}
+	if (normalized == "world") {
+		return "WORLD";
+	}
+
+	throw std::invalid_argument(
+		"invalid zed.body_tracking.reference_frame: '" + std::string(reference_frame) +
+		"'. Allowed values: CAMERA, WORLD");
+}
+
 void validate_zed_body_tracking_config(const app::ZedConfig::BodyTrackingConfig &cfg) {
 	if (!std::isfinite(cfg.max_range)) {
 		throw std::invalid_argument("zed.body_tracking.max_range must be finite");
@@ -312,6 +346,12 @@ void validate_zed_body_tracking_config(const app::ZedConfig::BodyTrackingConfig 
 	}
 	if (cfg.body_format == "BODY_34" && !cfg.enable_body_fitting) {
 		throw std::invalid_argument("zed.body_tracking.enable_body_fitting must be true when body_format=BODY_34");
+	}
+	if (cfg.set_floor_as_origin && cfg.reference_frame != "WORLD") {
+		spdlog::warn(
+			"zed.body_tracking.set_floor_as_origin=true is most useful with "
+			"zed.body_tracking.reference_frame=\"WORLD\"; current value is \"{}\"",
+			cfg.reference_frame);
 	}
 }
 } // namespace
@@ -688,6 +728,12 @@ Config Config::from_toml(const std::filesystem::path &path) {
 			zed_cfg.left_pixel_format = "bgr8";
 		}
 
+		if (auto val = (*zed)["coordinate_system"].value<std::string>(); val) {
+			zed_cfg.coordinate_system = canonicalize_zed_coordinate_system(*val);
+		} else {
+			zed_cfg.coordinate_system = "IMAGE";
+		}
+
 		if (auto body_tracking = (*zed)["body_tracking"].as_table(); body_tracking) {
 			ZedConfig::BodyTrackingConfig body_tracking_cfg{};
 			body_tracking_cfg.enabled = (*body_tracking)["enabled"].value_or(false);
@@ -701,7 +747,13 @@ Config Config::from_toml(const std::filesystem::path &path) {
 			if (auto val = (*body_tracking)["body_selection"].value<std::string>(); val) {
 				body_tracking_cfg.body_selection = canonicalize_zed_body_selection(*val);
 			}
+			if (auto val = (*body_tracking)["reference_frame"].value<std::string>(); val) {
+				body_tracking_cfg.reference_frame = canonicalize_zed_body_reference_frame(*val);
+			}
 
+			body_tracking_cfg.set_floor_as_origin =
+				(*body_tracking)["set_floor_as_origin"].value_or(
+					body_tracking_cfg.set_floor_as_origin);
 			body_tracking_cfg.enable_body_fitting =
 				(*body_tracking)["enable_body_fitting"].value_or(body_tracking_cfg.enable_body_fitting);
 			body_tracking_cfg.allow_reduced_precision_inference =
@@ -859,6 +911,7 @@ std::string Config::to_toml() const {
 		ss << "reconnect_interval_ms = " << zed->reconnect_interval_ms << "\n";
 		ss << "reconnect = " << (zed->reconnect ? "true" : "false") << "\n";
 		ss << "left_pixel_format = \"" << zed->left_pixel_format << "\"\n";
+		ss << "coordinate_system = \"" << zed->coordinate_system << "\"\n";
 
 		if (zed->body_tracking) {
 			const auto &body_tracking = *zed->body_tracking;
@@ -867,6 +920,8 @@ std::string Config::to_toml() const {
 			ss << "detection_model = \"" << body_tracking.detection_model << "\"\n";
 			ss << "body_format = \"" << body_tracking.body_format << "\"\n";
 			ss << "body_selection = \"" << body_tracking.body_selection << "\"\n";
+			ss << "reference_frame = \"" << body_tracking.reference_frame << "\"\n";
+			ss << "set_floor_as_origin = " << (body_tracking.set_floor_as_origin ? "true" : "false") << "\n";
 			ss << "enable_body_fitting = " << (body_tracking.enable_body_fitting ? "true" : "false") << "\n";
 			ss << "allow_reduced_precision_inference = "
 			   << (body_tracking.allow_reduced_precision_inference ? "true" : "false") << "\n";
