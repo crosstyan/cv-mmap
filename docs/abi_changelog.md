@@ -27,7 +27,7 @@ Reason:
 
 Downstream impact:
 - `core` parser validates and exposes these fields
-- `cvmmap_body_tracking_v1.ksy` and `cvmmap.ksy` parse them explicitly
+- `cvmmap_body_tracking_v1.ksy` parses them explicitly
 - `cvmmap-python-client` exposes them on `BodyTrackingMessageHeader` and
   `BodyFrame`
 

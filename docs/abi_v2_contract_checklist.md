@@ -12,10 +12,10 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 
 | Document | Line Range | Description |
 |----------|------------|-------------|
-| `docs/cvmmap.ksy` | 314-369 | `frame_metadata_v2_header` struct definition |
-| `docs/cvmmap.ksy` | 375-433 | `frame_metadata_v2` struct definition (full metadata) |
-| `docs/cvmmap.ksy` | 276-312 | `frame_plane_descriptor_v2` struct definition |
-| `docs/cvmmap.ksy` | 384-390 | Deterministic plane ordering rules |
+| `docs/cvmmap_shm_metadata_v1_v2.ksy` | 90-145 | `frame_metadata_v2_header` struct definition |
+| `docs/cvmmap_shm_metadata_v1_v2.ksy` | 147-199 | `frame_metadata_v2` struct definition (full metadata) |
+| `docs/cvmmap_shm_metadata_v1_v2.ksy` | 52-88 | `frame_plane_descriptor_v2` struct definition |
+| `docs/cvmmap_shm_metadata_v1_v2.ksy` | 169-175 | Deterministic plane ordering rules |
 
 ---
 

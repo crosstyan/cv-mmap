@@ -27,7 +27,7 @@ C++ producer/runtime for the cvmmap shared-memory video IPC stack. This repo cap
 | Adding a backend | `app/backends/` | Implement facade interface |
 | Modifying config | `app/config/` | Update `app_config.cpp`, validation, and `.toml` formats |
 | Changing public IPC/client contract | `core/include/cvmmap/` and `core/src/` | This is the consumer-facing source of truth |
-| Changing producer-side ABI serialization | `app/models/` | Keep it aligned with `core/include/cvmmap/` and `docs/cvmmap.ksy` |
+| Changing producer-side ABI serialization | `app/models/` | Keep it aligned with `core/include/cvmmap/` and the split Kaitai schemas under `docs/` |
 | Python consumer | external repo `cvmmap-python-client` | Importable Python package (`cvmmap`) |
 | C++ downstream consumers | external repos `cvmmap-streamer`, `cv-mmap-gui` | They should link installed `cvmmap-core` directly |
 

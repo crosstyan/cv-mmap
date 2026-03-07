@@ -132,6 +132,10 @@ Test harnesses:
 - `docs/cvmmap_sync_v1.ksy` - versioned sync message Kaitai schema
 - `docs/cvmmap_control_v1.ksy` - versioned control message Kaitai schema
 - `docs/cvmmap_body_tracking_v1.ksy` - versioned body tracking Kaitai schema
-- `docs/cvmmap.ksy` - aggregate legacy Kaitai reference
+- split Kaitai references:
+  - `docs/cvmmap_sync_v1.ksy`
+  - `docs/cvmmap_control_v1.ksy`
+  - `docs/cvmmap_shm_metadata_v1_v2.ksy`
+  - `docs/cvmmap_body_tracking_v1.ksy`
 - `docs/python-client.md` - Python client documentation
 - `core/fixtures/uri_targets.json` - installed URI resolution fixture contract

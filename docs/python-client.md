@@ -36,7 +36,7 @@ The Python package remains independent, but it must stay aligned with:
   - `docs/cvmmap_control_v1.ksy`
   - `docs/cvmmap_shm_metadata_v1_v2.ksy`
   - `docs/cvmmap_body_tracking_v1.ksy`
-- the aggregate legacy reference in `docs/cvmmap.ksy`
+- the split Kaitai schemas under `docs/`
 - the installed `cvmmap-core` fixture contract in `core/fixtures/`
 - the producer-side ABI structures in `app/models/`
 - the consumer-facing C++ contract in `core/include/cvmmap/`
