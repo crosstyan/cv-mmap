@@ -101,6 +101,7 @@ struct SharedBuffer {
 
     normalized_metadata_ = parsed->normalized_metadata;
     left_plane_ = parsed->left_plane;
+    depth_unit_ = parsed->depth_unit;
     depth_info_ = parsed->depth_info;
     depth_plane_ = parsed->depth_plane;
     confidence_info_ = parsed->confidence_info;
@@ -115,6 +116,7 @@ struct SharedBuffer {
   frame_planes_view_t planes() const {
     return frame_planes_view_t{
         .left = left_plane_,
+        .depth_unit = depth_unit_,
         .depth_info = depth_info_,
         .depth = depth_plane_,
         .confidence_info = confidence_info_,
@@ -130,6 +132,7 @@ private:
   uint8_t *image_data_;
   frame_metadata_t normalized_metadata_{};
   std::span<const uint8_t> left_plane_{};
+  DepthUnit depth_unit_{DepthUnit::Unknown};
   std::optional<frame_info_t> depth_info_{};
   std::span<const uint8_t> depth_plane_{};
   std::optional<frame_info_t> confidence_info_{};

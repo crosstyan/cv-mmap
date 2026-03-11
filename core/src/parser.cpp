@@ -45,6 +45,17 @@ bool is_empty_descriptor(const frame_plane_descriptor_v2_t &desc) {
          desc.offset_bytes == 0 && desc.size_bytes == 0;
 }
 
+constexpr bool is_supported_depth_unit(const DepthUnit unit) {
+  switch (unit) {
+  case DepthUnit::Unknown:
+  case DepthUnit::Millimeter:
+  case DepthUnit::Meter:
+    return true;
+  default:
+    return false;
+  }
+}
+
 constexpr bool is_supported_body_coordinate_system(
     const BodyCoordinateSystem value) {
   switch (value) {
@@ -145,8 +156,11 @@ parse_frame_metadata_regions(std::span<const uint8_t> metadata_region,
     out.normalized_metadata = metadata;
     out.left_plane = std::span<const uint8_t>(payload_region.data(),
                                               metadata.info.buffer_size);
+    out.depth_unit = DepthUnit::Unknown;
     out.depth_info.reset();
     out.depth_plane = {};
+    out.confidence_info.reset();
+    out.confidence_plane = {};
     return out;
   }
 
@@ -197,6 +211,11 @@ parse_frame_metadata_regions(std::span<const uint8_t> metadata_region,
   }
   if (header.payload_size_bytes == 0) {
     return std::unexpected("v2 payload_size_bytes must be non-zero");
+  }
+  if (!is_supported_depth_unit(header.depth_unit)) {
+    return std::unexpected(
+        std::format("v2 depth_unit={} is unsupported",
+                    static_cast<uint8_t>(header.depth_unit)));
   }
   if (header.payload_size_bytes > payload_region.size()) {
     return std::unexpected(std::format(
@@ -331,6 +350,7 @@ parse_frame_metadata_regions(std::span<const uint8_t> metadata_region,
   out.normalized_metadata.frame_count = header.frame_id;
   out.normalized_metadata.timestamp_ns = header.capture_ts_ns;
   out.normalized_metadata.info = *left_info_res;
+  out.depth_unit = header.depth_unit;
 
   out.left_plane = std::span<const uint8_t>(
       payload_region.data() + left_desc.offset_bytes, left_desc.size_bytes);

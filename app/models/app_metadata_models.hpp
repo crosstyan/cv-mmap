@@ -216,6 +216,12 @@ enum class FramePlaneType : uint8_t {
 	CONFIDENCE = 2,
 };
 
+enum class DepthUnit : uint8_t {
+	Unknown = 0,
+	Millimeter = 1,
+	Meter = 2,
+};
+
 #pragma pack(push, 1)
 struct frame_plane_descriptor_v2_t {
 	FramePlaneType plane_type{FramePlaneType::LEFT};
@@ -268,7 +274,8 @@ struct frame_metadata_v2_header_t {
 	uint16_t plane_descriptor_size{PLANE_DESCRIPTOR_SIZE};
 	uint16_t plane_descriptor_capacity{PLANE_DESCRIPTOR_CAPACITY};
 	uint32_t payload_size_bytes{0};
-	uint8_t reserved_0[20];
+	DepthUnit depth_unit{DepthUnit::Unknown};
+	uint8_t reserved_0[19]{};
 };
 
 struct frame_metadata_v2_t {
@@ -304,7 +311,8 @@ static_assert(offsetof(frame_metadata_v2_header_t, plane_descriptors_offset) == 
 static_assert(offsetof(frame_metadata_v2_header_t, plane_descriptor_size) == 0x24, "plane_descriptor_size offset must be 0x24");
 static_assert(offsetof(frame_metadata_v2_header_t, plane_descriptor_capacity) == 0x26, "plane_descriptor_capacity offset must be 0x26");
 static_assert(offsetof(frame_metadata_v2_header_t, payload_size_bytes) == 0x28, "payload_size_bytes offset must be 0x28");
-static_assert(offsetof(frame_metadata_v2_header_t, reserved_0) == 0x2C, "reserved_0 offset must be 0x2C");
+static_assert(offsetof(frame_metadata_v2_header_t, depth_unit) == 0x2C, "depth_unit offset must be 0x2C");
+static_assert(offsetof(frame_metadata_v2_header_t, reserved_0) == 0x2D, "reserved_0 offset must be 0x2D");
 static_assert(alignof(frame_metadata_v2_header_t) == 1, "frame_metadata_v2_header_t must be packed");
 static_assert(frame_metadata_v2_header_t::PLANE_DESCRIPTORS_OFFSET == 64, "v2 plane descriptors offset must be 64");
 static_assert(frame_metadata_v2_header_t::PLANE_DESCRIPTOR_SIZE == 24, "v2 plane descriptor size must be 24");

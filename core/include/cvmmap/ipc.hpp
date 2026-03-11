@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -68,6 +69,12 @@ enum class FramePlaneType : uint8_t {
 	Left = 0,
 	Depth = 1,
 	Confidence = 2,
+};
+
+enum class DepthUnit : uint8_t {
+	Unknown = 0,
+	Millimeter = 1,
+	Meter = 2,
 };
 
 enum class ModuleStatus : int32_t {
@@ -222,10 +229,15 @@ struct frame_metadata_v2_header_t {
 	uint16_t plane_descriptor_size;
 	uint16_t plane_descriptor_capacity;
 	uint32_t payload_size_bytes;
-	uint8_t reserved_0[20];
+	DepthUnit depth_unit;
+	uint8_t reserved_0[19];
 };
 static_assert(sizeof(frame_metadata_v2_header_t) == 64,
 			  "frame_metadata_v2_header_t must be 64 bytes");
+static_assert(offsetof(frame_metadata_v2_header_t, depth_unit) == 0x2C,
+			  "frame_metadata_v2_header_t::depth_unit must be at offset 0x2C");
+static_assert(offsetof(frame_metadata_v2_header_t, reserved_0) == 0x2D,
+			  "frame_metadata_v2_header_t::reserved_0 must start at offset 0x2D");
 
 struct frame_metadata_v2_t {
 	frame_metadata_v2_header_t header;
@@ -237,6 +249,7 @@ static_assert(sizeof(frame_metadata_v2_t) == SHM_PAYLOAD_OFFSET,
 
 struct frame_planes_view_t {
 	std::span<const uint8_t> left{};
+	DepthUnit depth_unit{DepthUnit::Unknown};
 	std::optional<frame_info_t> depth_info{};
 	std::span<const uint8_t> depth{};
 	std::optional<frame_info_t> confidence_info{};

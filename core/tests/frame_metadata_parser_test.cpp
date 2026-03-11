@@ -34,7 +34,9 @@ std::vector<uint8_t> make_payload(const bool include_confidence) {
 	return payload;
 }
 
-cvmmap::frame_metadata_v2_t make_metadata_v2(const bool include_confidence) {
+cvmmap::frame_metadata_v2_t make_metadata_v2(
+	const bool include_confidence,
+	const cvmmap::DepthUnit depth_unit = cvmmap::DepthUnit::Unknown) {
 	cvmmap::frame_metadata_v2_t metadata{};
 	std::memcpy(
 		metadata.header.magic,
@@ -52,6 +54,7 @@ cvmmap::frame_metadata_v2_t make_metadata_v2(const bool include_confidence) {
 	metadata.header.plane_descriptor_capacity = 4;
 	metadata.header.payload_size_bytes =
 		kLeftSizeBytes + kAuxSizeBytes + (include_confidence ? kAuxSizeBytes : 0);
+	metadata.header.depth_unit = depth_unit;
 
 	auto &left = metadata.descriptors[0];
 	left.plane_type = cvmmap::FramePlaneType::Left;
@@ -103,6 +106,7 @@ bool test_v2_left_and_depth_parse() {
 	return parsed->normalized_metadata.versions_major == cvmmap::FRAME_METADATA_V2_MAJOR &&
 		parsed->left_plane.size() == kLeftSizeBytes &&
 		parsed->left_plane[0] == 0x10 &&
+		parsed->depth_unit == cvmmap::DepthUnit::Unknown &&
 		parsed->depth_info.has_value() &&
 		parsed->depth_info->pixel_format == cvmmap::PixelFormat::GRAY &&
 		parsed->depth_plane.size() == kAuxSizeBytes &&
@@ -112,7 +116,7 @@ bool test_v2_left_and_depth_parse() {
 }
 
 bool test_v2_left_depth_and_confidence_parse() {
-	const auto metadata = make_metadata_v2(true);
+	const auto metadata = make_metadata_v2(true, cvmmap::DepthUnit::Millimeter);
 	const auto payload = make_payload(true);
 	std::array<uint8_t, cvmmap::SHM_PAYLOAD_OFFSET> metadata_region{};
 	std::memcpy(metadata_region.data(), &metadata, sizeof(metadata));
@@ -124,12 +128,28 @@ bool test_v2_left_depth_and_confidence_parse() {
 	}
 
 	return parsed->depth_info.has_value() &&
+		parsed->depth_unit == cvmmap::DepthUnit::Millimeter &&
 		parsed->depth_plane.size() == kAuxSizeBytes &&
 		parsed->confidence_info.has_value() &&
 		parsed->confidence_info->pixel_format == cvmmap::PixelFormat::GRAY &&
 		parsed->confidence_info->depth == cvmmap::Depth::F32 &&
 		parsed->confidence_plane.size() == kAuxSizeBytes &&
 		parsed->confidence_plane[0] == 0x70;
+}
+
+bool test_v2_depth_unit_meter_parse() {
+	const auto metadata = make_metadata_v2(false, cvmmap::DepthUnit::Meter);
+	const auto payload = make_payload(false);
+	std::array<uint8_t, cvmmap::SHM_PAYLOAD_OFFSET> metadata_region{};
+	std::memcpy(metadata_region.data(), &metadata, sizeof(metadata));
+
+	const auto parsed = cvmmap::parse_frame_metadata_regions(metadata_region, payload);
+	if (!parsed) {
+		std::cerr << "expected valid meter depth unit packet, got error: " << parsed.error() << '\n';
+		return false;
+	}
+
+	return parsed->depth_unit == cvmmap::DepthUnit::Meter && parsed->depth_info.has_value();
 }
 
 } // namespace
@@ -141,6 +161,10 @@ int main() {
 	}
 	if (!test_v2_left_depth_and_confidence_parse()) {
 		std::cerr << "v2 left+depth+confidence parse test failed\n";
+		return 1;
+	}
+	if (!test_v2_depth_unit_meter_parse()) {
+		std::cerr << "v2 meter depth unit parse test failed\n";
 		return 1;
 	}
 	return 0;

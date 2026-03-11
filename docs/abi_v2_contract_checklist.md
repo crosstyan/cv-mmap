@@ -10,12 +10,12 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 
 ## Normative References
 
-| Document | Line Range | Description |
+| Document | Section | Description |
 |----------|------------|-------------|
-| `docs/cvmmap_shm_metadata_v1_v2.ksy` | 90-145 | `frame_metadata_v2_header` struct definition |
-| `docs/cvmmap_shm_metadata_v1_v2.ksy` | 147-199 | `frame_metadata_v2` struct definition (full metadata) |
-| `docs/cvmmap_shm_metadata_v1_v2.ksy` | 52-88 | `frame_plane_descriptor_v2` struct definition |
-| `docs/cvmmap_shm_metadata_v1_v2.ksy` | 169-175 | Deterministic plane ordering rules |
+| `docs/cvmmap_shm_metadata_v1_v2.ksy` | `types.frame_metadata_v2_header` | `frame_metadata_v2_header` struct definition |
+| `docs/cvmmap_shm_metadata_v1_v2.ksy` | `types.frame_metadata_v2` | `frame_metadata_v2` struct definition (full metadata) |
+| `docs/cvmmap_shm_metadata_v1_v2.ksy` | `types.frame_plane_descriptor_v2` | `frame_plane_descriptor_v2` struct definition |
+| `core/src/parser.cpp` | v2 parser validation | Deterministic plane ordering rules |
 
 ---
 
@@ -23,29 +23,38 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 
 ### Byte Layout (Normative)
 
-| Offset | Field | Type | KSY Line | Valid/Constraint |
+| Offset | Field | Type | Source | Valid/Constraint |
 |--------|-------|------|----------|------------------|
-| 0x00 | `magic[8]` | bytes | 334-335 | Must be `[67, 86, 45, 77, 77, 65, 80, 0]` ("CV-MMAP\0") |
-| 0x08 | `versions_major` | u1 | 336-338 | Must equal `2` |
-| 0x09 | `versions_minor` | u1 | 339-340 | Any u8 value |
-| 0x0A | `flags` | u2 | 341-342 | Currently reserved (u16) |
-| 0x0C | `frame_id` | u4 | 343-344 | Any u32 value |
-| 0x10 | `capture_ts_ns` | u8 | 345-346 | Any u64 value |
-| 0x18 | `publish_seq` | u8 | 347-348 | Any u64 value |
-| 0x20 | `plane_count` | u1 | 349-351 | Must be in range `[1, 4]` |
-| 0x21 | `plane_presence_mask` | u1 | 352-354 | Upper 4 bits must be 0: `(_ & 0xF0) == 0` |
-| 0x22 | `plane_descriptors_offset` | u2 | 355-357 | Must equal `64` |
-| 0x24 | `plane_descriptor_size` | u2 | 358-360 | Must equal `24` |
-| 0x26 | `plane_descriptor_capacity` | u2 | 361-363 | Must equal `4` |
-| 0x28 | `payload_size_bytes` | u4 | 364-366 | Must be greater than `0` |
-| 0x2C | `reserved_0[20]` | bytes | 367-368 | 20 reserved bytes |
+| 0x00 | `magic[8]` | bytes | `types.frame_metadata_v2_header` | Must be `[67, 86, 45, 77, 77, 65, 80, 0]` ("CV-MMAP\0") |
+| 0x08 | `versions_major` | u1 | `types.frame_metadata_v2_header` | Must equal `2` |
+| 0x09 | `versions_minor` | u1 | `types.frame_metadata_v2_header` | Any u8 value |
+| 0x0A | `flags` | u2 | `types.frame_metadata_v2_header` | Currently reserved (u16) |
+| 0x0C | `frame_id` | u4 | `types.frame_metadata_v2_header` | Any u32 value |
+| 0x10 | `capture_ts_ns` | u8 | `types.frame_metadata_v2_header` | Any u64 value |
+| 0x18 | `publish_seq` | u8 | `types.frame_metadata_v2_header` | Any u64 value |
+| 0x20 | `plane_count` | u1 | `types.frame_metadata_v2_header` | Must be in range `[1, 4]` |
+| 0x21 | `plane_presence_mask` | u1 | `types.frame_metadata_v2_header` | Upper 4 bits must be 0: `(_ & 0xF0) == 0` |
+| 0x22 | `plane_descriptors_offset` | u2 | `types.frame_metadata_v2_header` | Must equal `64` |
+| 0x24 | `plane_descriptor_size` | u2 | `types.frame_metadata_v2_header` | Must equal `24` |
+| 0x26 | `plane_descriptor_capacity` | u2 | `types.frame_metadata_v2_header` | Must equal `4` |
+| 0x28 | `payload_size_bytes` | u4 | `types.frame_metadata_v2_header` | Must be greater than `0` |
+| 0x2C | `depth_unit` | u1 | `types.frame_metadata_v2_header` | Enum: `unknown=0`, `millimeter=1`, `meter=2` |
+| 0x2D | `reserved_0[19]` | bytes | `types.frame_metadata_v2_header` | Reserved for future use; write zero, ignore on read |
 
 ### KSY Instance Constraints
 
-| Instance | Expression | KSY Line | Meaning |
+| Instance | Expression | Source | Meaning |
 |----------|------------|----------|---------|
-| `contiguous_mask_expected` | `(1 << plane_count) - 1` | 370-371 | Expected bit pattern for contiguous plane mask |
-| `contiguous_mask_valid` | `plane_presence_mask == contiguous_mask_expected` | 372-373 | Presence mask must match expected contiguous pattern |
+| `contiguous_mask_expected` | `(1 << plane_count) - 1` | producer helper + parser validation | Expected bit pattern for contiguous plane mask |
+| `contiguous_mask_valid` | `plane_presence_mask == contiguous_mask_expected` | producer helper + parser validation | Presence mask must match expected contiguous pattern |
+
+### `depth_unit` Semantics
+
+- `unknown` (`0`) means depth bytes may exist but the metric unit is not contractually known; consumers must not assume millimeters or meters.
+- `millimeter` (`1`) means each finite positive `f32` depth sample is expressed in millimeters.
+- `meter` (`2`) means each finite positive `f32` depth sample is expressed in meters.
+- Consumers that require unit-aware downstream processing should skip depth handling when `depth_unit == unknown`.
+- Compatibility rule: older v2 producers that left byte `0x2C` zeroed continue to parse as `unknown`.
 
 ---
 
@@ -53,19 +62,19 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 
 ### Byte Layout (Normative)
 
-| Offset | Field | Type | KSY Line | Description |
+| Offset | Field | Type | Source | Description |
 |--------|-------|------|----------|-------------|
-| 0x00 | `plane_type` | u1 | 288-289 | Enum: `frame_plane_type` |
-| 0x01 | `pixel_format` | u1 | 291-293 | Enum: `pixel_format` |
-| 0x02 | `depth` | u1 | 294-296 | Enum: `depth` |
-| 0x03 | `reserved_0` | u1 | 297-299 | Explicit reserved byte |
-| 0x04 | `width` | u4 | 300-301 | Width in pixels |
-| 0x08 | `height` | u4 | 302-303 | Height in pixels |
-| 0x0C | `stride_bytes` | u4 | 304-305 | Stride in bytes |
-| 0x10 | `offset_bytes` | u4 | 306-307 | Offset into payload |
-| 0x14 | `size_bytes` | u4 | 308-309 | Size of plane data in bytes |
+| 0x00 | `plane_type` | u1 | `types.frame_plane_descriptor_v2` | Enum: `frame_plane_type` |
+| 0x01 | `pixel_format` | u1 | `types.frame_plane_descriptor_v2` | Enum: `pixel_format` |
+| 0x02 | `depth` | u1 | `types.frame_plane_descriptor_v2` | Enum: `depth` |
+| 0x03 | `reserved_0` | u1 | `types.frame_plane_descriptor_v2` | Explicit reserved byte |
+| 0x04 | `width` | u4 | `types.frame_plane_descriptor_v2` | Width in pixels |
+| 0x08 | `height` | u4 | `types.frame_plane_descriptor_v2` | Height in pixels |
+| 0x0C | `stride_bytes` | u4 | `types.frame_plane_descriptor_v2` | Stride in bytes |
+| 0x10 | `offset_bytes` | u4 | `types.frame_plane_descriptor_v2` | Offset into payload |
+| 0x14 | `size_bytes` | u4 | `types.frame_plane_descriptor_v2` | Size of plane data in bytes |
 
-### Descriptor Invariants (KSY Lines 280-287)
+### Descriptor Invariants
 
 1. `offset_bytes <= payload_size_bytes`
 2. `size_bytes <= payload_size_bytes - offset_bytes`
@@ -74,24 +83,24 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 
 ### KSY Instance Helpers
 
-| Instance | Expression | KSY Line | Meaning |
+| Instance | Expression | Source | Meaning |
 |----------|------------|----------|---------|
-| `is_empty_descriptor` | `width == 0 and height == 0 and stride_bytes == 0 and offset_bytes == 0 and size_bytes == 0` | 311-312 | True if descriptor is inactive/empty |
+| `is_empty_descriptor` | `width == 0 and height == 0 and stride_bytes == 0 and offset_bytes == 0 and size_bytes == 0` | producer helper + parser validation | True if descriptor is inactive/empty |
 
 ---
 
 ## v2 Full Metadata Layout (256 bytes)
 
-| Region | Offset Range | Content | KSY Lines |
+| Region | Offset Range | Content | Source |
 |--------|--------------|---------|-----------|
-| Header | [0..63] | `frame_metadata_v2_header` | 392-393 |
-| Descriptors | [64..159] | 4 x `frame_plane_descriptor_v2` (fixed slots) | 394-401 |
-| Reserved | [160..255] | Reserved/padding | 402-404 |
+| Header | [0..63] | `frame_metadata_v2_header` | `types.frame_metadata_v2` |
+| Descriptors | [64..159] | 4 x `frame_plane_descriptor_v2` (fixed slots) | `types.frame_metadata_v2` |
+| Reserved | [160..255] | Reserved/padding | `types.frame_metadata_v2` |
 | **Payload** | **256+** | **Frame data begins here** | - |
 
 ---
 
-## Deterministic Plane Ordering Rules (KSY Lines 384-390)
+## Deterministic Plane Ordering Rules
 
 **Rule 1:** Active descriptors are contiguous from slot 0.  
 **Rule 2:** Slot 0 is always LEFT plane.  
@@ -130,7 +139,8 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 | `plane_descriptor_size` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
 | `plane_descriptor_capacity` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
 | `payload_size_bytes` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
-| `reserved_0[20]` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
+| `depth_unit` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
+| `reserved_0[19]` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
 
 ### Current v1 `frame_info_t` (12 bytes)
 
@@ -183,6 +193,7 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 - [x] static assertions exist for 24-byte descriptor
 - [x] static assertions exist for 256-byte metadata region
 - [x] parser logic validates presence masks and plane ordering invariants
+- [x] parser logic validates and exposes `depth_unit`
 - [x] `docs/cvmmap_shm_metadata_v1_v2.ksy` is the versioned SHM format document
 
 ---
@@ -229,10 +240,11 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 Run this grep to verify all normative fields are present in ksy:
 
 ```bash
-grep -n "plane_descriptor_size\|plane_descriptor_capacity\|plane_presence_mask" docs/cvmmap_shm_metadata_v1_v2.ksy
+grep -n "depth_unit\\|plane_descriptor_size\\|plane_descriptor_capacity\\|plane_presence_mask" docs/cvmmap_shm_metadata_v1_v2.ksy
 ```
 
 Expected output should include:
-- Line 352: `plane_presence_mask`
-- Line 358-360: `plane_descriptor_size`
-- Line 361-363: `plane_descriptor_capacity`
+- the `depth_unit` enum and header field
+- `plane_presence_mask`
+- `plane_descriptor_size`
+- `plane_descriptor_capacity`

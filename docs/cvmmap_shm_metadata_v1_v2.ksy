@@ -33,6 +33,11 @@ enums:
     1: depth
     2: confidence
 
+  depth_unit:
+    0: unknown
+    1: millimeter
+    2: meter
+
 seq:
   - id: magic
     contents: [67, 86, 45, 77, 77, 65, 80, 0]
@@ -146,8 +151,11 @@ types:
         type: u2
       - id: payload_size_bytes
         type: u4
+      - id: depth_unit
+        type: u1
+        enum: depth_unit
       - id: reserved_0
-        size: 20
+        size: 19
 
   frame_metadata_v2:
     seq:

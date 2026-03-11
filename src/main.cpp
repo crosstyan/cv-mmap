@@ -433,7 +433,17 @@ int main(int argc, char **argv) {
 		return bytes;
 	};
 
-	const auto build_v2_metadata = [&to_u32](const frame_metadata_t &source_metadata, size_t payload_size) -> std::optional<frame_metadata_v2_t> {
+	const auto determine_depth_unit = [&config]() -> DepthUnit {
+		if (config.video.backend != app::BackendType::ZED || !config.zed.has_value()) {
+			return DepthUnit::Unknown;
+		}
+		const auto &zed = *config.zed;
+		const bool body_tracking_uses_meters =
+			zed.body_tracking.has_value() && zed.body_tracking->enabled;
+		return body_tracking_uses_meters ? DepthUnit::Meter : DepthUnit::Millimeter;
+	};
+
+	const auto build_v2_metadata = [&to_u32, &determine_depth_unit](const frame_metadata_t &source_metadata, size_t payload_size) -> std::optional<frame_metadata_v2_t> {
 		if (payload_size == 0 || source_metadata.info.width == 0 || source_metadata.info.height == 0 || source_metadata.info.channels == 0) {
 			return std::nullopt;
 		}
@@ -468,6 +478,7 @@ int main(int argc, char **argv) {
 		metadata_v2.header.plane_descriptor_size     = frame_metadata_v2_header_t::PLANE_DESCRIPTOR_SIZE;
 		metadata_v2.header.plane_descriptor_capacity = frame_metadata_v2_header_t::PLANE_DESCRIPTOR_CAPACITY;
 		metadata_v2.header.payload_size_bytes        = *payload_size_u32;
+		metadata_v2.header.depth_unit                = DepthUnit::Unknown;
 
 		const size_t left_expected_stride =
 			static_cast<size_t>(source_metadata.info.width) *
@@ -559,6 +570,7 @@ int main(int argc, char **argv) {
 
 			metadata_v2.header.plane_count         = 2;
 			metadata_v2.header.plane_presence_mask = 0x03;
+			metadata_v2.header.depth_unit          = determine_depth_unit();
 		}
 
 		if (confidence_plane_active) {

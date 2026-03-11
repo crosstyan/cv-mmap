@@ -37,6 +37,22 @@ During the migration window, the system may be in a mixed state:
 
 This is the intended and supported configuration. Consumers must accept both v1 and v2 SHM metadata.
 
+### Depth Unit Extension Within SHM v2
+
+The v2 SHM header now assigns byte offset `0x2C` to `depth_unit` without changing
+the major or minor version:
+
+- `0` = `unknown`
+- `1` = `millimeter`
+- `2` = `meter`
+
+Compatibility expectations:
+
+- Older v2 producers that left the byte zeroed remain valid and decode as `unknown`.
+- Updated consumers must treat `unknown` as "depth present but unit unspecified".
+- Updated producers should set `depth_unit` whenever they publish a depth plane with
+  a known metric unit.
+
 ---
 
 ## Consumer Compatibility Matrix
@@ -114,7 +130,8 @@ Both Python and C++ client consumers use deterministic protocol fixtures for tes
 |---------|---------|
 | v1 valid | Verify v1 backward compatibility |
 | v2 left-only valid | Verify v2 single-plane parsing |
-| v2 left+depth valid | Verify v2 two-plane parsing |
+| v2 left+depth valid | Verify v2 two-plane parsing and `depth_unit=unknown` compatibility |
+| v2 left+depth meter-unit valid | Verify v2 two-plane parsing with `depth_unit=meter` |
 | v2 left+depth+confidence valid | Verify optional v2 confidence-plane parsing |
 | v2 malformed | Verify rejection of out-of-bounds descriptors |
 
