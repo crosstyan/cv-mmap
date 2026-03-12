@@ -485,7 +485,7 @@ Config Config::from_toml(const std::filesystem::path &path) {
 		if (auto val = (*video)["backend"].value<std::string>(); val) {
 			config.video.backend = backend_from_string(*val);
 		} else {
-			config.video.backend = BackendType::OpenCV; // default
+			config.video.backend = BackendType::Dummy; // default
 		}
 
 		// use_finite_as_infinite_stream

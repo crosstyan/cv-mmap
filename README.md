@@ -121,6 +121,20 @@ cmake -B build -S .
 cmake --build build
 ```
 
+Backend build defaults:
+
+- `dummy` is always built.
+- `BUILD_BACKEND_OPENCV=AUTO` enables the OpenCV backend when OpenCV is found.
+- `BUILD_BACKEND_GSTREAMER=AUTO` enables the GStreamer backend when GStreamer development packages are found.
+- `BUILD_BACKEND_ZED=OFF` keeps ZED disabled unless explicitly requested.
+
+Examples:
+
+```bash
+cmake -B build -S . -DBUILD_BACKEND_OPENCV=OFF -DBUILD_BACKEND_GSTREAMER=OFF
+cmake -B build -S . -DBUILD_BACKEND_OPENCV=ON -DBUILD_BACKEND_GSTREAMER=ON
+```
+
 This builds:
 
 - `build/cv-mmap`
@@ -187,7 +201,7 @@ sudo pacman -S opencv \
 ### Notes
 
 - OpenCV, GStreamer, and ZED support are optional build/runtime concerns depending on backend selection.
-- `dummy` is the lowest-friction backend for local testing.
+- `dummy` is always available and is the lowest-friction backend for local testing.
 
 ## Related Repositories
 

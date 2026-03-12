@@ -630,6 +630,11 @@ int main(int argc, char **argv) {
 		spdlog::info("using OpenCV backend");
 		break;
 	}
+#else
+	case app::BackendType::OpenCV: {
+		spdlog::error("OpenCV backend selected but unavailable in this build; reconfigure with -DBUILD_BACKEND_OPENCV=ON");
+		return 1;
+	}
 #endif
 #ifdef WITH_BACKEND_GSTREAMER
 	case app::BackendType::GStreamer: {
@@ -642,6 +647,11 @@ int main(int argc, char **argv) {
 			config.video);
 		spdlog::info("using GStreamer backend");
 		break;
+	}
+#else
+	case app::BackendType::GStreamer: {
+		spdlog::error("GStreamer backend selected but unavailable in this build; reconfigure with -DBUILD_BACKEND_GSTREAMER=ON");
+		return 1;
 	}
 #endif
 	case app::BackendType::ZED: {
@@ -656,7 +666,7 @@ int main(int argc, char **argv) {
 		spdlog::info("using ZED backend");
 		break;
 #else
-		spdlog::error("ZED backend selected but unavailable in this build; reconfigure with -DWITH_BACKEND_ZED=ON");
+		spdlog::error("ZED backend selected but unavailable in this build; reconfigure with -DBUILD_BACKEND_ZED=ON");
 		return 1;
 #endif
 	}

@@ -84,7 +84,7 @@ struct ZedConfig {
 
 struct VideoConfig {
 	/// backend type
-	BackendType backend{BackendType::OpenCV};
+	BackendType backend{BackendType::Dummy};
 	/// treat finite source as infinite stream (loop automatically, disable seeking)
 	bool use_finite_as_infinite_stream{false};
 	FiniteStreamEndingBehavior finite_stream_ending_behavior{FiniteStreamEndingBehavior::Stop};
