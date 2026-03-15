@@ -26,3 +26,35 @@ add_test(
 	NAME cvmmap_frame_metadata_tests
 	COMMAND cvmmap_frame_metadata_tests
 )
+
+add_executable(cvmmap_control_protocol_tests
+	control_protocol_test.cpp
+)
+
+target_link_libraries(cvmmap_control_protocol_tests
+	PRIVATE
+		cvmmap_ipc
+)
+
+add_test(
+	NAME cvmmap_control_protocol_tests
+	COMMAND cvmmap_control_protocol_tests
+)
+
+add_executable(cvmmap_protocol_fixture_writer
+	protocol_fixture_writer.cpp
+)
+
+target_link_libraries(cvmmap_protocol_fixture_writer
+	PRIVATE
+		cvmmap_target
+		cvmmap_ipc
+)
+
+add_test(
+	NAME cvmmap_protocol_fixture_verify
+	COMMAND
+		cvmmap_protocol_fixture_writer
+		--verify
+		${CMAKE_CURRENT_SOURCE_DIR}/../fixtures/protocol
+)

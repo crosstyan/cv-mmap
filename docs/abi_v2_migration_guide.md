@@ -32,7 +32,7 @@ Failure to follow this sequence will result in consumer parse failures.
 During the migration window, the system may be in a mixed state:
 
 - **SHM metadata:** v2 (256-byte header with plane descriptors)
-- **Control wire:** v1 (36-byte requests, 40-byte responses)
+- **Control wire:** v1 (34-byte request headers, 38-byte response headers on the wire; C structs remain 36/40 bytes because of trailing padding)
 - **Sync wire:** v1 (24-byte sync headers)
 
 This is the intended and supported configuration. Consumers must accept both v1 and v2 SHM metadata.
@@ -134,6 +134,7 @@ Both Python and C++ client consumers use deterministic protocol fixtures for tes
 | v2 left+depth meter-unit valid | Verify v2 two-plane parsing with `depth_unit=meter` |
 | v2 left+depth+confidence valid | Verify optional v2 confidence-plane parsing |
 | v2 malformed | Verify rejection of out-of-bounds descriptors |
+| control/sync/body binary fixtures | Verify downstream parsers against C++-generated canonical wire bytes |
 
 Test harnesses:
 - Python: `pytest tests/test_import_and_protocol.py`
@@ -156,3 +157,4 @@ Test harnesses:
   - `docs/cvmmap_body_tracking_v1.ksy`
 - `docs/python-client.md` - Python client documentation
 - `core/fixtures/uri_targets.json` - installed URI resolution fixture contract
+- `core/fixtures/protocol/` - installed C++-generated protocol fixture contract

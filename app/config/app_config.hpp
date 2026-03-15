@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <format>
 
+#include <cvmmap/ipc.hpp>
 #include <cvmmap/target.hpp>
 
 namespace app {
@@ -17,6 +18,7 @@ enum class BackendType {
 	Dummy,
 	OpenCV,
 	GStreamer,
+	MCAP,
 	ZED,
 };
 
@@ -45,6 +47,14 @@ struct DummyConfig {
 	int fps{30};
 	uint32_t frames{0};
 	int startup_delay_ms{0};
+};
+
+struct McapConfig {
+	std::string path{};
+	std::string video_topic{"/camera/video"};
+	std::string depth_topic{"/camera/depth"};
+	std::string body_topic{"/camera/body"};
+	cvmmap::TimestampDomain timestamp_domain{cvmmap::TimestampDomain::UnixEpochNs};
 };
 
 struct ZedConfig {
@@ -127,6 +137,7 @@ struct Config {
 	/// GStreamer-specific config (used when backend == GStreamer)
 	std::optional<GStreamerConfig> gstreamer;
 	std::optional<DummyConfig> dummy;
+	std::optional<McapConfig> mcap;
 	std::optional<PreprocessConfig> preprocess;
 	std::optional<ZedConfig> zed;
 

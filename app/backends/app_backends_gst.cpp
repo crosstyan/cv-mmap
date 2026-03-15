@@ -5,6 +5,7 @@
 #include <chrono>
 #include <optional>
 #include <atomic>
+#include <mutex>
 #include <spdlog/spdlog.h>
 #include <errno.h>
 #include "app_backends_gst.hpp"
@@ -97,6 +98,8 @@ struct GStreamerBackendImpl {
 	frame_metadata_t metadata{};
 	std::optional<finite_source_info_t> finite_source_info{};
 	GstVideoInfo video_info{};
+	uint32_t source_frame_index{0};
+	std::mutex state_mutex{};
 
 	// Error tracking
 	static constexpr int MAX_CONSECUTIVE_ERRORS = 3;
@@ -125,6 +128,54 @@ struct GStreamerBackendImpl {
 		if (_on_error) {
 			_on_error(error_code, message);
 		}
+	}
+
+	[[nodiscard]]
+	uint64_t finite_frame_interval_ns() const {
+		if (!finite_source_info || finite_source_info->fps <= 0.0) {
+			return 0;
+		}
+		return static_cast<uint64_t>(1000000000.0 / finite_source_info->fps);
+	}
+
+	[[nodiscard]]
+	uint64_t timestamp_for_source_frame(uint32_t frame_index) const {
+		if (!finite_source_info) {
+			return static_cast<uint64_t>(
+				std::chrono::duration_cast<std::chrono::nanoseconds>(
+					std::chrono::system_clock::now().time_since_epoch())
+					.count());
+		}
+		return static_cast<uint64_t>(frame_index) * finite_frame_interval_ns();
+	}
+
+	[[nodiscard]]
+	source_info_t GetSourceInfo() {
+		std::lock_guard lock(state_mutex);
+		source_info_t info{};
+		if (finite_source_info) {
+			info.source_kind = cvmmap::SourceKind::Finite;
+			info.timestamp_domain = cvmmap::TimestampDomain::MediaTimeNs;
+			info.timeline_start_ns = 0;
+			info.timeline_end_ns = static_cast<uint64_t>(std::max<int64_t>(
+				finite_source_info->duration_ns - static_cast<int64_t>(finite_frame_interval_ns()),
+				0));
+			info.duration_ns = static_cast<uint64_t>(finite_source_info->duration_ns);
+			if (!options.video_config.use_finite_as_infinite_stream) {
+				info.flags |= cvmmap::SOURCE_INFO_FLAG_CAN_SEEK;
+			}
+			if (options.video_config.finite_stream_ending_behavior ==
+					app::FiniteStreamEndingBehavior::Loop ||
+				options.video_config.use_finite_as_infinite_stream) {
+				info.flags |= cvmmap::SOURCE_INFO_FLAG_AUTO_LOOP;
+			}
+		} else {
+			info.source_kind = cvmmap::SourceKind::Live;
+			info.timestamp_domain = cvmmap::TimestampDomain::UnixEpochNs;
+		}
+		info.current_timestamp_ns = metadata.timestamp_ns;
+		info.current_frame_count = metadata.frame_count;
+		return info;
 	}
 
 	/// @brief Ensure the pipeline ends with an appsink
@@ -189,17 +240,18 @@ struct GStreamerBackendImpl {
 		}
 
 		// Update frame count
-		metadata.frame_count += 1;
-
-		// Set timestamp
-		metadata.timestamp_ns = static_cast<uint64_t>(
-			std::chrono::duration_cast<std::chrono::nanoseconds>(
-				std::chrono::system_clock::now().time_since_epoch())
-				.count());
+		frame_metadata_t metadata_snapshot{};
+		{
+			std::lock_guard lock(state_mutex);
+			source_frame_index += 1;
+			metadata.frame_count += 1;
+			metadata.timestamp_ns = timestamp_for_source_frame(source_frame_index);
+			metadata_snapshot = metadata;
+		}
 
 		// Invoke frame callback
 		auto frame_buffer = std::span<uint8_t>(map.data, map.size);
-		on_frame(frame_buffer, metadata);
+		on_frame(frame_buffer, metadata_snapshot);
 
 		gst_buffer_unmap(buffer, &map);
 		gst_sample_unref(sample);
@@ -390,6 +442,8 @@ struct GStreamerBackendImpl {
 		on_metadata(metadata);
 
 		// Process first sample
+		source_frame_index = 0;
+		metadata.timestamp_ns = timestamp_for_source_frame(source_frame_index);
 		process_sample(sample);
 
 		initialized = true;
@@ -519,38 +573,48 @@ struct GStreamerBackendImpl {
 		_on_error = std::move(on_error_);
 	}
 
-	error_t SeekFrame(size_t frame_index) {
+	std::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns) {
 		if (!finite_source_info) {
-			return -EOPNOTSUPP;
+			return std::unexpected(-EOPNOTSUPP);
 		}
 		if (options.video_config.use_finite_as_infinite_stream) {
-			return -EOPNOTSUPP;
+			return std::unexpected(-EOPNOTSUPP);
 		}
 		if (!pipeline) {
-			return -ENODEV;
+			return std::unexpected(-ENODEV);
 		}
 
-		// Calculate time position from frame index
-		double fps      = finite_source_info->fps;
-		gint64 time_ns  = static_cast<gint64>((frame_index / fps) * GST_SECOND);
-		gint64 duration = finite_source_info->duration_ns;
-
-		if (time_ns > duration) {
-			return -EINVAL;
+		const auto duration = static_cast<uint64_t>(finite_source_info->duration_ns);
+		if (timestamp_ns > duration) {
+			return std::unexpected(-ERANGE);
 		}
 
-		bool success = gst_element_seek_simple(pipeline, GST_FORMAT_TIME,
-											   static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT),
-											   time_ns);
+		const auto interval_ns = finite_frame_interval_ns();
+		const auto frame_index = interval_ns == 0 ? 0u : static_cast<uint32_t>((timestamp_ns + interval_ns - 1) / interval_ns);
+		const auto landed_timestamp_ns = interval_ns == 0 ? timestamp_ns : static_cast<uint64_t>(frame_index) * interval_ns;
+
+		std::lock_guard lock(state_mutex);
+		bool success = gst_element_seek_simple(
+			pipeline, GST_FORMAT_TIME,
+			static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT),
+			static_cast<gint64>(timestamp_ns));
 		if (!success) {
-			return -EIO;
+			return std::unexpected(-EIO);
 		}
 
-		metadata.frame_count = static_cast<uint32_t>(frame_index);
-		return 0;
+		source_frame_index = frame_index;
+		metadata.frame_count = 0;
+		metadata.timestamp_ns = landed_timestamp_ns;
+		return seek_result_t{
+			.requested_timestamp_ns = timestamp_ns,
+			.landed_timestamp_ns = landed_timestamp_ns,
+			.landed_frame_count = metadata.frame_count,
+			.exact_match = landed_timestamp_ns == timestamp_ns,
+		};
 	}
 
 	error_t ResetFrameCount() {
+		std::lock_guard lock(state_mutex);
 		if (finite_source_info && !options.video_config.use_finite_as_infinite_stream) {
 			// Finite source: seek to beginning
 			if (!pipeline) {
@@ -562,6 +626,8 @@ struct GStreamerBackendImpl {
 		}
 		// Reset internal frame count for both finite and stream sources
 		metadata.frame_count = 0;
+		source_frame_index = 0;
+		metadata.timestamp_ns = timestamp_for_source_frame(source_frame_index);
 		return 0;
 	}
 };
@@ -603,8 +669,12 @@ void GStreamerBackend::SetOnError(on_error_fn_t on_error) {
 	impl->SetOnError(std::move(on_error));
 }
 
-error_t GStreamerBackend::SeekFrame(size_t frame_index) {
-	return impl->SeekFrame(frame_index);
+source_info_t GStreamerBackend::GetSourceInfo() {
+	return impl->GetSourceInfo();
+}
+
+std::expected<seek_result_t, error_t> GStreamerBackend::SeekTimestampNs(uint64_t timestamp_ns) {
+	return impl->SeekTimestampNs(timestamp_ns);
 }
 
 error_t GStreamerBackend::ResetFrameCount() {

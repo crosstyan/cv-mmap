@@ -24,6 +24,8 @@ constexpr uint8_t BODY_TRACKING_MAGIC = 0x62;
 
 constexpr int32_t CONTROL_MSG_CMD_GENERIC = 0;
 constexpr int32_t CONTROL_MSG_CMD_RESET_FRAME_COUNT = 0x1001;
+constexpr int32_t CONTROL_MSG_CMD_GET_SOURCE_INFO = 0x1002;
+constexpr int32_t CONTROL_MSG_CMD_SEEK_TIMESTAMP_NS = 0x1003;
 
 constexpr int32_t CONTROL_RESPONSE_OK = 0;
 constexpr int32_t CONTROL_RESPONSE_UNKNOWN_CMD = -1;
@@ -32,6 +34,9 @@ constexpr int32_t CONTROL_RESPONSE_INVALID_MAGIC = -3;
 constexpr int32_t CONTROL_RESPONSE_INVALID_LABEL = -4;
 constexpr int32_t CONTROL_RESPONSE_INVALID_VERSION = -5;
 constexpr int32_t CONTROL_RESPONSE_INVALID_MSG_SIZE = -6;
+constexpr int32_t CONTROL_RESPONSE_UNSUPPORTED = -7;
+constexpr int32_t CONTROL_RESPONSE_INVALID_PAYLOAD = -8;
+constexpr int32_t CONTROL_RESPONSE_OUT_OF_RANGE = -9;
 constexpr int32_t CONTROL_RESPONSE_TIMEOUT = -100;
 
 constexpr int32_t MODULE_STATUS_ONLINE = 0xa1;
@@ -82,6 +87,23 @@ enum class ModuleStatus : int32_t {
 	Offline = MODULE_STATUS_OFFLINE,
 	StreamReset = MODULE_STATUS_STREAM_RESET,
 };
+
+enum class SourceKind : uint8_t {
+	Unknown = 0,
+	Live = 1,
+	Finite = 2,
+};
+
+enum class TimestampDomain : uint8_t {
+	Unknown = 0,
+	UnixEpochNs = 1,
+	MediaTimeNs = 2,
+};
+
+constexpr uint32_t SOURCE_INFO_FLAG_CAN_SEEK = 0x00000001u;
+constexpr uint32_t SOURCE_INFO_FLAG_AUTO_LOOP = 0x00000002u;
+constexpr uint32_t SOURCE_INFO_FLAG_HAS_DEPTH = 0x00000004u;
+constexpr uint32_t SOURCE_INFO_FLAG_HAS_BODY = 0x00000008u;
 
 enum class BodyTrackingModel : uint8_t {
 	HumanBodyFast = 0,
@@ -343,6 +365,41 @@ static_assert(sizeof(control_message_response_t) == 40,
 			  "control_message_response_t must be 40 bytes");
 
 #pragma pack(push, 1)
+struct source_info_response_v1_t {
+	uint16_t struct_size{sizeof(source_info_response_v1_t)};
+	SourceKind source_kind{SourceKind::Unknown};
+	TimestampDomain timestamp_domain{TimestampDomain::Unknown};
+	uint32_t flags{0};
+	uint64_t timeline_start_ns{0};
+	uint64_t timeline_end_ns{0};
+	uint64_t duration_ns{0};
+	uint64_t current_timestamp_ns{0};
+	uint32_t current_frame_count{0};
+	uint32_t reserved_0{0};
+};
+static_assert(sizeof(source_info_response_v1_t) == 48,
+			  "source_info_response_v1_t must be 48 bytes");
+
+struct seek_timestamp_request_v1_t {
+	uint16_t struct_size{sizeof(seek_timestamp_request_v1_t)};
+	uint16_t reserved_0{0};
+	uint64_t target_timestamp_ns{0};
+};
+static_assert(sizeof(seek_timestamp_request_v1_t) == 12,
+			  "seek_timestamp_request_v1_t must be 12 bytes");
+
+struct seek_timestamp_response_v1_t {
+	uint16_t struct_size{sizeof(seek_timestamp_response_v1_t)};
+	uint8_t exact_match{0};
+	uint8_t reserved_0{0};
+	uint64_t requested_timestamp_ns{0};
+	uint64_t landed_timestamp_ns{0};
+	uint32_t landed_frame_count{0};
+	uint32_t reserved_1{0};
+};
+static_assert(sizeof(seek_timestamp_response_v1_t) == 28,
+			  "seek_timestamp_response_v1_t must be 28 bytes");
+
 struct body_tracking_message_header_t {
 	[[nodiscard]]
 	std::string_view label() const {

@@ -97,6 +97,8 @@ cvmmap_resolve_backend_mode(BUILD_BACKEND_OPENCV_MODE BUILD_BACKEND_OPENCV WITH_
 	"Build OpenCV backend support (AUTO, ON, OFF)")
 cvmmap_resolve_backend_mode(BUILD_BACKEND_GSTREAMER_MODE BUILD_BACKEND_GSTREAMER WITH_BACKEND_GSTREAMER AUTO
 	"Build GStreamer backend support (AUTO, ON, OFF)")
+cvmmap_resolve_backend_mode(BUILD_BACKEND_MCAP_MODE BUILD_BACKEND_MCAP WITH_BACKEND_MCAP AUTO
+	"Build MCAP backend support (AUTO, ON, OFF)")
 cvmmap_resolve_backend_mode(BUILD_BACKEND_ZED_MODE BUILD_BACKEND_ZED WITH_BACKEND_ZED OFF
 	"Build ZED backend support (AUTO, ON, OFF)")
 
@@ -150,6 +152,65 @@ else()
 	message(STATUS "GStreamer backend: disabled (BUILD_BACKEND_GSTREAMER=OFF)")
 endif()
 
+set(WITH_BACKEND_MCAP OFF)
+set(_MCAP_DEPS_FOUND OFF)
+set(_MCAP_INCLUDE_DIR "")
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/mcap/include/mcap/reader.hpp")
+	set(_MCAP_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/lib/mcap/include")
+elseif(EXISTS "/home/crosstyan/Code/mcap/cpp/mcap/include/mcap/reader.hpp")
+	set(_MCAP_INCLUDE_DIR "/home/crosstyan/Code/mcap/cpp/mcap/include")
+endif()
+
+find_package(Protobuf QUIET)
+set(_MCAP_PROTOBUF_FOUND OFF)
+if (Protobuf_FOUND)
+	set(_MCAP_PROTOBUF_FOUND ON)
+endif()
+
+set(_MCAP_FFMPEG_FOUND OFF)
+if (PkgConfig_FOUND)
+	pkg_check_modules(FFMPEG_LIBAV QUIET IMPORTED_TARGET libavcodec libavutil libswscale)
+	if (FFMPEG_LIBAV_FOUND)
+		set(_MCAP_FFMPEG_FOUND ON)
+	endif()
+	pkg_check_modules(MCAP_COMPRESSION_LIBS QUIET IMPORTED_TARGET libzstd liblz4)
+endif()
+
+find_package(rvl CONFIG QUIET)
+if (NOT TARGET rvl::rvl)
+	set(RVL_LOCAL_ROOT "/home/crosstyan/Code/rvl_impl")
+	set(RVL_LOCAL_BUILD "${RVL_LOCAL_ROOT}/build/core")
+	if (
+		EXISTS "${RVL_LOCAL_ROOT}/core/include/rvl/rvl.hpp"
+		AND EXISTS "${RVL_LOCAL_BUILD}/librvl_core.a")
+		add_library(rvl::rvl INTERFACE IMPORTED)
+		set_target_properties(rvl::rvl PROPERTIES
+			INTERFACE_INCLUDE_DIRECTORIES "${RVL_LOCAL_ROOT}/core/include"
+			INTERFACE_LINK_LIBRARIES "${RVL_LOCAL_BUILD}/librvl_core.a")
+	endif()
+endif()
+
+if (_MCAP_INCLUDE_DIR AND _MCAP_PROTOBUF_FOUND AND _MCAP_FFMPEG_FOUND AND TARGET rvl::rvl)
+	set(_MCAP_DEPS_FOUND ON)
+endif()
+
+if (BUILD_BACKEND_MCAP_MODE STREQUAL "ON")
+	if (NOT _MCAP_DEPS_FOUND)
+		message(FATAL_ERROR "BUILD_BACKEND_MCAP=ON requires mcap headers, Protobuf, libavcodec/libavutil/libswscale, and rvl::rvl")
+	endif()
+	set(WITH_BACKEND_MCAP ON)
+	message(STATUS "MCAP backend: enabled (BUILD_BACKEND_MCAP=ON)")
+elseif (BUILD_BACKEND_MCAP_MODE STREQUAL "AUTO")
+	if (_MCAP_DEPS_FOUND)
+		set(WITH_BACKEND_MCAP ON)
+		message(STATUS "MCAP backend: enabled (auto-detected)")
+	else()
+		message(STATUS "MCAP backend: disabled (dependencies not found)")
+	endif()
+else()
+	message(STATUS "MCAP backend: disabled (BUILD_BACKEND_MCAP=OFF)")
+endif()
+
 set(WITH_BACKEND_ZED OFF)
 if (BUILD_BACKEND_ZED_MODE STREQUAL "AUTO")
 	message(FATAL_ERROR "BUILD_BACKEND_ZED=AUTO is not supported; use ON or OFF")
@@ -184,6 +245,30 @@ else()
 endif()
 
 ####### BACKENDS #######
+if (WITH_BACKEND_MCAP)
+	add_library(app_mcap_headers INTERFACE)
+	target_include_directories(app_mcap_headers INTERFACE "${_MCAP_INCLUDE_DIR}")
+
+	add_library(app_mcap_proto STATIC)
+	target_include_directories(app_mcap_proto
+		PUBLIC
+			"${CMAKE_CURRENT_BINARY_DIR}"
+			"${CMAKE_CURRENT_SOURCE_DIR}/proto")
+	protobuf_generate(
+		TARGET app_mcap_proto
+		LANGUAGE cpp
+		PROTOS
+			"${CMAKE_CURRENT_SOURCE_DIR}/proto/foxglove/CompressedVideo.proto"
+			"${CMAKE_CURRENT_SOURCE_DIR}/proto/cvmmap_streamer/DepthMap.proto")
+	if (TARGET protobuf::libprotobuf)
+		target_link_libraries(app_mcap_proto PUBLIC protobuf::libprotobuf)
+	elseif (TARGET Protobuf::libprotobuf)
+		target_link_libraries(app_mcap_proto PUBLIC Protobuf::libprotobuf)
+	else()
+		target_link_libraries(app_mcap_proto PUBLIC ${Protobuf_LIBRARIES})
+	endif()
+endif()
+
 add_library(app_video_backends STATIC)
 target_include_directories(app_video_backends PUBLIC backends)
 target_sources(app_video_backends PRIVATE backends/app_backends_dummy.cpp)
@@ -198,6 +283,14 @@ if (WITH_BACKEND_GSTREAMER)
         target_compile_definitions(app_video_backends PUBLIC WITH_BACKEND_GSTREAMER=1) 
         target_sources(app_video_backends PRIVATE backends/app_backends_gst.cpp)
         target_link_libraries(app_video_backends PRIVATE PkgConfig::GST)
+endif()
+if (WITH_BACKEND_MCAP)
+		target_compile_definitions(app_video_backends PUBLIC WITH_BACKEND_MCAP=1)
+		target_sources(app_video_backends PRIVATE backends/app_backends_mcap.cpp)
+		target_link_libraries(app_video_backends PRIVATE app_mcap_headers app_mcap_proto PkgConfig::FFMPEG_LIBAV rvl::rvl)
+		if (TARGET PkgConfig::MCAP_COMPRESSION_LIBS)
+			target_link_libraries(app_video_backends PRIVATE PkgConfig::MCAP_COMPRESSION_LIBS)
+		endif()
 endif()
 
 if (WITH_BACKEND_ZED)
@@ -226,6 +319,7 @@ endif()
 target_link_libraries(app_video_backends PUBLIC msft_proxy4::proxy)
 target_link_libraries(app_video_backends PUBLIC app_models)
 target_link_libraries(app_video_backends PUBLIC app_config)
+target_link_libraries(app_video_backends PUBLIC cvmmap_ipc)
 
 add_library(app INTERFACE)
 target_include_directories(app INTERFACE .)

@@ -37,6 +37,9 @@
 #ifdef WITH_BACKEND_GSTREAMER
 #include "backends/app_backends_gst.hpp"
 #endif
+#ifdef WITH_BACKEND_MCAP
+#include "backends/app_backends_mcap.hpp"
+#endif
 #ifdef WITH_BACKEND_ZED
 #include "backends/app_backends_zed.hpp"
 #endif
@@ -99,10 +102,12 @@ int main(int argc, char **argv) {
 	}
 
 	const bool body_stream_enabled =
-		config.video.backend == app::BackendType::ZED &&
-		config.zed &&
-		config.zed->body_tracking &&
-		config.zed->body_tracking->enabled;
+		(
+			config.video.backend == app::BackendType::ZED &&
+			config.zed &&
+			config.zed->body_tracking &&
+			config.zed->body_tracking->enabled) ||
+		(config.video.backend == app::BackendType::MCAP && config.mcap.has_value());
 
 	// https://libzmq.readthedocs.io/en/latest/zmq_ipc.html
 	// https://libzmq.readthedocs.io/en/latest/zmq_inproc.html
@@ -654,6 +659,24 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 #endif
+#ifdef WITH_BACKEND_MCAP
+	case app::BackendType::MCAP: {
+		if (!config.mcap) {
+			spdlog::error("MCAP backend selected but [mcap] config section missing");
+			return 1;
+		}
+		backend = pro::make_proxy<app::backends::IBackend, app::backends::McapBackend>(
+			*config.mcap,
+			config.video);
+		spdlog::info("using MCAP backend");
+		break;
+	}
+#else
+	case app::BackendType::MCAP: {
+		spdlog::error("MCAP backend selected but unavailable in this build; reconfigure with -DBUILD_BACKEND_MCAP=ON");
+		return 1;
+	}
+#endif
 	case app::BackendType::ZED: {
 #ifdef WITH_BACKEND_ZED
 		if (!config.zed) {
@@ -820,12 +843,26 @@ int main(int argc, char **argv) {
 	backend->Init();
 	send_status(MODULE_STATUS_ONLINE);
 
+	const auto map_control_error = [](int error_code) {
+		switch (error_code) {
+		case -EOPNOTSUPP:
+			return CONTROL_RESPONSE_UNSUPPORTED;
+		case -ERANGE:
+		case -EINVAL:
+			return CONTROL_RESPONSE_OUT_OF_RANGE;
+		default:
+			return CONTROL_RESPONSE_ERROR;
+		}
+	};
+
 	const auto send_response = [&control_sock, &config](int32_t command_id, int32_t response_code, std::span<const uint8_t> response_message = {}) {
 		// Small object optimization: use stack buffer for small messages, heap for large ones
 		constexpr size_t SSO_THRESHOLD = 64;
-		const size_t total_size        = sizeof(control_message_response_t) + response_message.size();
+		constexpr size_t response_header_size =
+			offsetof(control_message_response_t, _response_message_data);
+		const size_t total_size        = response_header_size + response_message.size();
 
-		alignas(control_message_response_t) uint8_t stack_buffer[sizeof(control_message_response_t) + SSO_THRESHOLD];
+		alignas(control_message_response_t) uint8_t stack_buffer[response_header_size + SSO_THRESHOLD];
 		std::unique_ptr<uint8_t[]> heap_buffer;
 		uint8_t *buffer_ptr;
 
@@ -842,7 +879,7 @@ int main(int argc, char **argv) {
 		response->response_code           = response_code;
 		response->response_message_length = static_cast<uint16_t>(response_message.size());
 		if (!response_message.empty()) {
-			std::copy(response_message.begin(), response_message.end(), response->_response_message_data);
+			std::copy(response_message.begin(), response_message.end(), buffer_ptr + response_header_size);
 		}
 		try {
 			control_sock.send(zmq::buffer(buffer_ptr, total_size), zmq::send_flags::none);
@@ -871,7 +908,9 @@ int main(int argc, char **argv) {
 		}
 
 		// Process control message
-		if (request.size() < sizeof(control_message_request_t)) {
+		constexpr size_t request_header_size =
+			offsetof(control_message_request_t, _request_message_data);
+		if (request.size() < request_header_size) {
 			spdlog::warn("received control message too small: {} bytes", request.size());
 			send_response(CONTROL_MSG_CMD_GENERIC, CONTROL_RESPONSE_INVALID_MSG_SIZE);
 			continue;
@@ -900,6 +939,13 @@ int main(int argc, char **argv) {
 			send_response(req->command_id, CONTROL_RESPONSE_INVALID_LABEL);
 			continue;
 		}
+		if (request.size() < request_header_size + req->request_message_length) {
+			spdlog::warn("received truncated control message payload: {} < {}",
+						 request.size(),
+						 request_header_size + req->request_message_length);
+			send_response(req->command_id, CONTROL_RESPONSE_INVALID_MSG_SIZE);
+			continue;
+		}
 
 		switch (req->command_id) {
 		case CONTROL_MSG_CMD_RESET_FRAME_COUNT: {
@@ -911,6 +957,55 @@ int main(int argc, char **argv) {
 			} else {
 				send_status(MODULE_STATUS_STREAM_RESET);
 				send_response(req->command_id, CONTROL_RESPONSE_OK);
+			}
+			break;
+		}
+		case CONTROL_MSG_CMD_GET_SOURCE_INFO: {
+			spdlog::debug("control: GET_SOURCE_INFO requested");
+			const auto info = backend->GetSourceInfo();
+			source_info_response_v1_t response{};
+			response.source_kind = info.source_kind;
+			response.timestamp_domain = info.timestamp_domain;
+			response.flags = info.flags;
+			response.timeline_start_ns = info.timeline_start_ns;
+			response.timeline_end_ns = info.timeline_end_ns;
+			response.duration_ns = info.duration_ns;
+			response.current_timestamp_ns = info.current_timestamp_ns;
+			response.current_frame_count = info.current_frame_count;
+			send_response(req->command_id, CONTROL_RESPONSE_OK,
+						  std::span<const uint8_t>(
+							  reinterpret_cast<const uint8_t *>(&response),
+							  sizeof(response)));
+			break;
+		}
+		case CONTROL_MSG_CMD_SEEK_TIMESTAMP_NS: {
+			if (req->request_message_length < sizeof(seek_timestamp_request_v1_t)) {
+				send_response(req->command_id, CONTROL_RESPONSE_INVALID_MSG_SIZE);
+				break;
+			}
+			seek_timestamp_request_v1_t seek_request{};
+			std::memcpy(&seek_request, req->request_message().data(), sizeof(seek_request));
+			if (seek_request.struct_size < sizeof(seek_timestamp_request_v1_t)) {
+				send_response(req->command_id, CONTROL_RESPONSE_INVALID_PAYLOAD);
+				break;
+			}
+
+			spdlog::info("control: SEEK_TIMESTAMP_NS requested target={}", seek_request.target_timestamp_ns);
+			auto result = backend->SeekTimestampNs(seek_request.target_timestamp_ns);
+			if (!result) {
+				spdlog::error("seeking by timestamp failed: {}", result.error());
+				send_response(req->command_id, map_control_error(result.error()));
+			} else {
+				seek_timestamp_response_v1_t response{};
+				response.exact_match = result->exact_match ? 1u : 0u;
+				response.requested_timestamp_ns = result->requested_timestamp_ns;
+				response.landed_timestamp_ns = result->landed_timestamp_ns;
+				response.landed_frame_count = result->landed_frame_count;
+				send_status(MODULE_STATUS_STREAM_RESET);
+				send_response(req->command_id, CONTROL_RESPONSE_OK,
+							  std::span<const uint8_t>(
+								  reinterpret_cast<const uint8_t *>(&response),
+								  sizeof(response)));
 			}
 			break;
 		}

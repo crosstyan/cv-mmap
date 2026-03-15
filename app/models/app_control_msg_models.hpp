@@ -4,6 +4,7 @@
 #include <span>
 #include <format>
 #include "app_common_models.hpp"
+#include <cvmmap/ipc.hpp>
 
 namespace app {
 struct control_message_request_t {
@@ -84,6 +85,40 @@ struct control_message_response_t {
 	uint8_t _response_message_data[];
 };
 static_assert(sizeof(control_message_response_t) == 40, "control_message_response_t must be 40 bytes");
+
+#pragma pack(push, 1)
+struct source_info_response_v1_t {
+	uint16_t struct_size{sizeof(source_info_response_v1_t)};
+	cvmmap::SourceKind source_kind{cvmmap::SourceKind::Unknown};
+	cvmmap::TimestampDomain timestamp_domain{cvmmap::TimestampDomain::Unknown};
+	uint32_t flags{0};
+	uint64_t timeline_start_ns{0};
+	uint64_t timeline_end_ns{0};
+	uint64_t duration_ns{0};
+	uint64_t current_timestamp_ns{0};
+	uint32_t current_frame_count{0};
+	uint32_t reserved_0{0};
+};
+static_assert(sizeof(source_info_response_v1_t) == 48, "source_info_response_v1_t must be 48 bytes");
+
+struct seek_timestamp_request_v1_t {
+	uint16_t struct_size{sizeof(seek_timestamp_request_v1_t)};
+	uint16_t reserved_0{0};
+	uint64_t target_timestamp_ns{0};
+};
+static_assert(sizeof(seek_timestamp_request_v1_t) == 12, "seek_timestamp_request_v1_t must be 12 bytes");
+
+struct seek_timestamp_response_v1_t {
+	uint16_t struct_size{sizeof(seek_timestamp_response_v1_t)};
+	uint8_t exact_match{0};
+	uint8_t reserved_0{0};
+	uint64_t requested_timestamp_ns{0};
+	uint64_t landed_timestamp_ns{0};
+	uint32_t landed_frame_count{0};
+	uint32_t reserved_1{0};
+};
+static_assert(sizeof(seek_timestamp_response_v1_t) == 28, "seek_timestamp_response_v1_t must be 28 bytes");
+#pragma pack(pop)
 
 }
 

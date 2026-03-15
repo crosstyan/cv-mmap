@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package cvmmap_streamer;
+
+import "google/protobuf/timestamp.proto";
+
+message DepthMap {
+  enum DepthUnit {
+    DEPTH_UNIT_UNKNOWN = 0;
+    DEPTH_UNIT_MILLIMETER = 1;
+    DEPTH_UNIT_METER = 2;
+  }
+
+  enum StorageUnit {
+    STORAGE_UNIT_UNKNOWN = 0;
+    STORAGE_UNIT_MILLIMETER = 1;
+    STORAGE_UNIT_METER = 2;
+  }
+
+  enum Encoding {
+    ENCODING_UNKNOWN = 0;
+    RVL_U16_LOSSLESS = 1;
+    RVL_F32 = 2;
+  }
+
+  google.protobuf.Timestamp timestamp = 1;
+  string frame_id = 2;
+  uint32 width = 3;
+  uint32 height = 4;
+  DepthUnit source_unit = 5;
+  StorageUnit storage_unit = 6;
+  Encoding encoding = 7;
+  bytes data = 8;
+}

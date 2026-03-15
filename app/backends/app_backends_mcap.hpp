@@ -1,23 +1,23 @@
-#ifndef CE5657DE_F3BD_4D12_B529_2DB6C5F4E72B
-#define CE5657DE_F3BD_4D12_B529_2DB6C5F4E72B
+#ifndef D3E7BA6F_0F90_4B1D_9BB4_7BCA7438468F
+#define D3E7BA6F_0F90_4B1D_9BB4_7BCA7438468F
 
 #include <memory>
+
 #include "app_backends_facade.hpp"
 
 namespace app {
+struct McapConfig;
 struct VideoConfig;
-struct ZedConfig;
 }
 
 namespace app::backends {
 
-struct ZedBackendImpl;
+struct McapBackendImpl;
+struct McapBackend {
+	std::unique_ptr<McapBackendImpl> impl;
 
-struct ZedBackend {
-	std::unique_ptr<ZedBackendImpl> impl;
-
-	ZedBackend(const app::ZedConfig &zed_config, const app::VideoConfig &video_config);
-	~ZedBackend();
+	McapBackend(app::McapConfig mcap_config, const app::VideoConfig &video_config);
+	~McapBackend();
 
 	void Init();
 	void Shutdown();
@@ -30,6 +30,6 @@ struct ZedBackend {
 	error_t ResetFrameCount();
 };
 
-}
+} // namespace app::backends
 
-#endif
+#endif /* D3E7BA6F_0F90_4B1D_9BB4_7BCA7438468F */

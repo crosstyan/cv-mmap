@@ -3,6 +3,53 @@
 This document records wire-compatible ABI changes that affect downstream
 parsers, transports, and generated schemas.
 
+## Control Wire Source Info And Timestamp Seek
+
+### 2026-03-13
+
+Status:
+- control wire major/minor unchanged (`VERSION_MAJOR = 1`, `VERSION_MINOR = 0`)
+- request/response command envelope unchanged semantically
+- on-wire header sizes explicitly documented as:
+  - request header = `34` bytes
+  - response header = `38` bytes
+- C++ envelope structs remain `36` and `40` bytes because of unsent tail padding
+
+Change:
+- added control commands:
+  - `GET_SOURCE_INFO` (`0x1002`)
+  - `SEEK_TIMESTAMP_NS` (`0x1003`)
+- added response codes:
+  - `UNSUPPORTED` (`-7`)
+  - `INVALID_PAYLOAD` (`-8`)
+  - `OUT_OF_RANGE` (`-9`)
+- added successful payload structs:
+  - `source_info_response_v1`
+  - `seek_timestamp_request_v1`
+  - `seek_timestamp_response_v1`
+- `cvmmap_control_v1.ksy` now parses these payloads explicitly and documents the
+  real 34-byte / 38-byte wire envelope sizes
+
+Reason:
+- finite replay backends need a standard control-plane way to report source
+  capabilities and position
+- timestamp seek needs a stable wire contract independent of backend type
+- downstream parsers must not infer wrong payload offsets from `sizeof(...)`
+  on flexible-array C structs
+
+Downstream impact:
+- `core` client can query source kind/timestamp domain/flags and seek by timestamp
+- replay-oriented consumers can distinguish finite vs live sources without
+  backend-specific heuristics
+- Kaitai-based parsers can validate control packets against the actual on-wire
+  envelope size instead of host ABI padding
+
+Compatibility:
+- this is a compatible extension of control v1, not a version bump
+- old consumers that only send `RESET_FRAME_COUNT` continue to work
+- new consumers must treat non-`OK` response codes as having either no payload or
+  command-specific future payloads
+
 ## SHM Metadata v2 Depth Unit
 
 ### 2026-03-11

@@ -4,6 +4,7 @@
 #include <chrono>
 #include <optional>
 #include <regex>
+#include <mutex>
 #include <spdlog/spdlog.h>
 #include <errno.h>
 #include "app_backends_opencv.hpp"
@@ -39,6 +40,8 @@ struct OpenCVBackendImpl {
 	// Frame metadata maintained by backend
 	frame_metadata_t metadata{};
 	std::optional<finite_source_info_t> finite_source_info{};
+	uint32_t source_frame_index{0};
+	std::mutex state_mutex{};
 
 	// Error tracking for live sources
 	static constexpr int MAX_CONSECUTIVE_EMPTY_FRAMES = 3;
@@ -63,6 +66,56 @@ struct OpenCVBackendImpl {
 		if (_on_error) {
 			_on_error(error_code, message);
 		}
+	}
+
+	[[nodiscard]]
+	uint64_t finite_frame_interval_ns() const {
+		if (!finite_source_info || finite_source_info->fps <= 0.0) {
+			return 0;
+		}
+		return static_cast<uint64_t>(1000000000.0 / finite_source_info->fps);
+	}
+
+	[[nodiscard]]
+	uint64_t timestamp_for_source_frame(uint32_t frame_index) const {
+		if (!finite_source_info) {
+			return static_cast<uint64_t>(
+				std::chrono::duration_cast<std::chrono::nanoseconds>(
+					std::chrono::system_clock::now().time_since_epoch())
+					.count());
+		}
+		return static_cast<uint64_t>(frame_index) * finite_frame_interval_ns();
+	}
+
+	[[nodiscard]]
+	source_info_t GetSourceInfo() {
+		std::lock_guard lock(state_mutex);
+		source_info_t info{};
+		if (finite_source_info) {
+			info.source_kind = cvmmap::SourceKind::Finite;
+			info.timestamp_domain = cvmmap::TimestampDomain::MediaTimeNs;
+			info.timeline_start_ns = 0;
+			info.timeline_end_ns =
+				static_cast<uint64_t>(finite_source_info->frame_count - 1) *
+				finite_frame_interval_ns();
+			info.duration_ns =
+				static_cast<uint64_t>(finite_source_info->frame_count) *
+				finite_frame_interval_ns();
+			if (!options.video_config.use_finite_as_infinite_stream) {
+				info.flags |= cvmmap::SOURCE_INFO_FLAG_CAN_SEEK;
+			}
+			if (options.video_config.finite_stream_ending_behavior ==
+					app::FiniteStreamEndingBehavior::Loop ||
+				options.video_config.use_finite_as_infinite_stream) {
+				info.flags |= cvmmap::SOURCE_INFO_FLAG_AUTO_LOOP;
+			}
+		} else {
+			info.source_kind = cvmmap::SourceKind::Live;
+			info.timestamp_domain = cvmmap::TimestampDomain::UnixEpochNs;
+		}
+		info.current_timestamp_ns = metadata.timestamp_ns;
+		info.current_frame_count = metadata.frame_count;
+		return info;
 	}
 
 	std::optional<finite_source_info_t> check_finite_source() {
@@ -175,10 +228,8 @@ struct OpenCVBackendImpl {
 		on_metadata(metadata);
 
 		// Invoke frame callback for first frame
-		metadata.timestamp_ns = static_cast<uint64_t>(
-			std::chrono::duration_cast<std::chrono::nanoseconds>(
-				std::chrono::system_clock::now().time_since_epoch())
-				.count());
+		source_frame_index = 0;
+		metadata.timestamp_ns = timestamp_for_source_frame(source_frame_index);
 		auto frame_buffer = std::span<uint8_t>(frame.data, frame.total() * frame.elemSize());
 		on_frame(frame_buffer, metadata);
 
@@ -191,7 +242,10 @@ struct OpenCVBackendImpl {
 	void worker_loop(std::stop_token stop_token) {
 		cv::Mat frame;
 		while (!stop_token.stop_requested()) {
-			cap >> frame;
+			{
+				std::lock_guard lock(state_mutex);
+				cap >> frame;
+			}
 			if (frame.empty()) {
 				if (finite_source_info) {
 					spdlog::info("reached end of finite video source");
@@ -225,18 +279,18 @@ struct OpenCVBackendImpl {
 			// Reset empty frame counter on successful capture
 			consecutive_empty_frames = 0;
 
-			// Update frame count
-			metadata.frame_count += 1;
-
-			// Set timestamp
-			metadata.timestamp_ns = static_cast<uint64_t>(
-				std::chrono::duration_cast<std::chrono::nanoseconds>(
-					std::chrono::system_clock::now().time_since_epoch())
-					.count());
+			frame_metadata_t metadata_snapshot{};
+			{
+				std::lock_guard lock(state_mutex);
+				source_frame_index += 1;
+				metadata.frame_count += 1;
+				metadata.timestamp_ns = timestamp_for_source_frame(source_frame_index);
+				metadata_snapshot = metadata;
+			}
 
 			// Invoke frame callback
 			auto frame_buffer = std::span<uint8_t>(frame.data, frame.total() * frame.elemSize());
-			on_frame(frame_buffer, metadata);
+			on_frame(frame_buffer, metadata_snapshot);
 
 			// Log and sleep for finite sources
 			if (finite_source_info) {
@@ -273,25 +327,42 @@ struct OpenCVBackendImpl {
 		_on_error = std::move(on_error_);
 	}
 
-	error_t SeekFrame(size_t frame_index) {
+	std::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns) {
 		if (!finite_source_info) {
-			return -EOPNOTSUPP;
+			return std::unexpected(-EOPNOTSUPP);
 		}
 		if (options.video_config.use_finite_as_infinite_stream) {
-			return -EOPNOTSUPP;
+			return std::unexpected(-EOPNOTSUPP);
 		}
-		if (frame_index >= finite_source_info->frame_count) {
-			return -EINVAL;
+		const auto interval_ns = finite_frame_interval_ns();
+		const auto max_timestamp_ns =
+			static_cast<uint64_t>(finite_source_info->frame_count - 1) *
+			interval_ns;
+		if (timestamp_ns > max_timestamp_ns) {
+			return std::unexpected(-ERANGE);
 		}
-		bool success = cap.set(cv::CAP_PROP_POS_FRAMES, static_cast<double>(frame_index));
+
+		const auto frame_index = static_cast<uint32_t>(
+			(timestamp_ns + interval_ns - 1) / interval_ns);
+		std::lock_guard lock(state_mutex);
+		bool success =
+			cap.set(cv::CAP_PROP_POS_FRAMES, static_cast<double>(frame_index));
 		if (!success) {
-			return -EIO;
+			return std::unexpected(-EIO);
 		}
-		metadata.frame_count = static_cast<uint32_t>(frame_index);
-		return 0;
+		source_frame_index = frame_index;
+		metadata.frame_count = 0;
+		metadata.timestamp_ns = timestamp_for_source_frame(source_frame_index);
+		return seek_result_t{
+			.requested_timestamp_ns = timestamp_ns,
+			.landed_timestamp_ns = metadata.timestamp_ns,
+			.landed_frame_count = metadata.frame_count,
+			.exact_match = (metadata.timestamp_ns == timestamp_ns),
+		};
 	}
 
 	error_t ResetFrameCount() {
+		std::lock_guard lock(state_mutex);
 		if (finite_source_info && !options.video_config.use_finite_as_infinite_stream) {
 			// Finite source: seek to beginning
 			bool success = cap.set(cv::CAP_PROP_POS_FRAMES, 0);
@@ -301,6 +372,8 @@ struct OpenCVBackendImpl {
 		}
 		// Reset internal frame count for both finite and stream sources
 		metadata.frame_count = 0;
+		source_frame_index = 0;
+		metadata.timestamp_ns = timestamp_for_source_frame(source_frame_index);
 		return 0;
 	}
 };
@@ -339,8 +412,12 @@ void OpenCVBackend::SetOnError(on_error_fn_t on_error) {
 	impl->SetOnError(std::move(on_error));
 }
 
-error_t OpenCVBackend::SeekFrame(size_t frame_index) {
-	return impl->SeekFrame(frame_index);
+source_info_t OpenCVBackend::GetSourceInfo() {
+	return impl->GetSourceInfo();
+}
+
+std::expected<seek_result_t, error_t> OpenCVBackend::SeekTimestampNs(uint64_t timestamp_ns) {
+	return impl->SeekTimestampNs(timestamp_ns);
 }
 
 error_t OpenCVBackend::ResetFrameCount() {

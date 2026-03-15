@@ -19,6 +19,8 @@ constexpr uint8_t CONTROL_MESSAGE_RESPONSE_MAGIC = 0x3d;
 
 constexpr int32_t CONTROL_MSG_CMD_GENERIC           = 0;
 constexpr int32_t CONTROL_MSG_CMD_RESET_FRAME_COUNT = 0x1001;
+constexpr int32_t CONTROL_MSG_CMD_GET_SOURCE_INFO   = 0x1002;
+constexpr int32_t CONTROL_MSG_CMD_SEEK_TIMESTAMP_NS = 0x1003;
 
 constexpr int32_t CONTROL_RESPONSE_OK               = 0;
 constexpr int32_t CONTROL_RESPONSE_UNKNOWN_CMD      = -1;
@@ -27,6 +29,9 @@ constexpr int32_t CONTROL_RESPONSE_INVALID_MAGIC    = -3;
 constexpr int32_t CONTROL_RESPONSE_INVALID_LABEL    = -4;
 constexpr int32_t CONTROL_RESPONSE_INVALID_VERSION  = -5;
 constexpr int32_t CONTROL_RESPONSE_INVALID_MSG_SIZE = -6;
+constexpr int32_t CONTROL_RESPONSE_UNSUPPORTED      = -7;
+constexpr int32_t CONTROL_RESPONSE_INVALID_PAYLOAD  = -8;
+constexpr int32_t CONTROL_RESPONSE_OUT_OF_RANGE     = -9;
 
 constexpr int32_t MODULE_STATUS_ONLINE       = 0xa1;
 constexpr int32_t MODULE_STATUS_OFFLINE      = 0xa0;

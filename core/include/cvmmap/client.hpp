@@ -5,12 +5,51 @@
 
 #include <chrono>
 #include <cstdint>
+#include <expected>
 #include <functional>
 #include <memory>
 #include <span>
 #include <string>
 
 namespace cvmmap {
+
+struct SourceInfo {
+	SourceKind source_kind{SourceKind::Unknown};
+	TimestampDomain timestamp_domain{TimestampDomain::Unknown};
+	uint32_t flags{0};
+	uint64_t timeline_start_ns{0};
+	uint64_t timeline_end_ns{0};
+	uint64_t duration_ns{0};
+	uint64_t current_timestamp_ns{0};
+	uint32_t current_frame_count{0};
+
+	[[nodiscard]]
+	bool can_seek() const {
+		return (flags & SOURCE_INFO_FLAG_CAN_SEEK) != 0;
+	}
+
+	[[nodiscard]]
+	bool auto_loop() const {
+		return (flags & SOURCE_INFO_FLAG_AUTO_LOOP) != 0;
+	}
+
+	[[nodiscard]]
+	bool has_depth() const {
+		return (flags & SOURCE_INFO_FLAG_HAS_DEPTH) != 0;
+	}
+
+	[[nodiscard]]
+	bool has_body() const {
+		return (flags & SOURCE_INFO_FLAG_HAS_BODY) != 0;
+	}
+};
+
+struct SeekResult {
+	uint64_t requested_timestamp_ns{0};
+	uint64_t landed_timestamp_ns{0};
+	uint32_t landed_frame_count{0};
+	bool exact_match{false};
+};
 
 class CvMmapClient {
 public:
@@ -46,6 +85,15 @@ public:
 	[[nodiscard]]
 	int32_t
 	ResetFrameCount(std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
+
+	[[nodiscard]]
+	std::expected<SourceInfo, int32_t>
+	GetSourceInfo(std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
+
+	[[nodiscard]]
+	std::expected<SeekResult, int32_t>
+	SeekTimestampNs(uint64_t timestamp_ns,
+				   std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 private:
 	struct impl;

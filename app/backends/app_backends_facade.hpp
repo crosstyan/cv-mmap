@@ -1,6 +1,7 @@
 #ifndef C56C8359_242F_4112_AFD8_5ED905EF2FA8
 #define C56C8359_242F_4112_AFD8_5ED905EF2FA8
 #include <functional>
+#include <expected>
 #include <span>
 #include <string_view>
 #include "proxy/v4/proxy.h"
@@ -14,6 +15,24 @@ using error_t = int;
 
 constexpr error_t ERR_OK  = 0;
 constexpr error_t ERR_EOS = ERR_OK;
+
+struct source_info_t {
+	cvmmap::SourceKind source_kind{cvmmap::SourceKind::Unknown};
+	cvmmap::TimestampDomain timestamp_domain{cvmmap::TimestampDomain::Unknown};
+	uint32_t flags{0};
+	uint64_t timeline_start_ns{0};
+	uint64_t timeline_end_ns{0};
+	uint64_t duration_ns{0};
+	uint64_t current_timestamp_ns{0};
+	uint32_t current_frame_count{0};
+};
+
+struct seek_result_t {
+	uint64_t requested_timestamp_ns{0};
+	uint64_t landed_timestamp_ns{0};
+	uint32_t landed_frame_count{0};
+	bool exact_match{false};
+};
 
 /// @brief Callback invoked once when metadata is available (first frame captured)
 using on_metadata_fn_t = std::move_only_function<void(const frame_metadata_t &metadata)>;
@@ -29,7 +48,8 @@ PRO_DEF_MEM_DISPATCH(MemSetOnMetadata, SetOnMetadata);
 PRO_DEF_MEM_DISPATCH(MemSetOnFrame, SetOnFrame);
 PRO_DEF_MEM_DISPATCH(MemSetOnBodyTracking, SetOnBodyTracking);
 PRO_DEF_MEM_DISPATCH(MemSetOnError, SetOnError);
-PRO_DEF_MEM_DISPATCH(MemSeekFrame, SeekFrame);
+PRO_DEF_MEM_DISPATCH(MemGetSourceInfo, GetSourceInfo);
+PRO_DEF_MEM_DISPATCH(MemSeekTimestampNs, SeekTimestampNs);
 PRO_DEF_MEM_DISPATCH(MemResetFrameCount, ResetFrameCount);
 
 // clang-format off
@@ -40,7 +60,8 @@ struct IBackend : pro::facade_builder
     ::add_convention<MemSetOnFrame, void(on_frame_fn_t)>
     ::add_convention<MemSetOnBodyTracking, void(on_body_tracking_fn_t)>
     ::add_convention<MemSetOnError, void(on_error_fn_t)>
-    ::add_convention<MemSeekFrame, error_t(size_t)>
+    ::add_convention<MemGetSourceInfo, source_info_t()>
+    ::add_convention<MemSeekTimestampNs, std::expected<seek_result_t, error_t>(uint64_t)>
     ::add_convention<MemResetFrameCount, error_t()>
     ::build {};
 // clang-format on

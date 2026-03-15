@@ -140,6 +140,11 @@ private:
 };
 
 struct CvMmapClient::impl {
+  struct control_response_t {
+    int32_t response_code{CONTROL_RESPONSE_ERROR};
+    std::vector<uint8_t> payload{};
+  };
+
   /**
    * inputs, expected to be filled
    */
@@ -185,11 +190,12 @@ struct CvMmapClient::impl {
    * @param command_id The command to send
    * @param timeout Timeout for the request
    * @param payload Optional request payload data
-   * @return Response code from server, or CONTROL_RESPONSE_TIMEOUT on timeout
+   * @return Response code and optional response payload
    */
-  int32_t send_control_request(int32_t command_id,
-                               std::chrono::milliseconds timeout,
-                               std::span<const uint8_t> payload = {});
+  std::expected<control_response_t, int32_t>
+  send_control_request(int32_t command_id,
+                       std::chrono::milliseconds timeout,
+                       std::span<const uint8_t> payload = {});
 };
 
 void CvMmapClient::impl::init() {
@@ -395,11 +401,17 @@ void CvMmapClient::impl::polling_task_() {
   }
 }
 
-int32_t
+std::expected<CvMmapClient::impl::control_response_t, int32_t>
 CvMmapClient::impl::send_control_request(int32_t command_id,
                                          std::chrono::milliseconds timeout_ms,
                                          std::span<const uint8_t> payload) {
   std::lock_guard<std::mutex> lock(control_mutex);
+  constexpr size_t request_header_size =
+      offsetof(control_message_request_t, request_message_length) +
+      sizeof(uint16_t);
+  constexpr size_t response_header_size =
+      offsetof(control_message_response_t, response_message_length) +
+      sizeof(uint16_t);
 
   // Set timeout for this request
   control_socket.set(zmq::sockopt::rcvtimeo,
@@ -410,10 +422,10 @@ CvMmapClient::impl::send_control_request(int32_t command_id,
   // Small object optimization: use stack buffer for small payloads, heap for
   // large ones
   constexpr size_t SSO_THRESHOLD = 64;
-  const size_t total_size = sizeof(control_message_request_t) + payload.size();
+  const size_t total_size = request_header_size + payload.size();
 
   alignas(control_message_request_t)
-      uint8_t stack_buffer[sizeof(control_message_request_t) + SSO_THRESHOLD];
+      uint8_t stack_buffer[request_header_size + SSO_THRESHOLD];
   std::unique_ptr<uint8_t[]> heap_buffer;
   uint8_t *buffer_ptr;
 
@@ -431,7 +443,7 @@ CvMmapClient::impl::send_control_request(int32_t command_id,
   request->request_message_length = static_cast<uint16_t>(payload.size());
   if (!payload.empty()) {
     std::copy(payload.begin(), payload.end(),
-              buffer_ptr + sizeof(control_message_request_t));
+              buffer_ptr + request_header_size);
   }
 
   // Send request
@@ -440,11 +452,11 @@ CvMmapClient::impl::send_control_request(int32_t command_id,
                                         zmq::send_flags::none);
     if (!send_res) {
       spdlog::error("control request send timeout");
-      return CONTROL_RESPONSE_TIMEOUT;
+      return std::unexpected(CONTROL_RESPONSE_TIMEOUT);
     }
   } catch (const zmq::error_t &e) {
     spdlog::error("control request send error: {}", e.what());
-    return CONTROL_RESPONSE_ERROR;
+    return std::unexpected(CONTROL_RESPONSE_ERROR);
   }
 
   // Receive response
@@ -453,26 +465,42 @@ CvMmapClient::impl::send_control_request(int32_t command_id,
     auto recv_res = control_socket.recv(response_msg, zmq::recv_flags::none);
     if (!recv_res) {
       spdlog::error("control response recv timeout");
-      return CONTROL_RESPONSE_TIMEOUT;
+      return std::unexpected(CONTROL_RESPONSE_TIMEOUT);
     }
   } catch (const zmq::error_t &e) {
     spdlog::error("control response recv error: {}", e.what());
-    return CONTROL_RESPONSE_ERROR;
+    return std::unexpected(CONTROL_RESPONSE_ERROR);
   }
 
-  if (response_msg.size() < sizeof(control_message_response_t)) {
+  if (response_msg.size() < response_header_size) {
     spdlog::error("control response too small: {} bytes", response_msg.size());
-    return CONTROL_RESPONSE_INVALID_MSG_SIZE;
+    return std::unexpected(CONTROL_RESPONSE_INVALID_MSG_SIZE);
   }
 
   const auto *response =
       static_cast<const control_message_response_t *>(response_msg.data());
   if (response->_magic != CONTROL_MESSAGE_RESPONSE_MAGIC) {
     spdlog::error("control response invalid magic: 0x{:02x}", response->_magic);
-    return CONTROL_RESPONSE_INVALID_MAGIC;
+    return std::unexpected(CONTROL_RESPONSE_INVALID_MAGIC);
   }
 
-  return response->response_code;
+  const auto payload_size = static_cast<size_t>(response->response_message_length);
+  const auto response_total_size = response_header_size + payload_size;
+  if (response_msg.size() < response_total_size) {
+    spdlog::error("control response payload truncated: {} < {}",
+                  response_msg.size(), response_total_size);
+    return std::unexpected(CONTROL_RESPONSE_INVALID_MSG_SIZE);
+  }
+
+  control_response_t out{};
+  out.response_code = response->response_code;
+  if (payload_size > 0) {
+    const auto *payload_begin = reinterpret_cast<const uint8_t *>(
+        response_msg.data()) +
+        response_header_size;
+    out.payload.assign(payload_begin, payload_begin + payload_size);
+  }
+  return out;
 }
 
 CvMmapClient::CvMmapClient(const std::string &instance_name)
@@ -536,7 +564,76 @@ void CvMmapClient::Start() { return pimpl_->start(); }
 void CvMmapClient::Stop() { return pimpl_->stop(); }
 
 int32_t CvMmapClient::ResetFrameCount(std::chrono::milliseconds timeout) {
-  return pimpl_->send_control_request(CONTROL_MSG_CMD_RESET_FRAME_COUNT,
-                                      timeout);
+  auto response =
+      pimpl_->send_control_request(CONTROL_MSG_CMD_RESET_FRAME_COUNT, timeout);
+  if (!response) {
+    return response.error();
+  }
+  return response->response_code;
+}
+
+std::expected<SourceInfo, int32_t>
+CvMmapClient::GetSourceInfo(std::chrono::milliseconds timeout) {
+  auto response =
+      pimpl_->send_control_request(CONTROL_MSG_CMD_GET_SOURCE_INFO, timeout);
+  if (!response) {
+    return std::unexpected(response.error());
+  }
+  if (response->response_code != CONTROL_RESPONSE_OK) {
+    return std::unexpected(response->response_code);
+  }
+  if (response->payload.size() < sizeof(source_info_response_v1_t)) {
+    return std::unexpected(CONTROL_RESPONSE_INVALID_MSG_SIZE);
+  }
+
+  source_info_response_v1_t wire{};
+  std::memcpy(&wire, response->payload.data(), sizeof(wire));
+  if (wire.struct_size < sizeof(source_info_response_v1_t)) {
+    return std::unexpected(CONTROL_RESPONSE_INVALID_PAYLOAD);
+  }
+
+  return SourceInfo{
+      .source_kind = wire.source_kind,
+      .timestamp_domain = wire.timestamp_domain,
+      .flags = wire.flags,
+      .timeline_start_ns = wire.timeline_start_ns,
+      .timeline_end_ns = wire.timeline_end_ns,
+      .duration_ns = wire.duration_ns,
+      .current_timestamp_ns = wire.current_timestamp_ns,
+      .current_frame_count = wire.current_frame_count,
+  };
+}
+
+std::expected<SeekResult, int32_t>
+CvMmapClient::SeekTimestampNs(uint64_t timestamp_ns,
+                              std::chrono::milliseconds timeout) {
+  seek_timestamp_request_v1_t request{};
+  request.target_timestamp_ns = timestamp_ns;
+  const auto payload = std::span<const uint8_t>(
+      reinterpret_cast<const uint8_t *>(&request), sizeof(request));
+  auto response = pimpl_->send_control_request(
+      CONTROL_MSG_CMD_SEEK_TIMESTAMP_NS, timeout, payload);
+  if (!response) {
+    return std::unexpected(response.error());
+  }
+  if (response->response_code != CONTROL_RESPONSE_OK) {
+    return std::unexpected(response->response_code);
+  }
+  if (response->payload.size() < sizeof(seek_timestamp_response_v1_t)) {
+    return std::unexpected(CONTROL_RESPONSE_INVALID_MSG_SIZE);
+  }
+
+  seek_timestamp_response_v1_t wire{};
+  std::memcpy(&wire, response->payload.data(), sizeof(wire));
+  if (wire.struct_size < sizeof(seek_timestamp_response_v1_t)) {
+    return std::unexpected(CONTROL_RESPONSE_INVALID_PAYLOAD);
+  }
+
+  return SeekResult{
+      .requested_timestamp_ns = wire.requested_timestamp_ns,
+      .landed_timestamp_ns = wire.landed_timestamp_ns,
+      .landed_frame_count = wire.landed_frame_count,
+      .exact_match = wire.exact_match != 0,
+  };
 }
 } // namespace cvmmap

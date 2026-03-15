@@ -37,6 +37,13 @@ startup_delay_ms = 0
 [opencv]
 parameter = "example.mkv"
 
+[mcap]
+path = "/tmp/example.mcap"
+video_topic = "/camera/video"
+depth_topic = "/camera/depth"
+body_topic = "/camera/body"
+timestamp_domain = "unix_epoch_ns"
+
 [zed]
 # stream_mode accepts these values:
 #   - Local modes: "local", "usb", "device", "auto"

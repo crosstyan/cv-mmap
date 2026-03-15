@@ -27,13 +27,8 @@ struct OpenCVBackend {
 	void SetOnFrame(on_frame_fn_t on_frame);
 	void SetOnBodyTracking(on_body_tracking_fn_t on_body_tracking);
 	void SetOnError(on_error_fn_t on_error);
-	/**
-	 * @brief Seek to specific frame index (only for finite sources)
-	 * @param frame_index The target frame index to seek to
-	 * @return 0 on success, -EOPNOTSUPP if not supported, -EINVAL if out of range, -EIO on I/O error
-	 * @note when `use_finite_as_infinite_stream` is true, seeking is disabled and will return -EOPNOTSUPP
-	 */
-	error_t SeekFrame(size_t frame_index);
+	source_info_t GetSourceInfo();
+	std::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns);
 	/**
 	 * @brief Reset frame count to zero
 	 * @return 0 on success, -EIO on I/O error

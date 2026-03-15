@@ -1220,8 +1220,22 @@ struct ZedBackendImpl {
 		_on_error = std::move(on_error_);
 	}
 
-	error_t SeekFrame(size_t) {
-		return -EOPNOTSUPP;
+	source_info_t GetSourceInfo() {
+		source_info_t info{};
+		info.source_kind = cvmmap::SourceKind::Live;
+		info.timestamp_domain = cvmmap::TimestampDomain::UnixEpochNs;
+		info.flags |= cvmmap::SOURCE_INFO_FLAG_HAS_DEPTH;
+		if (options.zed_config.body_tracking &&
+			options.zed_config.body_tracking->enabled) {
+			info.flags |= cvmmap::SOURCE_INFO_FLAG_HAS_BODY;
+		}
+		info.current_timestamp_ns = metadata.timestamp_ns;
+		info.current_frame_count = metadata.frame_count;
+		return info;
+	}
+
+	std::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t) {
+		return std::unexpected(-EOPNOTSUPP);
 	}
 
 	error_t ResetFrameCount() {
@@ -1262,8 +1276,12 @@ void ZedBackend::SetOnError(on_error_fn_t on_error) {
 	impl->SetOnError(std::move(on_error));
 }
 
-error_t ZedBackend::SeekFrame(size_t frame_index) {
-	return impl->SeekFrame(frame_index);
+source_info_t ZedBackend::GetSourceInfo() {
+	return impl->GetSourceInfo();
+}
+
+std::expected<seek_result_t, error_t> ZedBackend::SeekTimestampNs(uint64_t timestamp_ns) {
+	return impl->SeekTimestampNs(timestamp_ns);
 }
 
 error_t ZedBackend::ResetFrameCount() {
@@ -1303,8 +1321,15 @@ struct ZedBackendImpl {
 		_on_error = std::move(on_error_);
 	}
 
-	error_t SeekFrame(size_t) {
-		return -EOPNOTSUPP;
+	source_info_t GetSourceInfo() {
+		source_info_t info{};
+		info.source_kind = cvmmap::SourceKind::Live;
+		info.timestamp_domain = cvmmap::TimestampDomain::UnixEpochNs;
+		return info;
+	}
+
+	std::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t) {
+		return std::unexpected(-EOPNOTSUPP);
 	}
 
 	error_t ResetFrameCount() {
@@ -1341,8 +1366,12 @@ void ZedBackend::SetOnError(on_error_fn_t on_error) {
 	impl->SetOnError(std::move(on_error));
 }
 
-error_t ZedBackend::SeekFrame(size_t frame_index) {
-	return impl->SeekFrame(frame_index);
+source_info_t ZedBackend::GetSourceInfo() {
+	return impl->GetSourceInfo();
+}
+
+std::expected<seek_result_t, error_t> ZedBackend::SeekTimestampNs(uint64_t timestamp_ns) {
+	return impl->SeekTimestampNs(timestamp_ns);
 }
 
 error_t ZedBackend::ResetFrameCount() {

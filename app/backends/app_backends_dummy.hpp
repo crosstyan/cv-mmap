@@ -25,7 +25,8 @@ struct DummyBackend {
 	void SetOnFrame(on_frame_fn_t on_frame);
 	void SetOnBodyTracking(on_body_tracking_fn_t on_body_tracking);
 	void SetOnError(on_error_fn_t on_error);
-	error_t SeekFrame(size_t frame_index);
+	source_info_t GetSourceInfo();
+	std::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns);
 	error_t ResetFrameCount();
 };
 

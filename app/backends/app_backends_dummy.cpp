@@ -31,6 +31,11 @@ std::chrono::milliseconds frame_interval_for(const app::DummyConfig &config) {
 	return std::chrono::milliseconds(std::max(1, 1000 / std::max(1, config.fps)));
 }
 
+uint64_t frame_interval_ns_for(const app::DummyConfig &config) {
+	const auto fps = std::max(1, config.fps);
+	return 1000000000ull / static_cast<uint64_t>(fps);
+}
+
 void render_dummy_pattern(
 	std::span<uint8_t> frame_buffer,
 	const app::DummyConfig &config,
@@ -68,6 +73,7 @@ struct DummyBackendImpl {
 	std::vector<uint8_t> frame_buffer;
 	std::mutex state_mutex;
 	uint32_t emitted_frames{0};
+	uint32_t source_frame_index{0};
 
 	DummyBackendImpl() = default;
 	explicit DummyBackendImpl(DummyBackendOptions opts) : options(std::move(opts)) {}
@@ -90,6 +96,86 @@ struct DummyBackendImpl {
 		}
 	}
 
+	[[nodiscard]]
+	bool is_finite_source() const {
+		return options.dummy_config.frames > 0;
+	}
+
+	[[nodiscard]]
+	uint64_t timestamp_for_frame(uint32_t frame_count) const {
+		if (!is_finite_source()) {
+			return now_ns();
+		}
+		return static_cast<uint64_t>(frame_count) *
+			   frame_interval_ns_for(options.dummy_config);
+	}
+
+	[[nodiscard]]
+	source_info_t GetSourceInfo() {
+		std::lock_guard lock(state_mutex);
+
+		source_info_t info{};
+		info.source_kind =
+			is_finite_source() ? cvmmap::SourceKind::Finite
+							   : cvmmap::SourceKind::Live;
+		info.timestamp_domain =
+			is_finite_source() ? cvmmap::TimestampDomain::MediaTimeNs
+							   : cvmmap::TimestampDomain::UnixEpochNs;
+		if (is_finite_source()) {
+			info.timeline_start_ns = 0;
+			info.timeline_end_ns =
+				static_cast<uint64_t>(std::max<uint32_t>(
+					options.dummy_config.frames - 1, 0u)) *
+				frame_interval_ns_for(options.dummy_config);
+			info.duration_ns =
+				static_cast<uint64_t>(options.dummy_config.frames) *
+				frame_interval_ns_for(options.dummy_config);
+			if (!options.video_config.use_finite_as_infinite_stream) {
+				info.flags |= cvmmap::SOURCE_INFO_FLAG_CAN_SEEK;
+			}
+			if (options.video_config.finite_stream_ending_behavior ==
+				app::FiniteStreamEndingBehavior::Loop ||
+				options.video_config.use_finite_as_infinite_stream) {
+				info.flags |= cvmmap::SOURCE_INFO_FLAG_AUTO_LOOP;
+			}
+		}
+		info.current_timestamp_ns = metadata.timestamp_ns;
+		info.current_frame_count = metadata.frame_count;
+		return info;
+	}
+
+	std::expected<seek_result_t, error_t> SeekTimestampNs(
+		uint64_t timestamp_ns) {
+		if (!is_finite_source() ||
+			options.video_config.use_finite_as_infinite_stream) {
+			return std::unexpected(-EOPNOTSUPP);
+		}
+
+		const auto interval_ns = frame_interval_ns_for(options.dummy_config);
+		const auto max_timestamp_ns =
+			static_cast<uint64_t>(std::max<uint32_t>(
+				options.dummy_config.frames - 1, 0u)) *
+			interval_ns;
+		if (timestamp_ns > max_timestamp_ns) {
+			return std::unexpected(-ERANGE);
+		}
+
+		const auto frame_index = static_cast<uint32_t>(timestamp_ns / interval_ns);
+
+		std::lock_guard lock(state_mutex);
+		metadata.frame_count = 0;
+		metadata.timestamp_ns = frame_index * interval_ns;
+		emitted_frames = frame_index + 1;
+		source_frame_index = frame_index;
+		render_dummy_pattern(frame_buffer, options.dummy_config, source_frame_index);
+		return seek_result_t{
+			.requested_timestamp_ns = timestamp_ns,
+			.landed_timestamp_ns = metadata.timestamp_ns,
+			.landed_frame_count = metadata.frame_count,
+			.exact_match = (timestamp_ns % interval_ns) == 0,
+		};
+	}
+
 	void Init() {
 		if (options.dummy_config.startup_delay_ms > 0) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(options.dummy_config.startup_delay_ms));
@@ -97,7 +183,7 @@ struct DummyBackendImpl {
 
 		metadata.ensure_magic();
 		metadata.frame_count  = 0;
-		metadata.timestamp_ns = now_ns();
+		metadata.timestamp_ns = timestamp_for_frame(metadata.frame_count);
 		metadata.info         = frame_info_t{
 			.width        = static_cast<uint16_t>(options.dummy_config.width),
 			.height       = static_cast<uint16_t>(options.dummy_config.height),
@@ -111,6 +197,7 @@ struct DummyBackendImpl {
 
 		frame_buffer.resize(metadata.info.buffer_size);
 		render_dummy_pattern(frame_buffer, options.dummy_config, metadata.frame_count);
+		source_frame_index = 0;
 		emitted_frames = 1;
 
 		spdlog::info(
@@ -158,10 +245,11 @@ struct DummyBackendImpl {
 			frame_metadata_t metadata_snapshot{};
 			{
 				std::lock_guard lock(state_mutex);
+				source_frame_index += 1;
 				metadata.frame_count += 1;
-				metadata.timestamp_ns = now_ns();
+				metadata.timestamp_ns = timestamp_for_frame(metadata.frame_count);
 				emitted_frames += 1;
-				render_dummy_pattern(frame_buffer, options.dummy_config, metadata.frame_count);
+				render_dummy_pattern(frame_buffer, options.dummy_config, source_frame_index);
 				metadata_snapshot = metadata;
 			}
 			on_frame(frame_buffer, metadata_snapshot);
@@ -189,14 +277,12 @@ struct DummyBackendImpl {
 		_on_error = std::move(on_error_);
 	}
 
-	error_t SeekFrame(size_t) {
-		return -EOPNOTSUPP;
-	}
-
 	error_t ResetFrameCount() {
 		std::lock_guard lock(state_mutex);
 		metadata.frame_count = 0;
+		metadata.timestamp_ns = timestamp_for_frame(metadata.frame_count);
 		emitted_frames       = 0;
+		source_frame_index = 0;
 		return ERR_OK;
 	}
 };
@@ -233,8 +319,12 @@ void DummyBackend::SetOnError(on_error_fn_t on_error) {
 	impl->SetOnError(std::move(on_error));
 }
 
-error_t DummyBackend::SeekFrame(size_t frame_index) {
-	return impl->SeekFrame(frame_index);
+source_info_t DummyBackend::GetSourceInfo() {
+	return impl->GetSourceInfo();
+}
+
+std::expected<seek_result_t, error_t> DummyBackend::SeekTimestampNs(uint64_t timestamp_ns) {
+	return impl->SeekTimestampNs(timestamp_ns);
 }
 
 error_t DummyBackend::ResetFrameCount() {

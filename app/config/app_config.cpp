@@ -359,6 +359,27 @@ void validate_zed_body_tracking_config(const app::ZedConfig::BodyTrackingConfig 
 namespace app {
 using invalid_argument = std::invalid_argument;
 
+std::string_view to_string(cvmmap::TimestampDomain domain) {
+	switch (domain) {
+	case cvmmap::TimestampDomain::UnixEpochNs:
+		return "unix_epoch_ns";
+	case cvmmap::TimestampDomain::MediaTimeNs:
+		return "media_time_ns";
+	default:
+		return "unknown";
+	}
+}
+
+cvmmap::TimestampDomain timestamp_domain_from_string(std::string_view s) {
+	if (s == "unix_epoch_ns" || s == "unix" || s == "UnixEpochNs") {
+		return cvmmap::TimestampDomain::UnixEpochNs;
+	}
+	if (s == "media_time_ns" || s == "media" || s == "MediaTimeNs") {
+		return cvmmap::TimestampDomain::MediaTimeNs;
+	}
+	throw invalid_argument("unknown timestamp_domain: " + std::string(s));
+}
+
 std::string_view to_string(BackendType backend) {
 	switch (backend) {
 	case BackendType::Dummy:
@@ -367,6 +388,8 @@ std::string_view to_string(BackendType backend) {
 		return "opencv";
 	case BackendType::GStreamer:
 		return "gstreamer";
+	case BackendType::MCAP:
+		return "mcap";
 	case BackendType::ZED:
 		return "zed";
 	default:
@@ -381,6 +404,8 @@ BackendType backend_from_string(std::string_view s) {
 		return BackendType::OpenCV;
 	} else if (s == "gstreamer" || s == "GStreamer" || s == "gst") {
 		return BackendType::GStreamer;
+	} else if (s == "mcap" || s == "MCAP") {
+		return BackendType::MCAP;
 	} else if (s == "zed" || s == "ZED") {
 		return BackendType::ZED;
 	}
@@ -440,6 +465,7 @@ Config Config::Default() {
 			.frames           = 0,
 			.startup_delay_ms = 0,
 		},
+		.mcap = std::nullopt,
 		.preprocess = std::nullopt,
 	};
 }
@@ -569,6 +595,34 @@ Config Config::from_toml(const std::filesystem::path &path) {
 		}
 
 		config.dummy = dummy_cfg;
+	}
+
+	if (auto mcap = tbl["mcap"].as_table(); mcap) {
+		McapConfig mcap_cfg{};
+
+		if (auto val = (*mcap)["path"].value<std::string>(); val) {
+			mcap_cfg.path = trim_ascii_spaces(*val);
+		} else {
+			throw invalid_argument("mcap.path is required when [mcap] section exists");
+		}
+		if (mcap_cfg.path.empty()) {
+			throw invalid_argument("mcap.path must not be empty");
+		}
+
+		if (auto val = (*mcap)["video_topic"].value<std::string>(); val) {
+			mcap_cfg.video_topic = trim_ascii_spaces(*val);
+		}
+		if (auto val = (*mcap)["depth_topic"].value<std::string>(); val) {
+			mcap_cfg.depth_topic = trim_ascii_spaces(*val);
+		}
+		if (auto val = (*mcap)["body_topic"].value<std::string>(); val) {
+			mcap_cfg.body_topic = trim_ascii_spaces(*val);
+		}
+		if (auto val = (*mcap)["timestamp_domain"].value<std::string>(); val) {
+			mcap_cfg.timestamp_domain = timestamp_domain_from_string(trim_ascii_spaces(*val));
+		}
+
+		config.mcap = std::move(mcap_cfg);
 	}
 
 	if (auto preprocess = tbl["preprocess"].as_table(); preprocess) {
@@ -813,6 +867,9 @@ Config Config::from_toml(const std::filesystem::path &path) {
 	if (config.video.backend == BackendType::GStreamer && !config.gstreamer) {
 		throw invalid_argument("[gstreamer] section is required when backend is 'gstreamer'");
 	}
+	if (config.video.backend == BackendType::MCAP && !config.mcap) {
+		throw invalid_argument("[mcap] section is required when backend is 'mcap'");
+	}
 	if (config.video.backend == BackendType::ZED && !config.zed) {
 		throw invalid_argument("[zed] section is required when backend is 'zed'");
 	}
@@ -858,6 +915,15 @@ std::string Config::to_toml() const {
 		ss << "fps = " << dummy->fps << "\n";
 		ss << "frames = " << dummy->frames << "\n";
 		ss << "startup_delay_ms = " << dummy->startup_delay_ms << "\n";
+	}
+
+	if (mcap) {
+		ss << "\n[mcap]\n";
+		ss << "path = \"" << mcap->path << "\"\n";
+		ss << "video_topic = \"" << mcap->video_topic << "\"\n";
+		ss << "depth_topic = \"" << mcap->depth_topic << "\"\n";
+		ss << "body_topic = \"" << mcap->body_topic << "\"\n";
+		ss << "timestamp_domain = \"" << to_string(mcap->timestamp_domain) << "\"\n";
 	}
 
 	if (preprocess && preprocess->undistort) {
