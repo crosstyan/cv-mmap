@@ -85,6 +85,43 @@ bool test_seek_wire_roundtrip() {
 		   parsed_response.landed_frame_count == 0;
 }
 
+bool test_recording_start_request_roundtrip() {
+	cvmmap::recording_start_request_v1_t request{};
+	request.path_length = 17;
+
+	std::vector<uint8_t> bytes(sizeof(request));
+	std::memcpy(bytes.data(), &request, sizeof(request));
+
+	cvmmap::recording_start_request_v1_t parsed{};
+	std::memcpy(&parsed, bytes.data(), sizeof(parsed));
+	return parsed.struct_size == sizeof(cvmmap::recording_start_request_v1_t) &&
+		   parsed.flags == 0 &&
+		   parsed.path_length == 17;
+}
+
+bool test_recording_status_response_roundtrip() {
+	cvmmap::recording_status_response_v1_t response{};
+	response.recording_format = cvmmap::RecordingFormat::Svo;
+	response.flags = cvmmap::RECORDING_STATUS_FLAG_CAN_RECORD |
+					 cvmmap::RECORDING_STATUS_FLAG_IS_RECORDING |
+					 cvmmap::RECORDING_STATUS_FLAG_LAST_FRAME_OK;
+	response.path_length = 17;
+	response.frames_ingested = 42;
+	response.frames_encoded = 40;
+
+	std::vector<uint8_t> bytes(sizeof(response));
+	std::memcpy(bytes.data(), &response, sizeof(response));
+
+	cvmmap::recording_status_response_v1_t parsed{};
+	std::memcpy(&parsed, bytes.data(), sizeof(parsed));
+	return parsed.struct_size == sizeof(cvmmap::recording_status_response_v1_t) &&
+		   parsed.recording_format == cvmmap::RecordingFormat::Svo &&
+		   parsed.flags == response.flags &&
+		   parsed.path_length == 17 &&
+		   parsed.frames_ingested == 42 &&
+		   parsed.frames_encoded == 40;
+}
+
 } // namespace
 
 int main() {
@@ -98,6 +135,14 @@ int main() {
 	}
 	if (!test_seek_wire_roundtrip()) {
 		std::cerr << "seek wire round-trip failed\n";
+		return 1;
+	}
+	if (!test_recording_start_request_roundtrip()) {
+		std::cerr << "recording start request round-trip failed\n";
+		return 1;
+	}
+	if (!test_recording_status_response_roundtrip()) {
+		std::cerr << "recording status response round-trip failed\n";
 		return 1;
 	}
 	return 0;

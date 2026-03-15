@@ -21,6 +21,9 @@ constexpr int32_t CONTROL_MSG_CMD_GENERIC           = 0;
 constexpr int32_t CONTROL_MSG_CMD_RESET_FRAME_COUNT = 0x1001;
 constexpr int32_t CONTROL_MSG_CMD_GET_SOURCE_INFO   = 0x1002;
 constexpr int32_t CONTROL_MSG_CMD_SEEK_TIMESTAMP_NS = 0x1003;
+constexpr int32_t CONTROL_MSG_CMD_START_RECORDING   = 0x1004;
+constexpr int32_t CONTROL_MSG_CMD_STOP_RECORDING    = 0x1005;
+constexpr int32_t CONTROL_MSG_CMD_GET_RECORDING_STATUS = 0x1006;
 
 constexpr int32_t CONTROL_RESPONSE_OK               = 0;
 constexpr int32_t CONTROL_RESPONSE_UNKNOWN_CMD      = -1;

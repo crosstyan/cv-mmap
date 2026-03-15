@@ -83,6 +83,14 @@ reconnect_interval_ms = 1000
 reconnect = true
 left_pixel_format = "bgr8"
 
+[zed.recording]
+# Control START_RECORDING supplies the output path; this section only defines
+# the ZED SDK recording defaults used for each session.
+compression_mode = "H264"
+bitrate = 0
+target_framerate = 0
+transcode_streaming_input = false
+
 [zed.body_tracking]
 enabled = false
 detection_model = "HUMAN_BODY_ACCURATE"

@@ -423,4 +423,16 @@ std::expected<seek_result_t, error_t> OpenCVBackend::SeekTimestampNs(uint64_t ti
 error_t OpenCVBackend::ResetFrameCount() {
 	return impl->ResetFrameCount();
 }
+
+std::expected<recording_status_t, error_t> OpenCVBackend::StartRecording(std::string_view) {
+	return std::unexpected(-EOPNOTSUPP);
+}
+
+std::expected<recording_status_t, error_t> OpenCVBackend::StopRecording() {
+	return std::unexpected(-EOPNOTSUPP);
+}
+
+std::expected<recording_status_t, error_t> OpenCVBackend::GetRecordingStatus() {
+	return std::unexpected(-EOPNOTSUPP);
+}
 }

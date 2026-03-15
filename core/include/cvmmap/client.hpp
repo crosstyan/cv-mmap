@@ -10,6 +10,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 
 namespace cvmmap {
 
@@ -42,6 +43,11 @@ struct SourceInfo {
 	bool has_body() const {
 		return (flags & SOURCE_INFO_FLAG_HAS_BODY) != 0;
 	}
+
+	[[nodiscard]]
+	bool can_record() const {
+		return (flags & SOURCE_INFO_FLAG_CAN_RECORD) != 0;
+	}
 };
 
 struct SeekResult {
@@ -49,6 +55,17 @@ struct SeekResult {
 	uint64_t landed_timestamp_ns{0};
 	uint32_t landed_frame_count{0};
 	bool exact_match{false};
+};
+
+struct RecordingStatus {
+	RecordingFormat format{RecordingFormat::Unknown};
+	bool can_record{false};
+	bool is_recording{false};
+	bool is_paused{false};
+	bool last_frame_ok{false};
+	uint32_t frames_ingested{0};
+	uint32_t frames_encoded{0};
+	std::string active_path{};
 };
 
 class CvMmapClient {
@@ -94,6 +111,19 @@ public:
 	std::expected<SeekResult, int32_t>
 	SeekTimestampNs(uint64_t timestamp_ns,
 				   std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
+
+	[[nodiscard]]
+	std::expected<RecordingStatus, int32_t>
+	StartRecording(std::string_view output_path,
+				  std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
+
+	[[nodiscard]]
+	std::expected<RecordingStatus, int32_t>
+	StopRecording(std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
+
+	[[nodiscard]]
+	std::expected<RecordingStatus, int32_t>
+	GetRecordingStatus(std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 private:
 	struct impl;

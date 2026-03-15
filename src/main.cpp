@@ -855,6 +855,17 @@ int main(int argc, char **argv) {
 		}
 	};
 
+	const auto map_recording_control_error = [](int error_code) {
+		switch (error_code) {
+		case -EOPNOTSUPP:
+			return CONTROL_RESPONSE_UNSUPPORTED;
+		case -EINVAL:
+			return CONTROL_RESPONSE_INVALID_PAYLOAD;
+		default:
+			return CONTROL_RESPONSE_ERROR;
+		}
+	};
+
 	const auto send_response = [&control_sock, &config](int32_t command_id, int32_t response_code, std::span<const uint8_t> response_message = {}) {
 		// Small object optimization: use stack buffer for small messages, heap for large ones
 		constexpr size_t SSO_THRESHOLD = 64;
@@ -886,6 +897,38 @@ int main(int argc, char **argv) {
 		} catch (const zmq::error_t &e) {
 			spdlog::error("send control response: {}", e.what());
 		}
+	};
+
+	const auto make_recording_status_payload = [](const backends::recording_status_t &status) {
+		recording_status_response_v1_t response{};
+		response.recording_format = status.format;
+		if (status.active_path.size() > std::numeric_limits<uint16_t>::max()) {
+			throw std::length_error("recording status path exceeds wire limit");
+		}
+		response.path_length = static_cast<uint16_t>(status.active_path.size());
+		response.frames_ingested = status.frames_ingested;
+		response.frames_encoded = status.frames_encoded;
+		if (status.can_record) {
+			response.flags |= cvmmap::RECORDING_STATUS_FLAG_CAN_RECORD;
+		}
+		if (status.is_recording) {
+			response.flags |= cvmmap::RECORDING_STATUS_FLAG_IS_RECORDING;
+		}
+		if (status.is_paused) {
+			response.flags |= cvmmap::RECORDING_STATUS_FLAG_IS_PAUSED;
+		}
+		if (status.last_frame_ok) {
+			response.flags |= cvmmap::RECORDING_STATUS_FLAG_LAST_FRAME_OK;
+		}
+
+		std::vector<uint8_t> bytes(sizeof(response) + status.active_path.size());
+		std::memcpy(bytes.data(), &response, sizeof(response));
+		if (!status.active_path.empty()) {
+			std::memcpy(bytes.data() + sizeof(response),
+						status.active_path.data(),
+						status.active_path.size());
+		}
+		return bytes;
 	};
 
 	// Main loop: poll for control messages
@@ -1006,6 +1049,80 @@ int main(int argc, char **argv) {
 							  std::span<const uint8_t>(
 								  reinterpret_cast<const uint8_t *>(&response),
 								  sizeof(response)));
+			}
+			break;
+		}
+		case CONTROL_MSG_CMD_START_RECORDING: {
+			if (req->request_message_length < sizeof(recording_start_request_v1_t)) {
+				send_response(req->command_id, CONTROL_RESPONSE_INVALID_MSG_SIZE);
+				break;
+			}
+
+			recording_start_request_v1_t recording_request{};
+			std::memcpy(&recording_request, req->request_message().data(), sizeof(recording_request));
+			if (recording_request.struct_size < sizeof(recording_start_request_v1_t)) {
+				send_response(req->command_id, CONTROL_RESPONSE_INVALID_PAYLOAD);
+				break;
+			}
+			if (recording_request.flags != 0) {
+				send_response(req->command_id, CONTROL_RESPONSE_INVALID_PAYLOAD);
+				break;
+			}
+
+			const auto expected_size =
+				sizeof(recording_start_request_v1_t) +
+				static_cast<size_t>(recording_request.path_length);
+			if (req->request_message_length != expected_size || recording_request.path_length == 0) {
+				send_response(req->command_id, CONTROL_RESPONSE_INVALID_PAYLOAD);
+				break;
+			}
+
+			const auto path_bytes = req->request_message().subspan(
+				sizeof(recording_start_request_v1_t),
+				recording_request.path_length);
+			const auto output_path = std::string(
+				reinterpret_cast<const char *>(path_bytes.data()),
+				path_bytes.size());
+			if (output_path.find('\0') != std::string::npos) {
+				send_response(req->command_id, CONTROL_RESPONSE_INVALID_PAYLOAD);
+				break;
+			}
+
+			spdlog::info("control: START_RECORDING requested path='{}'", output_path);
+			auto result = backend->StartRecording(output_path);
+			if (!result) {
+				spdlog::error("starting recording failed: {}", result.error());
+				send_response(req->command_id, map_recording_control_error(result.error()));
+			} else {
+				const auto payload = make_recording_status_payload(*result);
+				send_response(req->command_id, CONTROL_RESPONSE_OK,
+							  std::span<const uint8_t>(payload.data(), payload.size()));
+			}
+			break;
+		}
+		case CONTROL_MSG_CMD_STOP_RECORDING: {
+			spdlog::info("control: STOP_RECORDING requested");
+			auto result = backend->StopRecording();
+			if (!result) {
+				spdlog::error("stopping recording failed: {}", result.error());
+				send_response(req->command_id, map_recording_control_error(result.error()));
+			} else {
+				const auto payload = make_recording_status_payload(*result);
+				send_response(req->command_id, CONTROL_RESPONSE_OK,
+							  std::span<const uint8_t>(payload.data(), payload.size()));
+			}
+			break;
+		}
+		case CONTROL_MSG_CMD_GET_RECORDING_STATUS: {
+			spdlog::debug("control: GET_RECORDING_STATUS requested");
+			auto result = backend->GetRecordingStatus();
+			if (!result) {
+				spdlog::error("query recording status failed: {}", result.error());
+				send_response(req->command_id, map_recording_control_error(result.error()));
+			} else {
+				const auto payload = make_recording_status_payload(*result);
+				send_response(req->command_id, CONTROL_RESPONSE_OK,
+							  std::span<const uint8_t>(payload.data(), payload.size()));
 			}
 			break;
 		}

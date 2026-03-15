@@ -3,6 +3,7 @@
 #include <functional>
 #include <expected>
 #include <span>
+#include <string>
 #include <string_view>
 #include "proxy/v4/proxy.h"
 #include <proxy/proxy.h>
@@ -34,6 +35,17 @@ struct seek_result_t {
 	bool exact_match{false};
 };
 
+struct recording_status_t {
+	cvmmap::RecordingFormat format{cvmmap::RecordingFormat::Unknown};
+	bool can_record{false};
+	bool is_recording{false};
+	bool is_paused{false};
+	bool last_frame_ok{false};
+	uint32_t frames_ingested{0};
+	uint32_t frames_encoded{0};
+	std::string active_path{};
+};
+
 /// @brief Callback invoked once when metadata is available (first frame captured)
 using on_metadata_fn_t = std::move_only_function<void(const frame_metadata_t &metadata)>;
 /// @brief Callback invoked for each captured frame with frame buffer and current metadata
@@ -51,6 +63,9 @@ PRO_DEF_MEM_DISPATCH(MemSetOnError, SetOnError);
 PRO_DEF_MEM_DISPATCH(MemGetSourceInfo, GetSourceInfo);
 PRO_DEF_MEM_DISPATCH(MemSeekTimestampNs, SeekTimestampNs);
 PRO_DEF_MEM_DISPATCH(MemResetFrameCount, ResetFrameCount);
+PRO_DEF_MEM_DISPATCH(MemStartRecording, StartRecording);
+PRO_DEF_MEM_DISPATCH(MemStopRecording, StopRecording);
+PRO_DEF_MEM_DISPATCH(MemGetRecordingStatus, GetRecordingStatus);
 
 // clang-format off
 struct IBackend : pro::facade_builder 
@@ -63,6 +78,9 @@ struct IBackend : pro::facade_builder
     ::add_convention<MemGetSourceInfo, source_info_t()>
     ::add_convention<MemSeekTimestampNs, std::expected<seek_result_t, error_t>(uint64_t)>
     ::add_convention<MemResetFrameCount, error_t()>
+    ::add_convention<MemStartRecording, std::expected<recording_status_t, error_t>(std::string_view)>
+    ::add_convention<MemStopRecording, std::expected<recording_status_t, error_t>()>
+    ::add_convention<MemGetRecordingStatus, std::expected<recording_status_t, error_t>()>
     ::build {};
 // clang-format on
 

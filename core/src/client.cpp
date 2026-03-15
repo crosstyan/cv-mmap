@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <format>
 #include <memory>
+#include <limits>
 #include <mutex>
 #include <span>
 #include <stdexcept>
@@ -31,6 +32,47 @@ zmq::context_t &global_zmq_context() {
 namespace cvmmap {
 constexpr size_t CV_MMAP_MAGIC_LEN = frame_metadata_t::CV_MMAP_MAGIC.size();
 static_assert(CV_MMAP_MAGIC_LEN == 8);
+
+namespace {
+
+std::expected<RecordingStatus, int32_t> parse_recording_status_payload(
+    std::span<const uint8_t> payload) {
+  if (payload.size() < sizeof(recording_status_response_v1_t)) {
+    return std::unexpected(CONTROL_RESPONSE_INVALID_MSG_SIZE);
+  }
+
+  recording_status_response_v1_t wire{};
+  std::memcpy(&wire, payload.data(), sizeof(wire));
+  if (wire.struct_size < sizeof(recording_status_response_v1_t)) {
+    return std::unexpected(CONTROL_RESPONSE_INVALID_PAYLOAD);
+  }
+
+  const auto expected_size = sizeof(recording_status_response_v1_t) +
+                             static_cast<size_t>(wire.path_length);
+  if (payload.size() != expected_size) {
+    return std::unexpected(CONTROL_RESPONSE_INVALID_MSG_SIZE);
+  }
+
+  auto active_path = std::string{};
+  if (wire.path_length > 0) {
+    const auto *path_begin = reinterpret_cast<const char *>(payload.data() +
+                                                           sizeof(recording_status_response_v1_t));
+    active_path.assign(path_begin, path_begin + wire.path_length);
+  }
+
+  return RecordingStatus{
+      .format = wire.recording_format,
+      .can_record = (wire.flags & RECORDING_STATUS_FLAG_CAN_RECORD) != 0,
+      .is_recording = (wire.flags & RECORDING_STATUS_FLAG_IS_RECORDING) != 0,
+      .is_paused = (wire.flags & RECORDING_STATUS_FLAG_IS_PAUSED) != 0,
+      .last_frame_ok = (wire.flags & RECORDING_STATUS_FLAG_LAST_FRAME_OK) != 0,
+      .frames_ingested = wire.frames_ingested,
+      .frames_encoded = wire.frames_encoded,
+      .active_path = std::move(active_path),
+  };
+}
+
+} // namespace
 
 struct SharedBuffer {
   SharedBuffer(int shm_fd) {
@@ -635,5 +677,65 @@ CvMmapClient::SeekTimestampNs(uint64_t timestamp_ns,
       .landed_frame_count = wire.landed_frame_count,
       .exact_match = wire.exact_match != 0,
   };
+}
+
+std::expected<RecordingStatus, int32_t>
+CvMmapClient::StartRecording(std::string_view output_path,
+                             std::chrono::milliseconds timeout) {
+  if (output_path.empty()) {
+    return std::unexpected(CONTROL_RESPONSE_INVALID_PAYLOAD);
+  }
+  if (output_path.find('\0') != std::string_view::npos) {
+    return std::unexpected(CONTROL_RESPONSE_INVALID_PAYLOAD);
+  }
+  if (output_path.size() >
+      std::numeric_limits<uint16_t>::max() - sizeof(recording_start_request_v1_t)) {
+    return std::unexpected(CONTROL_RESPONSE_INVALID_PAYLOAD);
+  }
+
+  recording_start_request_v1_t request{};
+  request.path_length = static_cast<uint16_t>(output_path.size());
+
+  std::vector<uint8_t> payload(sizeof(request) + output_path.size());
+  std::memcpy(payload.data(), &request, sizeof(request));
+  std::memcpy(payload.data() + sizeof(request), output_path.data(), output_path.size());
+
+  auto response = pimpl_->send_control_request(
+      CONTROL_MSG_CMD_START_RECORDING,
+      timeout,
+      std::span<const uint8_t>(payload.data(), payload.size()));
+  if (!response) {
+    return std::unexpected(response.error());
+  }
+  if (response->response_code != CONTROL_RESPONSE_OK) {
+    return std::unexpected(response->response_code);
+  }
+  return parse_recording_status_payload(response->payload);
+}
+
+std::expected<RecordingStatus, int32_t>
+CvMmapClient::StopRecording(std::chrono::milliseconds timeout) {
+  auto response =
+      pimpl_->send_control_request(CONTROL_MSG_CMD_STOP_RECORDING, timeout);
+  if (!response) {
+    return std::unexpected(response.error());
+  }
+  if (response->response_code != CONTROL_RESPONSE_OK) {
+    return std::unexpected(response->response_code);
+  }
+  return parse_recording_status_payload(response->payload);
+}
+
+std::expected<RecordingStatus, int32_t>
+CvMmapClient::GetRecordingStatus(std::chrono::milliseconds timeout) {
+  auto response = pimpl_->send_control_request(
+      CONTROL_MSG_CMD_GET_RECORDING_STATUS, timeout);
+  if (!response) {
+    return std::unexpected(response.error());
+  }
+  if (response->response_code != CONTROL_RESPONSE_OK) {
+    return std::unexpected(response->response_code);
+  }
+  return parse_recording_status_payload(response->payload);
 }
 } // namespace cvmmap

@@ -1056,4 +1056,16 @@ error_t McapBackend::ResetFrameCount() {
 	return impl->ResetFrameCount();
 }
 
+std::expected<recording_status_t, error_t> McapBackend::StartRecording(std::string_view) {
+	return std::unexpected(-EOPNOTSUPP);
+}
+
+std::expected<recording_status_t, error_t> McapBackend::StopRecording() {
+	return std::unexpected(-EOPNOTSUPP);
+}
+
+std::expected<recording_status_t, error_t> McapBackend::GetRecordingStatus() {
+	return std::unexpected(-EOPNOTSUPP);
+}
+
 } // namespace app::backends

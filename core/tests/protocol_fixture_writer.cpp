@@ -126,6 +126,34 @@ byte_vector make_seek_response_payload() {
 	return copy_struct_bytes(payload);
 }
 
+byte_vector make_recording_start_payload() {
+	cvmmap::recording_start_request_v1_t payload{};
+	constexpr std::string_view path = "/tmp/example.svo2";
+	payload.path_length = static_cast<uint16_t>(path.size());
+
+	byte_vector bytes(sizeof(payload) + path.size());
+	std::memcpy(bytes.data(), &payload, sizeof(payload));
+	std::memcpy(bytes.data() + sizeof(payload), path.data(), path.size());
+	return bytes;
+}
+
+byte_vector make_recording_status_payload() {
+	cvmmap::recording_status_response_v1_t payload{};
+	constexpr std::string_view path = "/tmp/example.svo2";
+	payload.recording_format = cvmmap::RecordingFormat::Svo;
+	payload.flags = cvmmap::RECORDING_STATUS_FLAG_CAN_RECORD |
+					cvmmap::RECORDING_STATUS_FLAG_IS_RECORDING |
+					cvmmap::RECORDING_STATUS_FLAG_LAST_FRAME_OK;
+	payload.path_length = static_cast<uint16_t>(path.size());
+	payload.frames_ingested = 42u;
+	payload.frames_encoded = 40u;
+
+	byte_vector bytes(sizeof(payload) + path.size());
+	std::memcpy(bytes.data(), &payload, sizeof(payload));
+	std::memcpy(bytes.data() + sizeof(payload), path.data(), path.size());
+	return bytes;
+}
+
 byte_vector make_body_tracking_message() {
 	cvmmap::body_tracking_message_header_t header{};
 	header._magic              = cvmmap::BODY_TRACKING_MAGIC;
@@ -235,6 +263,44 @@ std::string build_manifest_json() {
 	out << "      \"exact_match\": true\n";
 	out << "    }\n";
 	out << "  },\n";
+	out << "  \"control_request_start_recording\": {\n";
+	out << "    \"file\": \"control_request_start_recording.bin\",\n";
+	out << "    \"size\": " << (kRequestHeaderSize + sizeof(cvmmap::recording_start_request_v1_t) + 17) << ",\n";
+	out << "    \"command_id\": " << cvmmap::CONTROL_MSG_CMD_START_RECORDING << ",\n";
+	out << "    \"label\": \"" << kControlLabel << "\",\n";
+	out << "    \"output_path\": \"/tmp/example.svo2\"\n";
+	out << "  },\n";
+	out << "  \"control_request_stop_recording\": {\n";
+	out << "    \"file\": \"control_request_stop_recording.bin\",\n";
+	out << "    \"size\": " << kRequestHeaderSize << ",\n";
+	out << "    \"command_id\": " << cvmmap::CONTROL_MSG_CMD_STOP_RECORDING << ",\n";
+	out << "    \"label\": \"" << kControlLabel << "\",\n";
+	out << "    \"request_message_length\": 0\n";
+	out << "  },\n";
+	out << "  \"control_request_get_recording_status\": {\n";
+	out << "    \"file\": \"control_request_get_recording_status.bin\",\n";
+	out << "    \"size\": " << kRequestHeaderSize << ",\n";
+	out << "    \"command_id\": " << cvmmap::CONTROL_MSG_CMD_GET_RECORDING_STATUS << ",\n";
+	out << "    \"label\": \"" << kControlLabel << "\",\n";
+	out << "    \"request_message_length\": 0\n";
+	out << "  },\n";
+	out << "  \"control_response_recording_status\": {\n";
+	out << "    \"file\": \"control_response_recording_status.bin\",\n";
+	out << "    \"size\": " << (kResponseHeaderSize + sizeof(cvmmap::recording_status_response_v1_t) + 17) << ",\n";
+	out << "    \"command_id\": " << cvmmap::CONTROL_MSG_CMD_GET_RECORDING_STATUS << ",\n";
+	out << "    \"response_code\": " << cvmmap::CONTROL_RESPONSE_OK << ",\n";
+	out << "    \"label\": \"" << kControlLabel << "\",\n";
+	out << "    \"recording_status\": {\n";
+	out << "      \"recording_format\": " << static_cast<int>(cvmmap::RecordingFormat::Svo) << ",\n";
+	out << "      \"flags\": "
+		<< (cvmmap::RECORDING_STATUS_FLAG_CAN_RECORD |
+			cvmmap::RECORDING_STATUS_FLAG_IS_RECORDING |
+			cvmmap::RECORDING_STATUS_FLAG_LAST_FRAME_OK) << ",\n";
+	out << "      \"path\": \"/tmp/example.svo2\",\n";
+	out << "      \"frames_ingested\": 42,\n";
+	out << "      \"frames_encoded\": 40\n";
+	out << "    }\n";
+	out << "  },\n";
 	out << "  \"body_tracking_valid\": {\n";
 	out << "    \"file\": \"body_tracking_valid.bin\",\n";
 	out << "    \"size\": "
@@ -272,6 +338,8 @@ std::vector<generated_file_t> build_generated_files() {
 	const auto source_info_payload = make_source_info_payload();
 	const auto seek_request_payload = make_seek_request_payload();
 	const auto seek_response_payload = make_seek_response_payload();
+	const auto recording_start_payload = make_recording_start_payload();
+	const auto recording_status_payload = make_recording_status_payload();
 	const auto manifest = build_manifest_json();
 
 	std::vector<generated_file_t> files;
@@ -302,6 +370,29 @@ std::vector<generated_file_t> build_generated_files() {
 			cvmmap::CONTROL_RESPONSE_OK,
 			kControlLabel,
 			seek_response_payload),
+	});
+	files.push_back({
+		"control_request_start_recording.bin",
+		make_control_request(
+			cvmmap::CONTROL_MSG_CMD_START_RECORDING,
+			kControlLabel,
+			recording_start_payload),
+	});
+	files.push_back({
+		"control_request_stop_recording.bin",
+		make_control_request(cvmmap::CONTROL_MSG_CMD_STOP_RECORDING, kControlLabel),
+	});
+	files.push_back({
+		"control_request_get_recording_status.bin",
+		make_control_request(cvmmap::CONTROL_MSG_CMD_GET_RECORDING_STATUS, kControlLabel),
+	});
+	files.push_back({
+		"control_response_recording_status.bin",
+		make_control_response(
+			cvmmap::CONTROL_MSG_CMD_GET_RECORDING_STATUS,
+			cvmmap::CONTROL_RESPONSE_OK,
+			kControlLabel,
+			recording_status_payload),
 	});
 	files.push_back({"body_tracking_valid.bin", make_body_tracking_message()});
 	files.push_back({

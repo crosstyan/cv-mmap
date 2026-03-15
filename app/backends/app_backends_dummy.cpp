@@ -331,4 +331,16 @@ error_t DummyBackend::ResetFrameCount() {
 	return impl->ResetFrameCount();
 }
 
+std::expected<recording_status_t, error_t> DummyBackend::StartRecording(std::string_view) {
+	return std::unexpected(-EOPNOTSUPP);
+}
+
+std::expected<recording_status_t, error_t> DummyBackend::StopRecording() {
+	return std::unexpected(-EOPNOTSUPP);
+}
+
+std::expected<recording_status_t, error_t> DummyBackend::GetRecordingStatus() {
+	return std::unexpected(-EOPNOTSUPP);
+}
+
 } // namespace app::backends

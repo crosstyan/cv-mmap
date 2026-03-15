@@ -681,4 +681,16 @@ error_t GStreamerBackend::ResetFrameCount() {
 	return impl->ResetFrameCount();
 }
 
+std::expected<recording_status_t, error_t> GStreamerBackend::StartRecording(std::string_view) {
+	return std::unexpected(-EOPNOTSUPP);
+}
+
+std::expected<recording_status_t, error_t> GStreamerBackend::StopRecording() {
+	return std::unexpected(-EOPNOTSUPP);
+}
+
+std::expected<recording_status_t, error_t> GStreamerBackend::GetRecordingStatus() {
+	return std::unexpected(-EOPNOTSUPP);
+}
+
 } // namespace app::backends

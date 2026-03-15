@@ -321,6 +321,32 @@ std::string canonicalize_zed_body_reference_frame(const std::string_view referen
 		"'. Allowed values: CAMERA, WORLD");
 }
 
+std::string canonicalize_zed_recording_compression_mode(const std::string_view compression_mode) {
+	auto normalized = normalize_ascii_lower(trim_ascii_spaces(std::string(compression_mode)));
+	std::replace(normalized.begin(), normalized.end(), '-', '_');
+	std::replace(normalized.begin(), normalized.end(), ' ', '_');
+
+	if (normalized == "lossless") {
+		return "LOSSLESS";
+	}
+	if (normalized == "h264") {
+		return "H264";
+	}
+	if (normalized == "h265") {
+		return "H265";
+	}
+	if (normalized == "h264_lossless") {
+		return "H264_LOSSLESS";
+	}
+	if (normalized == "h265_lossless") {
+		return "H265_LOSSLESS";
+	}
+
+	throw std::invalid_argument(
+		"invalid zed.recording.compression_mode: '" + std::string(compression_mode) +
+		"'. Allowed values: LOSSLESS, H264, H265, H264_LOSSLESS, H265_LOSSLESS");
+}
+
 void validate_zed_body_tracking_config(const app::ZedConfig::BodyTrackingConfig &cfg) {
 	if (!std::isfinite(cfg.max_range)) {
 		throw std::invalid_argument("zed.body_tracking.max_range must be finite");
@@ -353,6 +379,10 @@ void validate_zed_body_tracking_config(const app::ZedConfig::BodyTrackingConfig 
 			"zed.body_tracking.reference_frame=\"WORLD\"; current value is \"{}\"",
 			cfg.reference_frame);
 	}
+}
+
+void validate_zed_recording_config(const app::ZedConfig::RecordingConfig &cfg) {
+	(void)canonicalize_zed_recording_compression_mode(cfg.compression_mode);
 }
 } // namespace
 
@@ -788,6 +818,43 @@ Config Config::from_toml(const std::filesystem::path &path) {
 			zed_cfg.coordinate_system = "IMAGE";
 		}
 
+		if (auto recording = (*zed)["recording"].as_table(); recording) {
+			if (auto val = (*recording)["compression_mode"].value<std::string>(); val) {
+				zed_cfg.recording.compression_mode =
+					canonicalize_zed_recording_compression_mode(*val);
+			}
+
+			if (auto val = (*recording)["bitrate"]; val) {
+				if (auto bitrate = val.value<int64_t>(); bitrate) {
+					if (*bitrate < 0 || *bitrate > std::numeric_limits<unsigned int>::max()) {
+						throw invalid_argument("zed.recording.bitrate must be in range 0..4294967295");
+					}
+					zed_cfg.recording.bitrate = static_cast<unsigned int>(*bitrate);
+				} else {
+					throw invalid_argument("zed.recording.bitrate must be integer");
+				}
+			}
+
+			if (auto val = (*recording)["target_framerate"]; val) {
+				if (auto target_framerate = val.value<int64_t>(); target_framerate) {
+					if (*target_framerate < 0 || *target_framerate > std::numeric_limits<unsigned int>::max()) {
+						throw invalid_argument("zed.recording.target_framerate must be in range 0..4294967295");
+					}
+					zed_cfg.recording.target_framerate = static_cast<unsigned int>(*target_framerate);
+				} else {
+					throw invalid_argument("zed.recording.target_framerate must be integer");
+				}
+			}
+
+			if (auto val = (*recording)["transcode_streaming_input"]; val) {
+				if (auto transcode = val.value<bool>(); transcode) {
+					zed_cfg.recording.transcode_streaming_input = *transcode;
+				} else {
+					throw invalid_argument("zed.recording.transcode_streaming_input must be boolean");
+				}
+			}
+		}
+
 		if (auto body_tracking = (*zed)["body_tracking"].as_table(); body_tracking) {
 			ZedConfig::BodyTrackingConfig body_tracking_cfg{};
 			body_tracking_cfg.enabled = (*body_tracking)["enabled"].value_or(false);
@@ -831,6 +898,8 @@ Config Config::from_toml(const std::filesystem::path &path) {
 			validate_zed_body_tracking_config(body_tracking_cfg);
 			zed_cfg.body_tracking = std::move(body_tracking_cfg);
 		}
+
+		validate_zed_recording_config(zed_cfg.recording);
 
 		if (zed_cfg.serial && zed_cfg.index) {
 			throw invalid_argument("zed.serial and zed.index are mutually exclusive");
@@ -978,6 +1047,12 @@ std::string Config::to_toml() const {
 		ss << "reconnect = " << (zed->reconnect ? "true" : "false") << "\n";
 		ss << "left_pixel_format = \"" << zed->left_pixel_format << "\"\n";
 		ss << "coordinate_system = \"" << zed->coordinate_system << "\"\n";
+		ss << "\n[zed.recording]\n";
+		ss << "compression_mode = \"" << zed->recording.compression_mode << "\"\n";
+		ss << "bitrate = " << zed->recording.bitrate << "\n";
+		ss << "target_framerate = " << zed->recording.target_framerate << "\n";
+		ss << "transcode_streaming_input = "
+		   << (zed->recording.transcode_streaming_input ? "true" : "false") << "\n";
 
 		if (zed->body_tracking) {
 			const auto &body_tracking = *zed->body_tracking;

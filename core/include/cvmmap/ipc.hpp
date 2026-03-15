@@ -26,6 +26,9 @@ constexpr int32_t CONTROL_MSG_CMD_GENERIC = 0;
 constexpr int32_t CONTROL_MSG_CMD_RESET_FRAME_COUNT = 0x1001;
 constexpr int32_t CONTROL_MSG_CMD_GET_SOURCE_INFO = 0x1002;
 constexpr int32_t CONTROL_MSG_CMD_SEEK_TIMESTAMP_NS = 0x1003;
+constexpr int32_t CONTROL_MSG_CMD_START_RECORDING = 0x1004;
+constexpr int32_t CONTROL_MSG_CMD_STOP_RECORDING = 0x1005;
+constexpr int32_t CONTROL_MSG_CMD_GET_RECORDING_STATUS = 0x1006;
 
 constexpr int32_t CONTROL_RESPONSE_OK = 0;
 constexpr int32_t CONTROL_RESPONSE_UNKNOWN_CMD = -1;
@@ -104,6 +107,17 @@ constexpr uint32_t SOURCE_INFO_FLAG_CAN_SEEK = 0x00000001u;
 constexpr uint32_t SOURCE_INFO_FLAG_AUTO_LOOP = 0x00000002u;
 constexpr uint32_t SOURCE_INFO_FLAG_HAS_DEPTH = 0x00000004u;
 constexpr uint32_t SOURCE_INFO_FLAG_HAS_BODY = 0x00000008u;
+constexpr uint32_t SOURCE_INFO_FLAG_CAN_RECORD = 0x00000010u;
+
+enum class RecordingFormat : uint8_t {
+	Unknown = 0,
+	Svo = 1,
+};
+
+constexpr uint16_t RECORDING_STATUS_FLAG_CAN_RECORD = 0x0001u;
+constexpr uint16_t RECORDING_STATUS_FLAG_IS_RECORDING = 0x0002u;
+constexpr uint16_t RECORDING_STATUS_FLAG_IS_PAUSED = 0x0004u;
+constexpr uint16_t RECORDING_STATUS_FLAG_LAST_FRAME_OK = 0x0008u;
 
 enum class BodyTrackingModel : uint8_t {
 	HumanBodyFast = 0,
@@ -399,6 +413,28 @@ struct seek_timestamp_response_v1_t {
 };
 static_assert(sizeof(seek_timestamp_response_v1_t) == 28,
 			  "seek_timestamp_response_v1_t must be 28 bytes");
+
+struct recording_start_request_v1_t {
+	uint16_t struct_size{sizeof(recording_start_request_v1_t)};
+	uint16_t flags{0};
+	uint16_t path_length{0};
+	uint16_t reserved_0{0};
+};
+static_assert(sizeof(recording_start_request_v1_t) == 8,
+			  "recording_start_request_v1_t must be 8 bytes");
+
+struct recording_status_response_v1_t {
+	uint16_t struct_size{sizeof(recording_status_response_v1_t)};
+	RecordingFormat recording_format{RecordingFormat::Unknown};
+	uint8_t reserved_0{0};
+	uint16_t flags{0};
+	uint16_t path_length{0};
+	uint32_t frames_ingested{0};
+	uint32_t frames_encoded{0};
+	uint32_t reserved_1{0};
+};
+static_assert(sizeof(recording_status_response_v1_t) == 20,
+			  "recording_status_response_v1_t must be 20 bytes");
 
 struct body_tracking_message_header_t {
 	[[nodiscard]]

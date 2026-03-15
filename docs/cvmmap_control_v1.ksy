@@ -28,6 +28,9 @@ enums:
     4097: reset_frame_count
     4098: get_source_info
     4099: seek_timestamp_ns
+    4100: start_recording
+    4101: stop_recording
+    4102: get_recording_status
 
   control_response_code:
     0: ok
@@ -50,6 +53,10 @@ enums:
     0: unknown
     1: unix_epoch_ns
     2: media_time_ns
+
+  recording_format:
+    0: unknown
+    1: svo
 
 types:
   control_message_request:
@@ -96,7 +103,10 @@ types:
           switch-on: command_id
           cases:
             'control_command::seek_timestamp_ns': seek_timestamp_request_v1
-        if: len_request_message_raw > 0 and command_id == control_command::seek_timestamp_ns
+            'control_command::start_recording': recording_start_request_v1
+        if: len_request_message_raw > 0 and
+            (command_id == control_command::seek_timestamp_ns or
+             command_id == control_command::start_recording)
 
   control_message_response:
     doc: |
@@ -147,9 +157,15 @@ types:
           cases:
             'control_command::get_source_info': source_info_response_v1
             'control_command::seek_timestamp_ns': seek_timestamp_response_v1
+            'control_command::start_recording': recording_status_response_v1
+            'control_command::stop_recording': recording_status_response_v1
+            'control_command::get_recording_status': recording_status_response_v1
         if: len_response_message_raw > 0 and response_code == control_response_code::ok and
             (command_id == control_command::get_source_info or
-             command_id == control_command::seek_timestamp_ns)
+             command_id == control_command::seek_timestamp_ns or
+             command_id == control_command::start_recording or
+             command_id == control_command::stop_recording or
+             command_id == control_command::get_recording_status)
 
   source_info_response_v1:
     doc: |
@@ -192,6 +208,8 @@ types:
         value: (flags & 0x00000004) != 0
       has_body:
         value: (flags & 0x00000008) != 0
+      can_record:
+        value: (flags & 0x00000010) != 0
 
   seek_timestamp_request_v1:
     doc: |
@@ -232,3 +250,68 @@ types:
     instances:
       expected_wire_size:
         value: 28
+
+  recording_start_request_v1:
+    doc: |
+      Request payload for `START_RECORDING`.
+
+      `output_path` is UTF-8 and not NUL-terminated.
+    seq:
+      - id: struct_size
+        type: u2
+      - id: flags
+        type: u2
+      - id: path_length
+        type: u2
+      - id: reserved_0
+        type: u2
+      - id: output_path
+        type: str
+        size: path_length
+        encoding: UTF-8
+        if: path_length > 0
+    instances:
+      expected_wire_size:
+        value: 8 + path_length
+
+  recording_status_response_v1:
+    doc: |
+      Successful payload for `START_RECORDING`, `STOP_RECORDING`, and
+      `GET_RECORDING_STATUS`.
+
+      `active_path` is UTF-8 and not NUL-terminated. It is empty when the
+      backend is not currently recording.
+    seq:
+      - id: struct_size
+        type: u2
+      - id: recording_format
+        type: u1
+        enum: recording_format
+      - id: reserved_0
+        type: u1
+      - id: flags
+        type: u2
+      - id: path_length
+        type: u2
+      - id: frames_ingested
+        type: u4
+      - id: frames_encoded
+        type: u4
+      - id: reserved_1
+        type: u4
+      - id: active_path
+        type: str
+        size: path_length
+        encoding: UTF-8
+        if: path_length > 0
+    instances:
+      expected_wire_size:
+        value: 20 + path_length
+      can_record:
+        value: (flags & 0x0001) != 0
+      is_recording:
+        value: (flags & 0x0002) != 0
+      is_paused:
+        value: (flags & 0x0004) != 0
+      last_frame_ok:
+        value: (flags & 0x0008) != 0

@@ -3,6 +3,44 @@
 This document records wire-compatible ABI changes that affect downstream
 parsers, transports, and generated schemas.
 
+## Control Wire Recording Commands
+
+### 2026-03-15
+
+Status:
+- control wire major/minor unchanged (`VERSION_MAJOR = 1`, `VERSION_MINOR = 0`)
+- request/response envelope unchanged
+- on-wire header sizes remain:
+  - request header = `34` bytes
+  - response header = `38` bytes
+
+Change:
+- added control commands:
+  - `START_RECORDING` (`0x1004`)
+  - `STOP_RECORDING` (`0x1005`)
+  - `GET_RECORDING_STATUS` (`0x1006`)
+- added `SOURCE_INFO_FLAG_CAN_RECORD` (`0x00000010`)
+- added payload structs:
+  - `recording_start_request_v1`
+  - `recording_status_response_v1`
+- added `RecordingFormat` enum with `Svo`
+
+Reason:
+- ZED SVO recording must be controlled at the producer/backend layer because
+  the ZED SDK camera object is the only place that can emit the proprietary
+  SVO format
+- downstreams still need a stable transport-independent control contract
+
+Downstream impact:
+- `cvmmap-core` clients can start, stop, and query recording state
+- capability discovery can distinguish record-capable producers via
+  `SOURCE_INFO_FLAG_CAN_RECORD`
+- Kaitai parsers can validate the new request/response payloads
+
+Compatibility:
+- this is a compatible extension of control v1, not a version bump
+- backends that do not implement recording return `UNSUPPORTED`
+
 ## Control Wire Source Info And Timestamp Seek
 
 ### 2026-03-13

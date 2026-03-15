@@ -74,6 +74,13 @@ struct ZedConfig {
 		float skeleton_smoothing{0.0f};
 	};
 
+	struct RecordingConfig {
+		std::string compression_mode{"H264"};
+		unsigned int bitrate{0};
+		unsigned int target_framerate{0};
+		bool transcode_streaming_input{false};
+	};
+
 	std::optional<int> serial;
 	std::optional<int> index;
 	std::string stream_mode{"local"};
@@ -90,6 +97,7 @@ struct ZedConfig {
 	std::string left_pixel_format{"bgr8"};
 	std::string coordinate_system{"IMAGE"};
 	std::optional<BodyTrackingConfig> body_tracking;
+	RecordingConfig recording{};
 };
 
 struct VideoConfig {

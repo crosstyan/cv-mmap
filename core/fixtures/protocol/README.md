@@ -6,6 +6,10 @@ Files:
 - `control_response_get_source_info.bin`: canonical `GET_SOURCE_INFO` success response
 - `control_request_seek_timestamp_ns.bin`: canonical `SEEK_TIMESTAMP_NS` control request
 - `control_response_seek_timestamp_ns.bin`: canonical `SEEK_TIMESTAMP_NS` success response
+- `control_request_start_recording.bin`: canonical `START_RECORDING` control request
+- `control_request_stop_recording.bin`: canonical `STOP_RECORDING` control request
+- `control_request_get_recording_status.bin`: canonical `GET_RECORDING_STATUS` control request
+- `control_response_recording_status.bin`: canonical recording-status success response
 - `body_tracking_valid.bin`: canonical body-tracking packet
 - `manifest.json`: expected decoded fields for downstream parser tests
 

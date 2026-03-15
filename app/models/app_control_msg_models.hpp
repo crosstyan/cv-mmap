@@ -118,6 +118,26 @@ struct seek_timestamp_response_v1_t {
 	uint32_t reserved_1{0};
 };
 static_assert(sizeof(seek_timestamp_response_v1_t) == 28, "seek_timestamp_response_v1_t must be 28 bytes");
+
+struct recording_start_request_v1_t {
+	uint16_t struct_size{sizeof(recording_start_request_v1_t)};
+	uint16_t flags{0};
+	uint16_t path_length{0};
+	uint16_t reserved_0{0};
+};
+static_assert(sizeof(recording_start_request_v1_t) == 8, "recording_start_request_v1_t must be 8 bytes");
+
+struct recording_status_response_v1_t {
+	uint16_t struct_size{sizeof(recording_status_response_v1_t)};
+	cvmmap::RecordingFormat recording_format{cvmmap::RecordingFormat::Unknown};
+	uint8_t reserved_0{0};
+	uint16_t flags{0};
+	uint16_t path_length{0};
+	uint32_t frames_ingested{0};
+	uint32_t frames_encoded{0};
+	uint32_t reserved_1{0};
+};
+static_assert(sizeof(recording_status_response_v1_t) == 20, "recording_status_response_v1_t must be 20 bytes");
 #pragma pack(pop)
 
 }

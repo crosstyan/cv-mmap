@@ -50,6 +50,41 @@
       "exact_match": true
     }
   },
+  "control_request_start_recording": {
+    "file": "control_request_start_recording.bin",
+    "size": 59,
+    "command_id": 4100,
+    "label": "example",
+    "output_path": "/tmp/example.svo2"
+  },
+  "control_request_stop_recording": {
+    "file": "control_request_stop_recording.bin",
+    "size": 34,
+    "command_id": 4101,
+    "label": "example",
+    "request_message_length": 0
+  },
+  "control_request_get_recording_status": {
+    "file": "control_request_get_recording_status.bin",
+    "size": 34,
+    "command_id": 4102,
+    "label": "example",
+    "request_message_length": 0
+  },
+  "control_response_recording_status": {
+    "file": "control_response_recording_status.bin",
+    "size": 75,
+    "command_id": 4102,
+    "response_code": 0,
+    "label": "example",
+    "recording_status": {
+      "recording_format": 1,
+      "flags": 11,
+      "path": "/tmp/example.svo2",
+      "frames_ingested": 42,
+      "frames_encoded": 40
+    }
+  },
   "body_tracking_valid": {
     "file": "body_tracking_valid.bin",
     "size": 3312,
