@@ -138,10 +138,17 @@ endif()
 set(WITH_BACKEND_MCAP OFF)
 set(_MCAP_DEPS_FOUND OFF)
 set(_MCAP_INCLUDE_DIR "")
-if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mcap/include/mcap/reader.hpp")
+set(CVMMAP_MCAP_INCLUDE_DIR "" CACHE PATH
+	"Optional path to MCAP C++ headers (the directory containing mcap/reader.hpp)")
+if (CVMMAP_MCAP_INCLUDE_DIR)
+	if (EXISTS "${CVMMAP_MCAP_INCLUDE_DIR}/mcap/reader.hpp")
+		set(_MCAP_INCLUDE_DIR "${CVMMAP_MCAP_INCLUDE_DIR}")
+	else()
+		message(FATAL_ERROR
+			"CVMMAP_MCAP_INCLUDE_DIR='${CVMMAP_MCAP_INCLUDE_DIR}' does not contain mcap/reader.hpp")
+	endif()
+elseif (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mcap/include/mcap/reader.hpp")
 	set(_MCAP_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mcap/include")
-elseif(EXISTS "/home/crosstyan/Code/mcap/cpp/mcap/include/mcap/reader.hpp")
-	set(_MCAP_INCLUDE_DIR "/home/crosstyan/Code/mcap/cpp/mcap/include")
 endif()
 
 find_package(Protobuf QUIET)
@@ -179,7 +186,9 @@ endif()
 
 if (BUILD_BACKEND_MCAP_MODE STREQUAL "ON")
 	if (NOT _MCAP_DEPS_FOUND)
-		message(FATAL_ERROR "BUILD_BACKEND_MCAP=ON requires mcap headers, Protobuf, libavcodec/libavutil/libswscale, and rvl::rvl")
+		message(FATAL_ERROR
+			"BUILD_BACKEND_MCAP=ON requires mcap headers, Protobuf, libavcodec/libavutil/libswscale, and rvl::rvl. "
+			"Set CVMMAP_MCAP_INCLUDE_DIR if the headers are not vendored under third_party/mcap/include.")
 	endif()
 	set(WITH_BACKEND_MCAP ON)
 	message(STATUS "MCAP backend: enabled (BUILD_BACKEND_MCAP=ON)")
