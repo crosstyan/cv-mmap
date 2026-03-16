@@ -7,6 +7,8 @@
 #include <cassert>
 #include <chrono>
 #include <cstring>
+#include <exception>
+#include <format>
 #include <string>
 #include <vector>
 
@@ -32,6 +34,13 @@ pb::ErrorCode map_posix_error(const int error_code) {
 	default:
 		return pb::ERROR_CODE_ERROR;
 	}
+}
+
+pb::ErrorCode map_svo_recording_start_error(const int error_code) {
+	if (error_code == -EINVAL) {
+		return pb::ERROR_CODE_INVALID_PAYLOAD;
+	}
+	return map_posix_error(error_code);
 }
 
 pb::SourceKind to_proto_source_kind(const cvmmap::SourceKind source_kind) {
@@ -345,18 +354,31 @@ struct NatsControlService::impl {
 			}
 		}
 
-		auto result = self->handlers.on_start_svo_recording(backend_request);
-		if (!result) {
-			response.set_error(map_posix_error(result.error()));
-			if (self->handlers.on_get_svo_last_recording_error) {
-				response.set_error_message(
-					self->handlers.on_get_svo_last_recording_error());
+		try {
+			auto result = self->handlers.on_start_svo_recording(backend_request);
+			if (!result) {
+				response.set_error(map_svo_recording_start_error(result.error()));
+				if (self->handlers.on_get_svo_last_recording_error) {
+					response.set_error_message(
+						self->handlers.on_get_svo_last_recording_error());
+				}
+				self->reply(message, response);
+				return;
 			}
+
+			fill_recording_status_response(response, *result);
+		} catch (const std::exception &e) {
+			response.set_error(pb::ERROR_CODE_ERROR);
+			response.set_error_message(
+				std::format("unexpected SVO recording start failure: {}", e.what()));
+			self->reply(message, response);
+			return;
+		} catch (...) {
+			response.set_error(pb::ERROR_CODE_ERROR);
+			response.set_error_message("unexpected SVO recording start failure");
 			self->reply(message, response);
 			return;
 		}
-
-		fill_recording_status_response(response, *result);
 		self->reply(message, response);
 	}
 
