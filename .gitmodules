@@ -10,3 +10,6 @@
 [submodule "app/lib/proxy"]
 	path = app/lib/proxy
 	url = https://github.com/ngcpp/proxy
+[submodule "lib/nats.c"]
+	path = lib/nats.c
+	url = https://github.com/nats-io/nats.c
