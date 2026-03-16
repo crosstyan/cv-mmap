@@ -2,7 +2,7 @@
 #include <cvmmap/nats_subjects.hpp>
 #include <cvmmap/parser.hpp>
 
-#include <nats/nats.h>
+#include <nats.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>

@@ -177,13 +177,34 @@ target_link_libraries(my_consumer
 ### Ubuntu
 
 ```bash
-apt install libopencv-dev \
+sudo apt install build-essential cmake pkg-config \
+    cppzmq-dev \
     libzmq3-dev \
+    libfmt-dev \
     libspdlog-dev \
+    libprotobuf-dev \
+    protobuf-compiler \
+    libssl-dev
+
+sudo apt install libopencv-dev \
     libglew-dev \
     libhdf5-dev
 
-apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-tools gstreamer1.0-x gstreamer1.0-alsa gstreamer1.0-gl gstreamer1.0-gtk3 gstreamer1.0-qt5 gstreamer1.0-pulseaudio
+sudo apt install libgstreamer1.0-dev \
+    libgstreamer-plugins-base1.0-dev \
+    libgstreamer-plugins-bad1.0-dev \
+    gstreamer1.0-plugins-base \
+    gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-bad \
+    gstreamer1.0-plugins-ugly \
+    gstreamer1.0-libav \
+    gstreamer1.0-tools \
+    gstreamer1.0-x \
+    gstreamer1.0-alsa \
+    gstreamer1.0-gl \
+    gstreamer1.0-gtk3 \
+    gstreamer1.0-qt5 \
+    gstreamer1.0-pulseaudio
 ```
 
 ### Arch Linux
@@ -204,6 +225,7 @@ sudo pacman -S opencv \
 
 ### Notes
 
+- Base build requirements for the current default configuration are `cppzmq`, ZeroMQ, `fmt`, `spdlog`, Protobuf (`libprotobuf-dev` and `protobuf-compiler`), and OpenSSL (`libssl-dev`) for the vendored `nats.c` client.
 - OpenCV, GStreamer, and ZED support are optional build/runtime concerns depending on backend selection.
 - `dummy` is always available and is the lowest-friction backend for local testing.
 

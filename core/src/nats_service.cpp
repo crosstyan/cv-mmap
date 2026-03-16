@@ -1,7 +1,7 @@
 #include <cvmmap/nats_service.hpp>
 #include <cvmmap/nats_subjects.hpp>
 
-#include <nats/nats.h>
+#include <nats.h>
 #include <spdlog/spdlog.h>
 
 #include <cassert>
