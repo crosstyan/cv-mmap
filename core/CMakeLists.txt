@@ -37,13 +37,13 @@ target_include_directories(cvmmap_client
 )
 target_link_libraries(cvmmap_client
 	PUBLIC
-		cvmmap_target
-		cvmmap_ipc
-		cvmmap_nats
-		cppzmq
-		spdlog
-		fmt::fmt
-)
+			cvmmap_target
+			cvmmap_ipc
+			cvmmap_nats
+			cppzmq
+			spdlog::spdlog
+			fmt::fmt
+	)
 add_library(cvmmap::client ALIAS cvmmap_client)
 
 # -- Protobuf generated library --
@@ -78,13 +78,13 @@ target_include_directories(cvmmap_nats
 )
 target_link_libraries(cvmmap_nats
 	PUBLIC
-		cvmmap_target
-		cvmmap_ipc
-		cvmmap_proto
-		cnats::nats_static
-		spdlog
-		fmt::fmt
-)
+			cvmmap_target
+			cvmmap_ipc
+			cvmmap_proto
+			cnats::nats_static
+			spdlog::spdlog
+			fmt::fmt
+	)
 add_library(cvmmap::nats ALIAS cvmmap_nats)
 
 write_basic_package_version_file(
@@ -97,6 +97,17 @@ configure_package_config_file(
 	"${CMAKE_CURRENT_SOURCE_DIR}/cmake/cvmmap-coreConfig.cmake.in"
 	"${CMAKE_CURRENT_BINARY_DIR}/cvmmap-coreConfig.cmake"
 	INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/cvmmap-core"
+)
+
+export(
+	TARGETS
+		cvmmap_target
+		cvmmap_ipc
+		cvmmap_client
+		cvmmap_proto
+		cvmmap_nats
+	FILE "${CMAKE_CURRENT_BINARY_DIR}/cvmmap-coreTargets.cmake"
+	NAMESPACE cvmmap::
 )
 
 install(

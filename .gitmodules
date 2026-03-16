@@ -1,15 +1,15 @@
-[submodule "lib/tomlplusplus"]
-	path = app/lib/tomlplusplus
+[submodule "third_party/tomlplusplus"]
+	path = third_party/tomlplusplus
 	url = https://github.com/marzer/tomlplusplus.git
-[submodule "lib/CLI11"]
-	path = app/lib/CLI11
+[submodule "third_party/CLI11"]
+	path = third_party/CLI11
 	url = https://github.com/CLIUtils/CLI11
-[submodule "lib/spdlog"]
-	path = app/lib/spdlog
+[submodule "third_party/spdlog"]
+	path = third_party/spdlog
 	url = https://github.com/gabime/spdlog
-[submodule "app/lib/proxy"]
-	path = app/lib/proxy
+[submodule "third_party/proxy"]
+	path = third_party/proxy
 	url = https://github.com/ngcpp/proxy
-[submodule "lib/nats.c"]
-	path = lib/nats.c
+[submodule "third_party/nats.c"]
+	path = third_party/nats.c
 	url = https://github.com/nats-io/nats.c

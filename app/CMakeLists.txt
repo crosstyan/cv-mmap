@@ -1,17 +1,3 @@
-set(APP_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/lib)
-
-####### SPDLOG #######
-# TODO: consider using structured logging
-# https://news.ycombinator.com/item?id=28760166
-option(BUILD_SPDLOG "Build spdlog" OFF)
-if (BUILD_SPDLOG)
-    set(SPDLOG_USE_STD_FORMAT ON)
-    add_subdirectory(lib/spdlog)
-endif ()
-if (NOT TARGET spdlog)
-    find_package(spdlog REQUIRED)
-endif ()
-
 ####### MODELS #######
 add_library(app_models STATIC models/app_models.cpp)
 target_include_directories(app_models PUBLIC models)
@@ -19,7 +5,6 @@ target_include_directories(app_models PUBLIC models)
 ####### CONFIG #######
 add_library(app_config STATIC config/app_config.cpp)
 target_include_directories(app_config PUBLIC config)
-add_subdirectory(${APP_LIB_DIR}/tomlplusplus)
 target_link_libraries(app_config PUBLIC app_models tomlplusplus::tomlplusplus cvmmap_target)
 
 ####### VERSION #######
@@ -68,8 +53,6 @@ target_compile_definitions(app_version
         COMPILE_TIMESTAMP_LOCAL=${COMPILE_TIMESTAMP_LOCAL}
         COMPILE_TIMESTAMP_UTC=${COMPILE_TIMESTAMP_UTC}
 )
-
-add_subdirectory(lib/proxy)
 
 ####### BACKEND OPTIONS #######
 function(cvmmap_resolve_backend_mode out_var cache_var legacy_var default_value description)
@@ -155,8 +138,8 @@ endif()
 set(WITH_BACKEND_MCAP OFF)
 set(_MCAP_DEPS_FOUND OFF)
 set(_MCAP_INCLUDE_DIR "")
-if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/mcap/include/mcap/reader.hpp")
-	set(_MCAP_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/lib/mcap/include")
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mcap/include/mcap/reader.hpp")
+	set(_MCAP_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mcap/include")
 elseif(EXISTS "/home/crosstyan/Code/mcap/cpp/mcap/include/mcap/reader.hpp")
 	set(_MCAP_INCLUDE_DIR "/home/crosstyan/Code/mcap/cpp/mcap/include")
 endif()
@@ -330,7 +313,7 @@ option(BUILD_PREPROCESS_BENCHMARKS "Build preprocess benchmark executables" OFF)
 if (BUILD_PREPROCESS_BENCHMARKS)
 	add_executable(app_preprocess_benchmark preprocess/benchmark_undistort.cpp)
 	target_include_directories(app_preprocess_benchmark PRIVATE .)
-	target_link_libraries(app_preprocess_benchmark PRIVATE app_preprocess spdlog fmt::fmt)
+target_link_libraries(app_preprocess_benchmark PRIVATE app_preprocess spdlog::spdlog fmt::fmt)
 	if (WITH_PREPROCESS_UNDISTORT_OPENCV)
 		target_compile_definitions(app_preprocess_benchmark PRIVATE WITH_PREPROCESS_UNDISTORT_OPENCV=1)
 	endif()
