@@ -28,7 +28,7 @@ struct ZedBackend {
 	source_info_t GetSourceInfo();
 	std::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns);
 	error_t ResetFrameCount();
-	std::expected<recording_status_t, error_t> StartRecording(std::string_view output_path);
+	std::expected<recording_status_t, error_t> StartRecording(const svo_recording_request_t &request);
 	std::expected<recording_status_t, error_t> StopRecording();
 	std::expected<recording_status_t, error_t> GetRecordingStatus();
 	std::string GetLastRecordingError();

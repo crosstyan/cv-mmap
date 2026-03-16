@@ -8,9 +8,11 @@
 #include <expected>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace cvmmap {
 
@@ -73,6 +75,44 @@ struct ControlError {
 	std::string message{};
 };
 
+struct ControlCapabilities {
+	bool can_seek{false};
+	std::vector<RecordingFormat> available_recording_formats{};
+
+	[[nodiscard]]
+	bool supports_recording_format(RecordingFormat format) const;
+};
+
+struct SvoRecordingOptions {
+	std::optional<std::string> compression_mode{};
+	std::optional<uint32_t> bitrate{};
+	std::optional<uint32_t> target_framerate{};
+	std::optional<bool> transcode_streaming_input{};
+};
+
+struct McapRecordingOptions {
+	std::optional<std::string> compression{};
+	std::optional<std::string> topic{};
+	std::optional<std::string> depth_topic{};
+	std::optional<std::string> body_topic{};
+	std::optional<std::string> frame_id{};
+};
+
+struct RecordingRequest {
+	RecordingFormat format{RecordingFormat::Unknown};
+	std::string output_path{};
+	std::optional<SvoRecordingOptions> svo_options{};
+	std::optional<McapRecordingOptions> mcap_options{};
+};
+
+struct ClientConfig {
+	std::string instance_name;
+	/// If set, control methods use NATS request-reply instead of ZMQ REQ/REP.
+	/// Body tracking and module status are also received via NATS subscriptions.
+	/// Frame sync stays on ZMQ PUB/SUB (unchanged).
+	std::optional<std::string> nats_url;
+};
+
 class CvMmapClient {
 public:
 	using OnFrameCallback = std::move_only_function<void(
@@ -87,6 +127,7 @@ public:
 		std::chrono::milliseconds{1000};
 
 	explicit CvMmapClient(const std::string &instance_name);
+	explicit CvMmapClient(const ClientConfig &config);
 	~CvMmapClient();
 
 	CvMmapClient(const CvMmapClient &) = delete;
@@ -118,13 +159,32 @@ public:
 				   std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
+	std::expected<ControlCapabilities, ControlError>
+	GetCapabilities(std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
+
+	[[nodiscard]]
+	std::expected<RecordingStatus, ControlError>
+	StartRecording(const RecordingRequest &request,
+				  std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
+
+	[[nodiscard]]
 	std::expected<RecordingStatus, ControlError>
 	StartRecording(std::string_view output_path,
 				  std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
 	std::expected<RecordingStatus, ControlError>
+	StopRecording(RecordingFormat format,
+				 std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
+
+	[[nodiscard]]
+	std::expected<RecordingStatus, ControlError>
 	StopRecording(std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
+
+	[[nodiscard]]
+	std::expected<RecordingStatus, ControlError>
+	GetRecordingStatus(RecordingFormat format,
+						  std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
 	std::expected<RecordingStatus, ControlError>

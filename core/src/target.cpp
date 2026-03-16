@@ -18,6 +18,7 @@ struct ResolvedTarget {
 	std::string instance;
 	std::string prefix;
 	std::string base_name;
+	std::string nats_target_key;
 };
 
 bool is_valid_token_char(const char ch) {
@@ -145,6 +146,8 @@ ResolvedTarget resolve_target(const std::string &name_or_uri) {
 
 	prefix = validate_prefix(prefix);
 	auto base_name = std::format("{}_{}", ns, instance);
+	auto nats_target_key = base_name;
+	std::replace(nats_target_key.begin(), nats_target_key.end(), '.', '_');
 	auto control_path = std::format("{}/{}_control", prefix, base_name);
 	if (control_path.size() > UNIX_PATH_MAX_LEN) {
 		throw std::invalid_argument(std::format("cvmmap ipc path too long ({}>{})", control_path.size(), UNIX_PATH_MAX_LEN));
@@ -154,6 +157,7 @@ ResolvedTarget resolve_target(const std::string &name_or_uri) {
 		.instance  = std::move(instance),
 		.prefix    = std::move(prefix),
 		.base_name = std::move(base_name),
+		.nats_target_key = std::move(nats_target_key),
 	};
 }
 
@@ -165,6 +169,7 @@ cvmmap_target_t resolve_cvmmap_target_or_throw(const std::string &name_or_uri) {
 	target.instance     = resolved.instance;
 	target.prefix       = resolved.prefix;
 	target.base_name    = resolved.base_name;
+	target.nats_target_key = resolved.nats_target_key;
 	target.shm_name     = resolved.base_name;
 	target.zmq_addr     = std::format("ipc://{}/{}", resolved.prefix, resolved.base_name);
 	target.zmq_control_addr = std::format("ipc://{}/{}_control", resolved.prefix, resolved.base_name);

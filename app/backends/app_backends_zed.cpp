@@ -1348,17 +1348,17 @@ struct ZedBackendImpl {
 		return 0;
 	}
 
-	std::expected<recording_status_t, error_t> StartRecording(std::string_view output_path) {
-		if (output_path.empty()) {
-			std::lock_guard lock(state_mutex);
-			set_recording_error_locked("recording path is empty");
-			return std::unexpected(-EINVAL);
-		}
-		if (output_path.find('\0') != std::string_view::npos) {
-			std::lock_guard lock(state_mutex);
-			set_recording_error_locked("recording path contains embedded NUL");
-			return std::unexpected(-EINVAL);
-		}
+		std::expected<recording_status_t, error_t> StartRecording(const svo_recording_request_t &request) {
+			if (request.output_path.empty()) {
+				std::lock_guard lock(state_mutex);
+				set_recording_error_locked("recording path is empty");
+				return std::unexpected(-EINVAL);
+			}
+			if (request.output_path.find('\0') != std::string_view::npos) {
+				std::lock_guard lock(state_mutex);
+				set_recording_error_locked("recording path contains embedded NUL");
+				return std::unexpected(-EINVAL);
+			}
 
 		std::lock_guard lock(state_mutex);
 		clear_recording_error_locked();
@@ -1373,11 +1373,11 @@ struct ZedBackendImpl {
 			return std::unexpected(-EINVAL);
 		}
 
-		const auto output_path_fs = std::filesystem::path(output_path);
-		const auto parent_dir = output_path_fs.parent_path();
-		if (!parent_dir.empty()) {
-			std::error_code ec;
-			std::filesystem::create_directories(parent_dir, ec);
+			const auto output_path_fs = std::filesystem::path(request.output_path);
+			const auto parent_dir = output_path_fs.parent_path();
+			if (!parent_dir.empty()) {
+				std::error_code ec;
+				std::filesystem::create_directories(parent_dir, ec);
 			if (ec) {
 				set_recording_error_locked(std::format(
 					"failed to create recording directory '{}': {}",
@@ -1387,17 +1387,23 @@ struct ZedBackendImpl {
 			}
 		}
 
-		sl::RecordingParameters recording_parameters{};
-		recording_parameters.video_filename = std::string(output_path);
-		recording_parameters.compression_mode =
-			parse_recording_compression_mode(options.zed_config.recording.compression_mode);
-		recording_parameters.bitrate = options.zed_config.recording.bitrate;
-		recording_parameters.target_framerate = options.zed_config.recording.target_framerate;
-		recording_parameters.transcode_streaming_input =
-			options.zed_config.recording.transcode_streaming_input;
+			sl::RecordingParameters recording_parameters{};
+			recording_parameters.video_filename = request.output_path;
+			recording_parameters.compression_mode =
+				parse_recording_compression_mode(
+					request.options.compression_mode.value_or(
+						options.zed_config.recording.compression_mode));
+			recording_parameters.bitrate =
+				request.options.bitrate.value_or(options.zed_config.recording.bitrate);
+			recording_parameters.target_framerate =
+				request.options.target_framerate.value_or(
+					options.zed_config.recording.target_framerate);
+			recording_parameters.transcode_streaming_input =
+				request.options.transcode_streaming_input.value_or(
+					options.zed_config.recording.transcode_streaming_input);
 
-		const auto recording_result = camera.enableRecording(recording_parameters);
-		if (recording_result != sl::ERROR_CODE::SUCCESS) {
+			const auto recording_result = camera.enableRecording(recording_parameters);
+			if (recording_result != sl::ERROR_CODE::SUCCESS) {
 			const std::string code_name = sl::toString(recording_result).get();
 			const std::string verbose = sl::toVerbose(recording_result).get();
 			if (verbose.empty() || verbose == code_name) {
@@ -1410,16 +1416,19 @@ struct ZedBackendImpl {
 					"ZED recording failed: {} ({}): {}",
 					code_name,
 					static_cast<int>(recording_result),
-					verbose));
+						verbose));
+				}
+				spdlog::error(
+					"failed to start ZED recording '{}': {}",
+					request.output_path,
+					last_recording_error);
+				return std::unexpected(-EIO);
 			}
-			spdlog::error("failed to start ZED recording '{}': {}", output_path, last_recording_error);
-			return std::unexpected(-EIO);
-		}
 
-		active_recording_path = std::string(output_path);
-		clear_recording_error_locked();
-		return make_recording_status_locked();
-	}
+			active_recording_path = request.output_path;
+			clear_recording_error_locked();
+			return make_recording_status_locked();
+		}
 
 	std::expected<recording_status_t, error_t> StopRecording() {
 		std::lock_guard lock(state_mutex);
@@ -1484,8 +1493,9 @@ error_t ZedBackend::ResetFrameCount() {
 	return impl->ResetFrameCount();
 }
 
-std::expected<recording_status_t, error_t> ZedBackend::StartRecording(std::string_view output_path) {
-	return impl->StartRecording(output_path);
+std::expected<recording_status_t, error_t> ZedBackend::StartRecording(
+	const svo_recording_request_t &request) {
+	return impl->StartRecording(request);
 }
 
 std::expected<recording_status_t, error_t> ZedBackend::StopRecording() {
@@ -1549,7 +1559,7 @@ struct ZedBackendImpl {
 		return 0;
 	}
 
-	std::expected<recording_status_t, error_t> StartRecording(std::string_view) {
+	std::expected<recording_status_t, error_t> StartRecording(const svo_recording_request_t &) {
 		return std::unexpected(-EOPNOTSUPP);
 	}
 
@@ -1607,8 +1617,9 @@ error_t ZedBackend::ResetFrameCount() {
 	return impl->ResetFrameCount();
 }
 
-std::expected<recording_status_t, error_t> ZedBackend::StartRecording(std::string_view output_path) {
-	return impl->StartRecording(output_path);
+std::expected<recording_status_t, error_t> ZedBackend::StartRecording(
+	const svo_recording_request_t &request) {
+	return impl->StartRecording(request);
 }
 
 std::expected<recording_status_t, error_t> ZedBackend::StopRecording() {

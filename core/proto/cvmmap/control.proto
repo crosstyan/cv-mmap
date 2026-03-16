@@ -1,0 +1,119 @@
+syntax = "proto3";
+package cvmmap.proto;
+option cc_enable_arenas = true;
+
+enum SourceKind {
+  SOURCE_KIND_UNKNOWN = 0;
+  SOURCE_KIND_LIVE    = 1;
+  SOURCE_KIND_FINITE  = 2;
+}
+
+enum TimestampDomain {
+  TIMESTAMP_DOMAIN_UNKNOWN       = 0;
+  TIMESTAMP_DOMAIN_UNIX_EPOCH_NS = 1;
+  TIMESTAMP_DOMAIN_MEDIA_TIME_NS = 2;
+}
+
+enum RecordingFormat {
+  RECORDING_FORMAT_UNKNOWN = 0;
+  RECORDING_FORMAT_SVO     = 1;
+  RECORDING_FORMAT_MCAP    = 2;
+}
+
+enum ModuleStatusCode {
+  MODULE_STATUS_CODE_UNKNOWN      = 0;
+  MODULE_STATUS_CODE_ONLINE       = 1;
+  MODULE_STATUS_CODE_OFFLINE      = 2;
+  MODULE_STATUS_CODE_STREAM_RESET = 3;
+}
+
+enum ErrorCode {
+  ERROR_CODE_OK              = 0;
+  ERROR_CODE_UNKNOWN_CMD     = 1;
+  ERROR_CODE_ERROR           = 2;
+  ERROR_CODE_UNSUPPORTED     = 3;
+  ERROR_CODE_INVALID_PAYLOAD = 4;
+  ERROR_CODE_OUT_OF_RANGE    = 5;
+  ERROR_CODE_TIMEOUT         = 6;
+}
+
+// -- ResetFrameCount --
+message ResetFrameCountRequest {}
+message ResetFrameCountResponse { ErrorCode error = 1; }
+
+// -- GetSourceInfo --
+message GetSourceInfoRequest {}
+message GetSourceInfoResponse {
+  ErrorCode        error              = 1;
+  SourceKind       source_kind        = 2;
+  TimestampDomain  timestamp_domain   = 3;
+  uint32           flags              = 4;
+  uint64           timeline_start_ns  = 5;
+  uint64           timeline_end_ns    = 6;
+  uint64           duration_ns        = 7;
+  uint64           current_timestamp_ns = 8;
+  uint32           current_frame_count  = 9;
+}
+
+// -- SeekTimestamp --
+message SeekTimestampRequest { uint64 target_timestamp_ns = 1; }
+message SeekTimestampResponse {
+  ErrorCode error                  = 1;
+  uint64    requested_timestamp_ns = 2;
+  uint64    landed_timestamp_ns    = 3;
+  uint32    landed_frame_count     = 4;
+  bool      exact_match            = 5;
+}
+
+// -- Capabilities --
+message CapabilitiesRequest {}
+message CapabilitiesResponse {
+  ErrorCode error = 1;
+  bool can_seek = 2;
+  repeated RecordingFormat available_recording_formats = 3;
+}
+
+// -- Recording --
+message SvoRecordingOptions {
+  optional string compression_mode          = 1;
+  optional uint32 bitrate                   = 2;
+  optional uint32 target_framerate          = 3;
+  optional bool   transcode_streaming_input = 4;
+}
+
+message McapRecordingOptions {
+  optional string compression = 1;
+  optional string topic       = 2;
+  optional string depth_topic = 3;
+  optional string body_topic  = 4;
+  optional string frame_id    = 5;
+}
+
+message RecordingStartRequest {
+  string               output_path  = 1;
+  SvoRecordingOptions  svo_options  = 10;
+  McapRecordingOptions mcap_options = 11;
+}
+
+message RecordingStopRequest {}
+message RecordingStatusRequest {}
+
+message RecordingStatusResponse {
+  ErrorCode       error           = 1;
+  RecordingFormat format          = 2;
+  bool            can_record      = 3;
+  bool            is_recording    = 4;
+  bool            is_paused       = 5;
+  bool            last_frame_ok   = 6;
+  uint32          frames_ingested = 7;
+  uint32          frames_encoded  = 8;
+  string          active_path     = 9;
+  string          error_message   = 10;
+}
+
+// -- Module Status (pub/sub) --
+message ModuleStatusEvent {
+  ModuleStatusCode status       = 1;
+  string           instance     = 2;
+  uint64           timestamp_ns = 3;
+}

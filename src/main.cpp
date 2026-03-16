@@ -1,17 +1,20 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <csignal>
 #include <limits>
 #include <optional>
 #include <string_view>
 #include <string>
 #include <expected>
+#include <mutex>
 #include <vector>
 #include <span>
 #include <CLI/CLI.hpp>
@@ -31,6 +34,7 @@
 #include "backends/app_backends_facade.hpp"
 #include "backends/app_backends_dummy.hpp"
 #include "app_preprocess_undistort.hpp"
+#include <cvmmap/nats_service.hpp>
 #ifdef WITH_BACKEND_OPENCV
 #include "backends/app_backends_opencv.hpp"
 #endif
@@ -100,6 +104,13 @@ int main(int argc, char **argv) {
 		spdlog::error("loading config: {}", e.what());
 		return 1;
 	}
+
+	const auto resolved_target = cvmmap::resolve_cvmmap_target_or_throw(
+		std::format(
+			"cvmmap://{}@{}?namespace={}",
+			config.name,
+			config.ipc.prefix,
+			config.ipc.name_space));
 
 	const bool body_stream_enabled =
 		(
@@ -211,6 +222,15 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 	spdlog::info("bond to ZMQ control address: `{}`", config.zmq_control_address());
+
+	// NATS control service (optional, coexists with ZMQ)
+	std::unique_ptr<cvmmap::NatsControlService> nats_service;
+	if (config.nats && config.nats->enabled) {
+		nats_service = std::make_unique<cvmmap::NatsControlService>(
+			config.name,
+			resolved_target.nats_target_key,
+			config.nats->url);
+	}
 
 	static auto is_running   = std::atomic_bool{true};
 	static auto sigint_count = std::atomic_int{0};
@@ -792,19 +812,22 @@ int main(int argc, char **argv) {
 		}
 	});
 
-	backend->SetOnBodyTracking([&body_sock, &serialize_body_tracking_frame](const cvmmap::body_tracking_frame_t &frame) {
-		if (!body_sock) {
-			return;
+	backend->SetOnBodyTracking([&body_sock, &serialize_body_tracking_frame, &nats_service](const cvmmap::body_tracking_frame_t &frame) {
+		auto bytes = serialize_body_tracking_frame(frame);
+		if (body_sock) {
+			try {
+				body_sock->send(zmq::buffer(bytes), zmq::send_flags::none);
+			} catch (const zmq::error_t &e) {
+				spdlog::error("send body tracking message for frame@{}; {}", frame.header.frame_count, e.what());
+			}
 		}
-		try {
-			auto bytes = serialize_body_tracking_frame(frame);
-			body_sock->send(zmq::buffer(bytes), zmq::send_flags::none);
-		} catch (const zmq::error_t &e) {
-			spdlog::error("send body tracking message for frame@{}; {}", frame.header.frame_count, e.what());
+		if (nats_service) {
+			nats_service->PublishBodyTracking(
+				std::span<const uint8_t>(bytes.data(), bytes.size()));
 		}
 	});
 
-	const auto send_status = [&sock, name = config.name](int32_t status) {
+	const auto send_status = [&sock, &nats_service, name = config.name](int32_t status) {
 		try {
 			std::array<uint8_t, module_status_message_t::size()> buffer;
 			auto msg = module_status_message_t{};
@@ -816,6 +839,9 @@ int main(int argc, char **argv) {
 			sock.send(zmq::buffer(buffer), zmq::send_flags::none);
 		} catch (const zmq::error_t &e) {
 			spdlog::error("send module status message; {}", e.what());
+		}
+		if (nats_service) {
+			nats_service->PublishModuleStatus(status);
 		}
 	};
 
@@ -840,7 +866,120 @@ int main(int argc, char **argv) {
 		is_running.store(false, std::memory_order::relaxed);
 	});
 
+	// Mutex to protect backend calls from concurrent NATS and ZMQ threads
+	std::mutex backend_control_mutex;
+
+	const auto can_seek = [&backend]() {
+#ifdef WITH_BACKEND_MCAP
+		return proxy_cast<app::backends::McapBackend>(&*backend) != nullptr;
+#else
+		return false;
+#endif
+	};
+
+	const auto seek_timestamp = [&backend](const uint64_t timestamp_ns)
+		-> std::expected<backends::seek_result_t, backends::error_t> {
+#ifdef WITH_BACKEND_MCAP
+		if (auto *mcap_backend = proxy_cast<app::backends::McapBackend>(&*backend)) {
+			return mcap_backend->SeekTimestampNs(timestamp_ns);
+		}
+#endif
+		return std::unexpected(-EOPNOTSUPP);
+	};
+
+	const auto can_record_svo = [&backend]() {
+#ifdef WITH_BACKEND_ZED
+		return proxy_cast<app::backends::ZedBackend>(&*backend) != nullptr;
+#else
+		return false;
+#endif
+	};
+
+	const auto start_svo_recording = [&backend](const backends::svo_recording_request_t &request)
+		-> std::expected<backends::recording_status_t, backends::error_t> {
+#ifdef WITH_BACKEND_ZED
+		if (auto *zed_backend = proxy_cast<app::backends::ZedBackend>(&*backend)) {
+			return zed_backend->StartRecording(request);
+		}
+#endif
+		return std::unexpected(-EOPNOTSUPP);
+	};
+
+	const auto stop_svo_recording = [&backend]()
+		-> std::expected<backends::recording_status_t, backends::error_t> {
+#ifdef WITH_BACKEND_ZED
+		if (auto *zed_backend = proxy_cast<app::backends::ZedBackend>(&*backend)) {
+			return zed_backend->StopRecording();
+		}
+#endif
+		return std::unexpected(-EOPNOTSUPP);
+	};
+
+	const auto get_svo_recording_status = [&backend]()
+		-> std::expected<backends::recording_status_t, backends::error_t> {
+#ifdef WITH_BACKEND_ZED
+		if (auto *zed_backend = proxy_cast<app::backends::ZedBackend>(&*backend)) {
+			return zed_backend->GetRecordingStatus();
+		}
+#endif
+		return std::unexpected(-EOPNOTSUPP);
+	};
+
+	const auto get_svo_recording_error = [&backend]() {
+#ifdef WITH_BACKEND_ZED
+		if (auto *zed_backend = proxy_cast<app::backends::ZedBackend>(&*backend)) {
+			return zed_backend->GetLastRecordingError();
+		}
+#endif
+		return std::string("recording is not supported by the active backend");
+	};
+
 	backend->Init();
+
+	// Wire up NATS handlers and start service
+	if (nats_service) {
+		cvmmap::NatsControlHandlers nats_handlers;
+		nats_handlers.on_reset_frame_count = [&backend, &backend_control_mutex]() -> int {
+			std::lock_guard lock(backend_control_mutex);
+			return backend->ResetFrameCount();
+		};
+		nats_handlers.on_get_source_info = [&backend, &backend_control_mutex]() {
+			std::lock_guard lock(backend_control_mutex);
+			return backend->GetSourceInfo();
+		};
+		nats_handlers.on_source_can_seek = [&can_seek]() {
+			return can_seek();
+		};
+		nats_handlers.on_seek_timestamp = [&backend_control_mutex, &seek_timestamp](uint64_t ts) {
+			std::lock_guard lock(backend_control_mutex);
+			return seek_timestamp(ts);
+		};
+		nats_handlers.on_svo_recording_available = [&can_record_svo]() {
+			return can_record_svo();
+		};
+		nats_handlers.on_start_svo_recording =
+			[&backend_control_mutex, &start_svo_recording](const backends::svo_recording_request_t &request) {
+			std::lock_guard lock(backend_control_mutex);
+			return start_svo_recording(request);
+		};
+		nats_handlers.on_stop_svo_recording = [&backend_control_mutex, &stop_svo_recording]() {
+			std::lock_guard lock(backend_control_mutex);
+			return stop_svo_recording();
+		};
+		nats_handlers.on_get_svo_recording_status =
+			[&backend_control_mutex, &get_svo_recording_status]() {
+			std::lock_guard lock(backend_control_mutex);
+			return get_svo_recording_status();
+		};
+		nats_handlers.on_get_svo_last_recording_error =
+			[&backend_control_mutex, &get_svo_recording_error]() {
+			std::lock_guard lock(backend_control_mutex);
+			return get_svo_recording_error();
+		};
+		nats_service->SetHandlers(std::move(nats_handlers));
+		nats_service->Start();
+	}
+
 	send_status(MODULE_STATUS_ONLINE);
 
 	const auto map_control_error = [](int error_code) {
@@ -866,8 +1005,8 @@ int main(int argc, char **argv) {
 		}
 	};
 
-	const auto recording_error_payload = [&backend](std::string_view fallback_message = {}) {
-		auto message = backend->GetLastRecordingError();
+	const auto recording_error_payload = [&get_svo_recording_error](std::string_view fallback_message = {}) {
+		auto message = get_svo_recording_error();
 		if (message.empty()) {
 			message = std::string(fallback_message);
 		}
@@ -1001,6 +1140,7 @@ int main(int argc, char **argv) {
 		switch (req->command_id) {
 		case CONTROL_MSG_CMD_RESET_FRAME_COUNT: {
 			spdlog::info("control: RESET_FRAME_COUNT requested");
+			std::lock_guard lock(backend_control_mutex);
 			auto err = backend->ResetFrameCount();
 			if (err != backends::ERR_OK) {
 				spdlog::error("resetting frame count: {}", err);
@@ -1013,6 +1153,7 @@ int main(int argc, char **argv) {
 		}
 		case CONTROL_MSG_CMD_GET_SOURCE_INFO: {
 			spdlog::debug("control: GET_SOURCE_INFO requested");
+			std::lock_guard lock(backend_control_mutex);
 			const auto info = backend->GetSourceInfo();
 			source_info_response_v1_t response{};
 			response.source_kind = info.source_kind;
@@ -1042,7 +1183,8 @@ int main(int argc, char **argv) {
 			}
 
 			spdlog::info("control: SEEK_TIMESTAMP_NS requested target={}", seek_request.target_timestamp_ns);
-			auto result = backend->SeekTimestampNs(seek_request.target_timestamp_ns);
+			std::lock_guard lock(backend_control_mutex);
+			auto result = seek_timestamp(seek_request.target_timestamp_ns);
 			if (!result) {
 				spdlog::error("seeking by timestamp failed: {}", result.error());
 				send_response(req->command_id, map_control_error(result.error()));
@@ -1097,7 +1239,10 @@ int main(int argc, char **argv) {
 			}
 
 			spdlog::info("control: START_RECORDING requested path='{}'", output_path);
-			auto result = backend->StartRecording(output_path);
+			std::lock_guard lock(backend_control_mutex);
+			auto result = start_svo_recording(backends::svo_recording_request_t{
+				.output_path = output_path,
+			});
 			if (!result) {
 				spdlog::error("starting recording failed: {}", result.error());
 				const auto payload = recording_error_payload("starting recording failed");
@@ -1114,7 +1259,8 @@ int main(int argc, char **argv) {
 		}
 		case CONTROL_MSG_CMD_STOP_RECORDING: {
 			spdlog::info("control: STOP_RECORDING requested");
-			auto result = backend->StopRecording();
+			std::lock_guard lock(backend_control_mutex);
+			auto result = stop_svo_recording();
 			if (!result) {
 				spdlog::error("stopping recording failed: {}", result.error());
 				const auto payload = recording_error_payload("stopping recording failed");
@@ -1131,7 +1277,8 @@ int main(int argc, char **argv) {
 		}
 		case CONTROL_MSG_CMD_GET_RECORDING_STATUS: {
 			spdlog::debug("control: GET_RECORDING_STATUS requested");
-			auto result = backend->GetRecordingStatus();
+			std::lock_guard lock(backend_control_mutex);
+			auto result = get_svo_recording_status();
 			if (!result) {
 				spdlog::error("query recording status failed: {}", result.error());
 				const auto payload = recording_error_payload("query recording status failed");
@@ -1155,6 +1302,9 @@ int main(int argc, char **argv) {
 
 	backend->Shutdown();
 	send_status(MODULE_STATUS_OFFLINE);
+	if (nats_service) {
+		nats_service->Stop();
+	}
 
 	spdlog::info("normally exit");
 	return 0;

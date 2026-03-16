@@ -8,6 +8,7 @@ struct cvmmap_target_t {
 	std::string instance{};
 	std::string prefix{};
 	std::string base_name{};
+	std::string nats_target_key{};
 	std::string shm_name{};
 	std::string zmq_addr{};
 	std::string zmq_control_addr{};

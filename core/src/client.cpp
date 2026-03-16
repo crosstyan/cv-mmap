@@ -1,4 +1,5 @@
 #include <cvmmap/client.hpp>
+#include <cvmmap/nats_client.hpp>
 #include <cvmmap/parser.hpp>
 
 #include <spdlog/spdlog.h>
@@ -91,7 +92,31 @@ ControlError make_control_error(int32_t code, std::string_view message) {
   };
 }
 
+bool has_svo_options(const RecordingRequest &request) {
+  return request.svo_options.has_value() &&
+         (request.svo_options->compression_mode.has_value() ||
+          request.svo_options->bitrate.has_value() ||
+          request.svo_options->target_framerate.has_value() ||
+          request.svo_options->transcode_streaming_input.has_value());
+}
+
+bool has_mcap_options(const RecordingRequest &request) {
+  return request.mcap_options.has_value() &&
+         (request.mcap_options->compression.has_value() ||
+          request.mcap_options->topic.has_value() ||
+          request.mcap_options->depth_topic.has_value() ||
+          request.mcap_options->body_topic.has_value() ||
+          request.mcap_options->frame_id.has_value());
+}
+
 } // namespace
+
+bool ControlCapabilities::supports_recording_format(
+    const RecordingFormat format) const {
+  return std::find(available_recording_formats.begin(),
+                   available_recording_formats.end(),
+                   format) != available_recording_formats.end();
+}
 
 struct SharedBuffer {
   SharedBuffer(int shm_fd) {
@@ -216,6 +241,9 @@ struct CvMmapClient::impl {
   std::string zmq_body_addr{};
   std::string zmq_control_addr{};
 
+  // Optional NATS client for control/body/status
+  std::unique_ptr<NatsControlClient> nats_client{};
+
   bool has_init = false;
   std::atomic_bool is_running = false;
 
@@ -243,6 +271,7 @@ struct CvMmapClient::impl {
   void init();
   void start();
   void stop();
+  void sync_nats_callbacks();
 
   void polling_task_();
 
@@ -263,9 +292,14 @@ void CvMmapClient::impl::init() {
   if (has_init) {
     return;
   }
+  // Frame sync always uses ZMQ PUB/SUB
   socket = zmq::socket_t(app::global_zmq_context(), zmq::socket_type::sub);
-  body_socket = zmq::socket_t(app::global_zmq_context(), zmq::socket_type::sub);
-  control_socket = zmq::socket_t(app::global_zmq_context(), zmq::socket_type::req);
+
+  if (!nats_client) {
+    // ZMQ path: body tracking and control also use ZMQ
+    body_socket = zmq::socket_t(app::global_zmq_context(), zmq::socket_type::sub);
+    control_socket = zmq::socket_t(app::global_zmq_context(), zmq::socket_type::req);
+  }
   has_init = true;
 }
 
@@ -273,20 +307,27 @@ void CvMmapClient::impl::start() {
   if (is_running.load(std::memory_order_acquire)) {
     return;
   }
+  // Frame sync always uses ZMQ PUB/SUB
   socket.set(zmq::sockopt::conflate_t{}, true);
   socket.set(zmq::sockopt::rcvtimeo_t{}, 100); // 100ms timeout
   socket.connect(zmq_addr);
   socket.set(zmq::sockopt::subscribe_t{}, "");
 
-  if (on_body_tracking_callback) {
-    body_socket.set(zmq::sockopt::conflate_t{}, true);
-    body_socket.set(zmq::sockopt::rcvtimeo_t{}, 100);
-    body_socket.connect(zmq_body_addr);
-    body_socket.set(zmq::sockopt::subscribe_t{}, "");
-  }
+  if (nats_client) {
+    sync_nats_callbacks();
+    nats_client->Start();
+  } else {
+    // ZMQ path: body tracking via ZMQ PUB/SUB
+    if (on_body_tracking_callback) {
+      body_socket.set(zmq::sockopt::conflate_t{}, true);
+      body_socket.set(zmq::sockopt::rcvtimeo_t{}, 100);
+      body_socket.connect(zmq_body_addr);
+      body_socket.set(zmq::sockopt::subscribe_t{}, "");
+    }
 
-  // Connect control socket (lazy connect, actual timeout set per-request)
-  control_socket.connect(zmq_control_addr);
+    // Connect control socket (lazy connect, actual timeout set per-request)
+    control_socket.connect(zmq_control_addr);
+  }
 
   is_running.store(true, std::memory_order_release);
   polling_thread =
@@ -297,9 +338,42 @@ void CvMmapClient::impl::start() {
   }
 }
 
+void CvMmapClient::impl::sync_nats_callbacks() {
+  if (!nats_client) {
+    return;
+  }
+
+  if (on_body_tracking_callback) {
+    nats_client->SetBodyTrackingCallback(
+        [this](const body_tracking_frame_t &frame) {
+          if (on_body_tracking_callback) {
+            on_body_tracking_callback(frame);
+          }
+        });
+  } else {
+    nats_client->SetBodyTrackingCallback({});
+  }
+
+  if (on_event_callback) {
+    nats_client->SetModuleStatusCallback(
+        [this](int32_t status_code) {
+          if (on_event_callback) {
+            on_event_callback(static_cast<ModuleStatus>(status_code));
+          }
+        });
+  } else {
+    nats_client->SetModuleStatusCallback({});
+  }
+}
+
 void CvMmapClient::impl::stop() {
   if (not has_init || not is_running.load(std::memory_order_acquire)) {
     return;
+  }
+
+  // Stop NATS client if active
+  if (nats_client) {
+    nats_client->Stop();
   }
 
   // Signal the thread to stop
@@ -312,10 +386,12 @@ void CvMmapClient::impl::stop() {
 }
 
 void CvMmapClient::impl::polling_task_() {
+  // When NATS is active, body tracking comes via NATS subscription, not ZMQ
+  const bool zmq_body_active = on_body_tracking_callback && !nats_client;
   while (is_running.load(std::memory_order_acquire)) {
     std::array<zmq::pollitem_t, 2> poll_items{{
         {socket.handle(), 0, ZMQ_POLLIN, 0},
-        {on_body_tracking_callback ? body_socket.handle() : nullptr, 0, ZMQ_POLLIN, 0},
+        {zmq_body_active ? body_socket.handle() : nullptr, 0, ZMQ_POLLIN, 0},
     }};
     try {
       zmq::poll(poll_items, std::chrono::milliseconds{100});
@@ -324,7 +400,7 @@ void CvMmapClient::impl::polling_task_() {
       continue;
     }
 
-    if (on_body_tracking_callback && (poll_items[1].revents & ZMQ_POLLIN)) {
+    if (zmq_body_active && (poll_items[1].revents & ZMQ_POLLIN)) {
       auto body_message = zmq::message_t{};
       auto body_res = body_socket.recv(body_message, zmq::recv_flags::dontwait);
       if (body_res) {
@@ -360,8 +436,8 @@ void CvMmapClient::impl::polling_task_() {
 
     const uint8_t magic = buf[0];
 
-    // Handle module status messages
-    if (magic == MODULE_STATUS_MAGIC) {
+    // Handle module status messages (only via ZMQ when NATS is not active)
+    if (magic == MODULE_STATUS_MAGIC && !nats_client) {
       if (buf.size() < sizeof(module_status_message_t)) {
         spdlog::error("unexpected `module_status_message` size {}", buf.size());
         continue;
@@ -575,6 +651,21 @@ CvMmapClient::CvMmapClient(const std::string &instance_name)
   pimpl_->init();
 }
 
+CvMmapClient::CvMmapClient(const ClientConfig &config)
+    : pimpl_(std::make_unique<impl>()) {
+  auto resolved = resolve_cvmmap_target_or_throw(config.instance_name);
+  pimpl_->instance_name = resolved.instance;
+  pimpl_->shm_name = resolved.shm_name;
+  pimpl_->zmq_addr = resolved.zmq_addr;
+  pimpl_->zmq_body_addr = resolved.zmq_body_addr;
+  pimpl_->zmq_control_addr = resolved.zmq_control_addr;
+  if (config.nats_url) {
+    pimpl_->nats_client = std::make_unique<NatsControlClient>(
+        resolved.nats_target_key, *config.nats_url);
+  }
+  pimpl_->init();
+}
+
 CvMmapClient::~CvMmapClient() {
   if (pimpl_) {
     pimpl_->stop();
@@ -612,10 +703,12 @@ void CvMmapClient::SetFramePlanesCallback(OnFramePlanesCallback &&cb) {
 
 void CvMmapClient::SetBodyTrackingCallback(OnBodyTrackingCallback &&cb) {
   pimpl_->on_body_tracking_callback = std::move(cb);
+  pimpl_->sync_nats_callbacks();
 }
 
 void CvMmapClient::SetEventCallback(OnEventCallback &&cb) {
   pimpl_->on_event_callback = std::move(cb);
+  pimpl_->sync_nats_callbacks();
 }
 
 const std::string &CvMmapClient::Name() const { return pimpl_->instance_name; }
@@ -625,6 +718,10 @@ void CvMmapClient::Start() { return pimpl_->start(); }
 void CvMmapClient::Stop() { return pimpl_->stop(); }
 
 int32_t CvMmapClient::ResetFrameCount(std::chrono::milliseconds timeout) {
+  if (pimpl_->nats_client) {
+    auto result = pimpl_->nats_client->ResetFrameCount(timeout);
+    return result.value_or(result.error());
+  }
   auto response =
       pimpl_->send_control_request(CONTROL_MSG_CMD_RESET_FRAME_COUNT, timeout);
   if (!response) {
@@ -635,6 +732,9 @@ int32_t CvMmapClient::ResetFrameCount(std::chrono::milliseconds timeout) {
 
 std::expected<SourceInfo, int32_t>
 CvMmapClient::GetSourceInfo(std::chrono::milliseconds timeout) {
+  if (pimpl_->nats_client) {
+    return pimpl_->nats_client->GetSourceInfo(timeout);
+  }
   auto response =
       pimpl_->send_control_request(CONTROL_MSG_CMD_GET_SOURCE_INFO, timeout);
   if (!response) {
@@ -668,6 +768,9 @@ CvMmapClient::GetSourceInfo(std::chrono::milliseconds timeout) {
 std::expected<SeekResult, int32_t>
 CvMmapClient::SeekTimestampNs(uint64_t timestamp_ns,
                               std::chrono::milliseconds timeout) {
+  if (pimpl_->nats_client) {
+    return pimpl_->nats_client->SeekTimestampNs(timestamp_ns, timeout);
+  }
   seek_timestamp_request_v1_t request{};
   request.target_timestamp_ns = timestamp_ns;
   const auto payload = std::span<const uint8_t>(
@@ -698,9 +801,45 @@ CvMmapClient::SeekTimestampNs(uint64_t timestamp_ns,
   };
 }
 
+std::expected<ControlCapabilities, ControlError>
+CvMmapClient::GetCapabilities(std::chrono::milliseconds timeout) {
+  if (pimpl_->nats_client) {
+    return pimpl_->nats_client->GetCapabilities(timeout);
+  }
+
+  auto info = GetSourceInfo(timeout);
+  if (!info) {
+    return std::unexpected(make_control_error(info.error()));
+  }
+
+  ControlCapabilities capabilities{
+      .can_seek = info->can_seek(),
+  };
+  if (info->can_record()) {
+    capabilities.available_recording_formats.push_back(RecordingFormat::Svo);
+  }
+  return capabilities;
+}
+
 std::expected<RecordingStatus, ControlError>
-CvMmapClient::StartRecording(std::string_view output_path,
+CvMmapClient::StartRecording(const RecordingRequest &request,
                              std::chrono::milliseconds timeout) {
+  if (pimpl_->nats_client) {
+    return pimpl_->nats_client->StartRecording(request, timeout);
+  }
+
+  if (request.format != RecordingFormat::Svo) {
+    return std::unexpected(
+        make_control_error(CONTROL_RESPONSE_UNSUPPORTED,
+                           "legacy ZMQ control only supports SVO recording"));
+  }
+  if (has_svo_options(request) || has_mcap_options(request)) {
+    return std::unexpected(
+        make_control_error(CONTROL_RESPONSE_UNSUPPORTED,
+                           "structured recording options require NATS control"));
+  }
+
+  const auto output_path = std::string_view(request.output_path);
   if (output_path.empty()) {
     return std::unexpected(
         make_control_error(CONTROL_RESPONSE_INVALID_PAYLOAD,
@@ -718,12 +857,12 @@ CvMmapClient::StartRecording(std::string_view output_path,
                            "recording path is too long"));
   }
 
-  recording_start_request_v1_t request{};
-  request.path_length = static_cast<uint16_t>(output_path.size());
+  recording_start_request_v1_t wire_request{};
+  wire_request.path_length = static_cast<uint16_t>(output_path.size());
 
-  std::vector<uint8_t> payload(sizeof(request) + output_path.size());
-  std::memcpy(payload.data(), &request, sizeof(request));
-  std::memcpy(payload.data() + sizeof(request), output_path.data(), output_path.size());
+  std::vector<uint8_t> payload(sizeof(wire_request) + output_path.size());
+  std::memcpy(payload.data(), &wire_request, sizeof(wire_request));
+  std::memcpy(payload.data() + sizeof(wire_request), output_path.data(), output_path.size());
 
   auto response = pimpl_->send_control_request(
       CONTROL_MSG_CMD_START_RECORDING,
@@ -744,7 +883,27 @@ CvMmapClient::StartRecording(std::string_view output_path,
 }
 
 std::expected<RecordingStatus, ControlError>
-CvMmapClient::StopRecording(std::chrono::milliseconds timeout) {
+CvMmapClient::StartRecording(std::string_view output_path,
+                             std::chrono::milliseconds timeout) {
+  return StartRecording(
+      RecordingRequest{
+          .format = RecordingFormat::Svo,
+          .output_path = std::string(output_path),
+      },
+      timeout);
+}
+
+std::expected<RecordingStatus, ControlError>
+CvMmapClient::StopRecording(RecordingFormat format,
+                            std::chrono::milliseconds timeout) {
+  if (pimpl_->nats_client) {
+    return pimpl_->nats_client->StopRecording(format, timeout);
+  }
+  if (format != RecordingFormat::Svo) {
+    return std::unexpected(
+        make_control_error(CONTROL_RESPONSE_UNSUPPORTED,
+                           "legacy ZMQ control only supports SVO recording"));
+  }
   auto response =
       pimpl_->send_control_request(CONTROL_MSG_CMD_STOP_RECORDING, timeout);
   if (!response) {
@@ -762,7 +921,21 @@ CvMmapClient::StopRecording(std::chrono::milliseconds timeout) {
 }
 
 std::expected<RecordingStatus, ControlError>
-CvMmapClient::GetRecordingStatus(std::chrono::milliseconds timeout) {
+CvMmapClient::StopRecording(std::chrono::milliseconds timeout) {
+  return StopRecording(RecordingFormat::Svo, timeout);
+}
+
+std::expected<RecordingStatus, ControlError>
+CvMmapClient::GetRecordingStatus(RecordingFormat format,
+                                 std::chrono::milliseconds timeout) {
+  if (pimpl_->nats_client) {
+    return pimpl_->nats_client->GetRecordingStatus(format, timeout);
+  }
+  if (format != RecordingFormat::Svo) {
+    return std::unexpected(
+        make_control_error(CONTROL_RESPONSE_UNSUPPORTED,
+                           "legacy ZMQ control only supports SVO recording"));
+  }
   auto response = pimpl_->send_control_request(
       CONTROL_MSG_CMD_GET_RECORDING_STATUS, timeout);
   if (!response) {
@@ -777,5 +950,10 @@ CvMmapClient::GetRecordingStatus(std::chrono::milliseconds timeout) {
     return std::unexpected(make_control_error(parsed.error()));
   }
   return *parsed;
+}
+
+std::expected<RecordingStatus, ControlError>
+CvMmapClient::GetRecordingStatus(std::chrono::milliseconds timeout) {
+  return GetRecordingStatus(RecordingFormat::Svo, timeout);
 }
 } // namespace cvmmap
