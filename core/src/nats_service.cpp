@@ -454,9 +454,9 @@ void NatsControlService::SetHandlers(NatsControlHandlers handlers) {
 	pimpl_->handlers = std::move(handlers);
 }
 
-void NatsControlService::Start() {
+bool NatsControlService::Start() {
 	if (pimpl_->started) {
-		return;
+		return true;
 	}
 
 	natsOptions *options = nullptr;
@@ -470,7 +470,7 @@ void NatsControlService::Start() {
 			"nats connect to '{}': {}",
 			pimpl_->nats_url,
 			natsStatus_GetText(status));
-		return;
+		return false;
 	}
 
 	pimpl_->started = true;
@@ -526,6 +526,7 @@ void NatsControlService::Start() {
 		pimpl_.get());
 
 	spdlog::info("nats control service started for target '{}'", target_key);
+	return true;
 }
 
 void NatsControlService::Stop() {

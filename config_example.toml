@@ -9,7 +9,7 @@ prefix = '/tmp'
 # derived names/endpoints:
 # shm_name: {namespace}_{name}
 # zmq_addr: ipc://{prefix}/{namespace}_{name}
-# control_addr: ipc://{prefix}/{namespace}_{name}_control
+# nats_target_key: {namespace}_{name} with '.' normalized to '_'
 
 # ABI VERSION NOTES:
 # This producer emits ABI v2 shared-memory metadata (256-byte header) while
@@ -21,8 +21,14 @@ prefix = '/tmp'
 #   2. Then deploy producer-only-v2 builds.
 #   3. Never deploy producer-v2 before consumers are ready.
 #
-# Control wire remains v1 throughout the migration window.
+# Frame sync remains ZMQ v1 throughout the migration window.
+# Control/status use protobuf over NATS.
+# Body tracking uses the existing cvmmap body payload bytes over NATS.
 # See docs/abi_v2_contract_checklist.md for full v2 field specifications.
+[nats]
+enabled = true
+url = "nats://localhost:4222"
+
 [video]
 backend = 'dummy'
 use_finite_as_infinite_stream = false

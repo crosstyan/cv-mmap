@@ -107,10 +107,9 @@ struct RecordingRequest {
 
 struct ClientConfig {
 	std::string instance_name;
-	/// If set, control methods use NATS request-reply instead of ZMQ REQ/REP.
-	/// Body tracking and module status are also received via NATS subscriptions.
+	/// Control, body tracking, and module status use NATS.
 	/// Frame sync stays on ZMQ PUB/SUB (unchanged).
-	std::optional<std::string> nats_url;
+	std::optional<std::string> nats_url{};
 };
 
 class CvMmapClient {
@@ -125,6 +124,8 @@ public:
 
 	static constexpr auto DEFAULT_CONTROL_TIMEOUT =
 		std::chrono::milliseconds{1000};
+	static constexpr std::string_view DEFAULT_NATS_URL =
+		"nats://localhost:4222";
 
 	explicit CvMmapClient(const std::string &instance_name);
 	explicit CvMmapClient(const ClientConfig &config);

@@ -11,8 +11,6 @@ struct cvmmap_target_t {
 	std::string nats_target_key{};
 	std::string shm_name{};
 	std::string zmq_addr{};
-	std::string zmq_control_addr{};
-	std::string zmq_body_addr{};
 };
 
 [[nodiscard]]

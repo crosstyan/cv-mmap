@@ -34,7 +34,8 @@ public:
 	NatsControlService &operator=(const NatsControlService &) = delete;
 
 	void SetHandlers(NatsControlHandlers handlers);
-	void Start();
+	[[nodiscard]]
+	bool Start();
 	void Stop();
 
 	void PublishModuleStatus(int32_t status_code);

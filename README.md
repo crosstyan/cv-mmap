@@ -1,7 +1,7 @@
 # cv-mmap
 
 `cv-mmap` is the producer/runtime repository for the cvmmap shared-memory video IPC stack.
-It captures frames from a real backend or a built-in synthetic backend, writes them into POSIX shared memory, and publishes sync and control messages over ZeroMQ IPC.
+It captures frames from a real backend or a built-in synthetic backend, writes them into POSIX shared memory, publishes frame sync over ZeroMQ IPC, and serves control/status/body over NATS.
 
 This repo also installs the reusable C++ package `cvmmap-core`, which is the canonical consumer-facing API used by:
 
@@ -46,7 +46,9 @@ What stays in `cv-mmap` and is not part of `cvmmap-core`:
 The current protocol state is intentionally mixed-version:
 
 - shared-memory frame metadata: v1 and v2 layouts exist, consumers are expected to handle both
-- sync/control wire messages: v1
+- frame sync wire: v1 over ZMQ
+- control and module status: protobuf over NATS
+- body tracking: raw `cvmmap_body_tracking_v1` payload bytes over NATS
 
 `cvmmap-core` owns the shared consumer-side protocol surface for:
 
@@ -58,13 +60,15 @@ The current protocol state is intentionally mixed-version:
 Normative spec documents live under `docs/`, especially:
 
 - `docs/cvmmap_sync_v1.ksy`
-- `docs/cvmmap_control_v1.ksy`
+- `core/proto/cvmmap/control.proto`
 - `docs/cvmmap_shm_metadata_v1_v2.ksy`
 - `docs/cvmmap_body_tracking_v1.ksy`
 - `docs/abi_changelog.md`
 - `docs/abi_v2_contract_checklist.md`
 - `docs/abi_v2_migration_guide.md`
 - `docs/python-client.md`
+
+Legacy control-wire fixtures and parsers remain in the tree for compatibility tests under `docs/cvmmap_control_v1.ksy`, but the live control plane is the protobuf schema in `core/proto/cvmmap/control.proto`.
 
 ## ZED Body Tracking Frame Metadata
 

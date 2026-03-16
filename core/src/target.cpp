@@ -148,9 +148,9 @@ ResolvedTarget resolve_target(const std::string &name_or_uri) {
 	auto base_name = std::format("{}_{}", ns, instance);
 	auto nats_target_key = base_name;
 	std::replace(nats_target_key.begin(), nats_target_key.end(), '.', '_');
-	auto control_path = std::format("{}/{}_control", prefix, base_name);
-	if (control_path.size() > UNIX_PATH_MAX_LEN) {
-		throw std::invalid_argument(std::format("cvmmap ipc path too long ({}>{})", control_path.size(), UNIX_PATH_MAX_LEN));
+	auto sync_path = std::format("{}/{}", prefix, base_name);
+	if (sync_path.size() > UNIX_PATH_MAX_LEN) {
+		throw std::invalid_argument(std::format("cvmmap ipc path too long ({}>{})", sync_path.size(), UNIX_PATH_MAX_LEN));
 	}
 
 	return ResolvedTarget{
@@ -172,8 +172,6 @@ cvmmap_target_t resolve_cvmmap_target_or_throw(const std::string &name_or_uri) {
 	target.nats_target_key = resolved.nats_target_key;
 	target.shm_name     = resolved.base_name;
 	target.zmq_addr     = std::format("ipc://{}/{}", resolved.prefix, resolved.base_name);
-	target.zmq_control_addr = std::format("ipc://{}/{}_control", resolved.prefix, resolved.base_name);
-	target.zmq_body_addr = std::format("ipc://{}/{}_body", resolved.prefix, resolved.base_name);
 	return target;
 }
 

@@ -35,44 +35,6 @@ constexpr size_t CV_MMAP_MAGIC_LEN = frame_metadata_t::CV_MMAP_MAGIC.size();
 static_assert(CV_MMAP_MAGIC_LEN == 8);
 
 namespace {
-
-std::expected<RecordingStatus, int32_t> parse_recording_status_payload(
-    std::span<const uint8_t> payload) {
-  if (payload.size() < sizeof(recording_status_response_v1_t)) {
-    return std::unexpected(CONTROL_RESPONSE_INVALID_MSG_SIZE);
-  }
-
-  recording_status_response_v1_t wire{};
-  std::memcpy(&wire, payload.data(), sizeof(wire));
-  if (wire.struct_size < sizeof(recording_status_response_v1_t)) {
-    return std::unexpected(CONTROL_RESPONSE_INVALID_PAYLOAD);
-  }
-
-  const auto expected_size = sizeof(recording_status_response_v1_t) +
-                             static_cast<size_t>(wire.path_length);
-  if (payload.size() != expected_size) {
-    return std::unexpected(CONTROL_RESPONSE_INVALID_MSG_SIZE);
-  }
-
-  auto active_path = std::string{};
-  if (wire.path_length > 0) {
-    const auto *path_begin = reinterpret_cast<const char *>(payload.data() +
-                                                           sizeof(recording_status_response_v1_t));
-    active_path.assign(path_begin, path_begin + wire.path_length);
-  }
-
-  return RecordingStatus{
-      .format = wire.recording_format,
-      .can_record = (wire.flags & RECORDING_STATUS_FLAG_CAN_RECORD) != 0,
-      .is_recording = (wire.flags & RECORDING_STATUS_FLAG_IS_RECORDING) != 0,
-      .is_paused = (wire.flags & RECORDING_STATUS_FLAG_IS_PAUSED) != 0,
-      .last_frame_ok = (wire.flags & RECORDING_STATUS_FLAG_LAST_FRAME_OK) != 0,
-      .frames_ingested = wire.frames_ingested,
-      .frames_encoded = wire.frames_encoded,
-      .active_path = std::move(active_path),
-  };
-}
-
 ControlError make_control_error(int32_t code, std::span<const uint8_t> payload = {}) {
   auto message = std::string{};
   if (!payload.empty()) {
@@ -90,23 +52,6 @@ ControlError make_control_error(int32_t code, std::string_view message) {
       .code = code,
       .message = std::string(message),
   };
-}
-
-bool has_svo_options(const RecordingRequest &request) {
-  return request.svo_options.has_value() &&
-         (request.svo_options->compression_mode.has_value() ||
-          request.svo_options->bitrate.has_value() ||
-          request.svo_options->target_framerate.has_value() ||
-          request.svo_options->transcode_streaming_input.has_value());
-}
-
-bool has_mcap_options(const RecordingRequest &request) {
-  return request.mcap_options.has_value() &&
-         (request.mcap_options->compression.has_value() ||
-          request.mcap_options->topic.has_value() ||
-          request.mcap_options->depth_topic.has_value() ||
-          request.mcap_options->body_topic.has_value() ||
-          request.mcap_options->frame_id.has_value());
 }
 
 } // namespace
@@ -226,11 +171,6 @@ private:
 };
 
 struct CvMmapClient::impl {
-  struct control_response_t {
-    int32_t response_code{CONTROL_RESPONSE_ERROR};
-    std::vector<uint8_t> payload{};
-  };
-
   /**
    * inputs, expected to be filled
    */
@@ -238,19 +178,12 @@ struct CvMmapClient::impl {
   std::string instance_name{};
   std::string shm_name{};
   std::string zmq_addr{};
-  std::string zmq_body_addr{};
-  std::string zmq_control_addr{};
-
-  // Optional NATS client for control/body/status
   std::unique_ptr<NatsControlClient> nats_client{};
 
   bool has_init = false;
   std::atomic_bool is_running = false;
 
   zmq::socket_t socket{};
-  zmq::socket_t body_socket{};
-  zmq::socket_t control_socket{};
-  std::mutex control_mutex{}; // protect control_socket for thread-safe access
 
   std::unique_ptr<SharedBuffer> shared_buffer{};
   CvMmapClient::OnFrameCallback on_frame_callback{};
@@ -274,18 +207,6 @@ struct CvMmapClient::impl {
   void sync_nats_callbacks();
 
   void polling_task_();
-
-  /**
-   * @brief Send a control message and wait for response
-   * @param command_id The command to send
-   * @param timeout Timeout for the request
-   * @param payload Optional request payload data
-   * @return Response code and optional response payload
-   */
-  std::expected<control_response_t, int32_t>
-  send_control_request(int32_t command_id,
-                       std::chrono::milliseconds timeout,
-                       std::span<const uint8_t> payload = {});
 };
 
 void CvMmapClient::impl::init() {
@@ -294,12 +215,6 @@ void CvMmapClient::impl::init() {
   }
   // Frame sync always uses ZMQ PUB/SUB
   socket = zmq::socket_t(app::global_zmq_context(), zmq::socket_type::sub);
-
-  if (!nats_client) {
-    // ZMQ path: body tracking and control also use ZMQ
-    body_socket = zmq::socket_t(app::global_zmq_context(), zmq::socket_type::sub);
-    control_socket = zmq::socket_t(app::global_zmq_context(), zmq::socket_type::req);
-  }
   has_init = true;
 }
 
@@ -313,20 +228,11 @@ void CvMmapClient::impl::start() {
   socket.connect(zmq_addr);
   socket.set(zmq::sockopt::subscribe_t{}, "");
 
-  if (nats_client) {
-    sync_nats_callbacks();
-    nats_client->Start();
+  sync_nats_callbacks();
+  if (!nats_client || !nats_client->Start()) {
+    throw std::runtime_error("failed to start NATS control client");
   } else {
-    // ZMQ path: body tracking via ZMQ PUB/SUB
-    if (on_body_tracking_callback) {
-      body_socket.set(zmq::sockopt::conflate_t{}, true);
-      body_socket.set(zmq::sockopt::rcvtimeo_t{}, 100);
-      body_socket.connect(zmq_body_addr);
-      body_socket.set(zmq::sockopt::subscribe_t{}, "");
-    }
-
-    // Connect control socket (lazy connect, actual timeout set per-request)
-    control_socket.connect(zmq_control_addr);
+    spdlog::debug("cvmmap client NATS control/body connected");
   }
 
   is_running.store(true, std::memory_order_release);
@@ -386,36 +292,15 @@ void CvMmapClient::impl::stop() {
 }
 
 void CvMmapClient::impl::polling_task_() {
-  // When NATS is active, body tracking comes via NATS subscription, not ZMQ
-  const bool zmq_body_active = on_body_tracking_callback && !nats_client;
   while (is_running.load(std::memory_order_acquire)) {
-    std::array<zmq::pollitem_t, 2> poll_items{{
+    std::array<zmq::pollitem_t, 1> poll_items{{
         {socket.handle(), 0, ZMQ_POLLIN, 0},
-        {zmq_body_active ? body_socket.handle() : nullptr, 0, ZMQ_POLLIN, 0},
     }};
     try {
       zmq::poll(poll_items, std::chrono::milliseconds{100});
     } catch (const zmq::error_t &e) {
       spdlog::error("client poll error: {}", e.what());
       continue;
-    }
-
-    if (zmq_body_active && (poll_items[1].revents & ZMQ_POLLIN)) {
-      auto body_message = zmq::message_t{};
-      auto body_res = body_socket.recv(body_message, zmq::recv_flags::dontwait);
-      if (body_res) {
-        const auto body_buf = std::span<const uint8_t>(
-            static_cast<uint8_t *>(body_message.data()), *body_res);
-        if (!body_buf.empty() && body_buf[0] == BODY_TRACKING_MAGIC &&
-            on_body_tracking_callback) {
-          auto parsed = parse_body_tracking_message(body_buf);
-          if (!parsed) {
-            spdlog::error("body packet parse error: {}", parsed.error());
-          } else {
-            on_body_tracking_callback(*parsed);
-          }
-        }
-      }
     }
 
     if (!(poll_items[0].revents & ZMQ_POLLIN)) {
@@ -435,25 +320,6 @@ void CvMmapClient::impl::polling_task_() {
     }
 
     const uint8_t magic = buf[0];
-
-    // Handle module status messages (only via ZMQ when NATS is not active)
-    if (magic == MODULE_STATUS_MAGIC && !nats_client) {
-      if (buf.size() < sizeof(module_status_message_t)) {
-        spdlog::error("unexpected `module_status_message` size {}", buf.size());
-        continue;
-      }
-      const auto &status_msg =
-          *reinterpret_cast<const module_status_message_t *>(buf.data());
-      std::string_view label = status_msg.label();
-      if (label != instance_name) {
-        spdlog::debug("status label mismatch: {} != {}", label, instance_name);
-        continue;
-      }
-      if (on_event_callback) {
-        on_event_callback(static_cast<ModuleStatus>(status_msg.module_status));
-      }
-      continue;
-    }
 
     // Handle frame sync messages
     if (magic == FRAME_TOPIC_MAGIC) {
@@ -538,116 +404,14 @@ void CvMmapClient::impl::polling_task_() {
   }
 }
 
-std::expected<CvMmapClient::impl::control_response_t, int32_t>
-CvMmapClient::impl::send_control_request(int32_t command_id,
-                                         std::chrono::milliseconds timeout_ms,
-                                         std::span<const uint8_t> payload) {
-  std::lock_guard<std::mutex> lock(control_mutex);
-  constexpr size_t request_header_size =
-      offsetof(control_message_request_t, request_message_length) +
-      sizeof(uint16_t);
-  constexpr size_t response_header_size =
-      offsetof(control_message_response_t, response_message_length) +
-      sizeof(uint16_t);
-
-  // Set timeout for this request
-  control_socket.set(zmq::sockopt::rcvtimeo,
-                     static_cast<int>(timeout_ms.count()));
-  control_socket.set(zmq::sockopt::sndtimeo,
-                     static_cast<int>(timeout_ms.count()));
-
-  // Small object optimization: use stack buffer for small payloads, heap for
-  // large ones
-  constexpr size_t SSO_THRESHOLD = 64;
-  const size_t total_size = request_header_size + payload.size();
-
-  alignas(control_message_request_t)
-      uint8_t stack_buffer[request_header_size + SSO_THRESHOLD];
-  std::unique_ptr<uint8_t[]> heap_buffer;
-  uint8_t *buffer_ptr;
-
-  if (payload.size() <= SSO_THRESHOLD) {
-    buffer_ptr = stack_buffer;
-  } else {
-    heap_buffer = std::make_unique<uint8_t[]>(total_size);
-    buffer_ptr = heap_buffer.get();
-  }
-
-  // Build request message using placement new
-  auto *request = new (buffer_ptr) control_message_request_t{};
-  request->command_id = command_id;
-  request->set_label(instance_name);
-  request->request_message_length = static_cast<uint16_t>(payload.size());
-  if (!payload.empty()) {
-    std::copy(payload.begin(), payload.end(),
-              buffer_ptr + request_header_size);
-  }
-
-  // Send request
-  try {
-    auto send_res = control_socket.send(zmq::buffer(buffer_ptr, total_size),
-                                        zmq::send_flags::none);
-    if (!send_res) {
-      spdlog::error("control request send timeout");
-      return std::unexpected(CONTROL_RESPONSE_TIMEOUT);
-    }
-  } catch (const zmq::error_t &e) {
-    spdlog::error("control request send error: {}", e.what());
-    return std::unexpected(CONTROL_RESPONSE_ERROR);
-  }
-
-  // Receive response
-  zmq::message_t response_msg;
-  try {
-    auto recv_res = control_socket.recv(response_msg, zmq::recv_flags::none);
-    if (!recv_res) {
-      spdlog::error("control response recv timeout");
-      return std::unexpected(CONTROL_RESPONSE_TIMEOUT);
-    }
-  } catch (const zmq::error_t &e) {
-    spdlog::error("control response recv error: {}", e.what());
-    return std::unexpected(CONTROL_RESPONSE_ERROR);
-  }
-
-  if (response_msg.size() < response_header_size) {
-    spdlog::error("control response too small: {} bytes", response_msg.size());
-    return std::unexpected(CONTROL_RESPONSE_INVALID_MSG_SIZE);
-  }
-
-  const auto *response =
-      static_cast<const control_message_response_t *>(response_msg.data());
-  if (response->_magic != CONTROL_MESSAGE_RESPONSE_MAGIC) {
-    spdlog::error("control response invalid magic: 0x{:02x}", response->_magic);
-    return std::unexpected(CONTROL_RESPONSE_INVALID_MAGIC);
-  }
-
-  const auto payload_size = static_cast<size_t>(response->response_message_length);
-  const auto response_total_size = response_header_size + payload_size;
-  if (response_msg.size() < response_total_size) {
-    spdlog::error("control response payload truncated: {} < {}",
-                  response_msg.size(), response_total_size);
-    return std::unexpected(CONTROL_RESPONSE_INVALID_MSG_SIZE);
-  }
-
-  control_response_t out{};
-  out.response_code = response->response_code;
-  if (payload_size > 0) {
-    const auto *payload_begin = reinterpret_cast<const uint8_t *>(
-        response_msg.data()) +
-        response_header_size;
-    out.payload.assign(payload_begin, payload_begin + payload_size);
-  }
-  return out;
-}
-
 CvMmapClient::CvMmapClient(const std::string &instance_name)
     : pimpl_(std::make_unique<impl>()) {
   auto resolved = resolve_cvmmap_target_or_throw(instance_name);
   pimpl_->instance_name = resolved.instance;
   pimpl_->shm_name = resolved.shm_name;
   pimpl_->zmq_addr = resolved.zmq_addr;
-  pimpl_->zmq_body_addr = resolved.zmq_body_addr;
-  pimpl_->zmq_control_addr = resolved.zmq_control_addr;
+  pimpl_->nats_client = std::make_unique<NatsControlClient>(
+      resolved.nats_target_key, std::string(CvMmapClient::DEFAULT_NATS_URL));
   pimpl_->init();
 }
 
@@ -657,12 +421,9 @@ CvMmapClient::CvMmapClient(const ClientConfig &config)
   pimpl_->instance_name = resolved.instance;
   pimpl_->shm_name = resolved.shm_name;
   pimpl_->zmq_addr = resolved.zmq_addr;
-  pimpl_->zmq_body_addr = resolved.zmq_body_addr;
-  pimpl_->zmq_control_addr = resolved.zmq_control_addr;
-  if (config.nats_url) {
-    pimpl_->nats_client = std::make_unique<NatsControlClient>(
-        resolved.nats_target_key, *config.nats_url);
-  }
+  pimpl_->nats_client = std::make_unique<NatsControlClient>(
+      resolved.nats_target_key,
+      config.nats_url.value_or(std::string(CvMmapClient::DEFAULT_NATS_URL)));
   pimpl_->init();
 }
 
@@ -718,168 +479,48 @@ void CvMmapClient::Start() { return pimpl_->start(); }
 void CvMmapClient::Stop() { return pimpl_->stop(); }
 
 int32_t CvMmapClient::ResetFrameCount(std::chrono::milliseconds timeout) {
-  if (pimpl_->nats_client) {
-    auto result = pimpl_->nats_client->ResetFrameCount(timeout);
-    return result.value_or(result.error());
+  if (!pimpl_->nats_client) {
+    return CONTROL_RESPONSE_ERROR;
   }
-  auto response =
-      pimpl_->send_control_request(CONTROL_MSG_CMD_RESET_FRAME_COUNT, timeout);
+  auto response = pimpl_->nats_client->ResetFrameCount(timeout);
   if (!response) {
     return response.error();
   }
-  return response->response_code;
+  return *response;
 }
 
 std::expected<SourceInfo, int32_t>
 CvMmapClient::GetSourceInfo(std::chrono::milliseconds timeout) {
-  if (pimpl_->nats_client) {
-    return pimpl_->nats_client->GetSourceInfo(timeout);
+  if (!pimpl_->nats_client) {
+    return std::unexpected(CONTROL_RESPONSE_ERROR);
   }
-  auto response =
-      pimpl_->send_control_request(CONTROL_MSG_CMD_GET_SOURCE_INFO, timeout);
-  if (!response) {
-    return std::unexpected(response.error());
-  }
-  if (response->response_code != CONTROL_RESPONSE_OK) {
-    return std::unexpected(response->response_code);
-  }
-  if (response->payload.size() < sizeof(source_info_response_v1_t)) {
-    return std::unexpected(CONTROL_RESPONSE_INVALID_MSG_SIZE);
-  }
-
-  source_info_response_v1_t wire{};
-  std::memcpy(&wire, response->payload.data(), sizeof(wire));
-  if (wire.struct_size < sizeof(source_info_response_v1_t)) {
-    return std::unexpected(CONTROL_RESPONSE_INVALID_PAYLOAD);
-  }
-
-  return SourceInfo{
-      .source_kind = wire.source_kind,
-      .timestamp_domain = wire.timestamp_domain,
-      .flags = wire.flags,
-      .timeline_start_ns = wire.timeline_start_ns,
-      .timeline_end_ns = wire.timeline_end_ns,
-      .duration_ns = wire.duration_ns,
-      .current_timestamp_ns = wire.current_timestamp_ns,
-      .current_frame_count = wire.current_frame_count,
-  };
+  return pimpl_->nats_client->GetSourceInfo(timeout);
 }
 
 std::expected<SeekResult, int32_t>
 CvMmapClient::SeekTimestampNs(uint64_t timestamp_ns,
                               std::chrono::milliseconds timeout) {
-  if (pimpl_->nats_client) {
-    return pimpl_->nats_client->SeekTimestampNs(timestamp_ns, timeout);
+  if (!pimpl_->nats_client) {
+    return std::unexpected(CONTROL_RESPONSE_ERROR);
   }
-  seek_timestamp_request_v1_t request{};
-  request.target_timestamp_ns = timestamp_ns;
-  const auto payload = std::span<const uint8_t>(
-      reinterpret_cast<const uint8_t *>(&request), sizeof(request));
-  auto response = pimpl_->send_control_request(
-      CONTROL_MSG_CMD_SEEK_TIMESTAMP_NS, timeout, payload);
-  if (!response) {
-    return std::unexpected(response.error());
-  }
-  if (response->response_code != CONTROL_RESPONSE_OK) {
-    return std::unexpected(response->response_code);
-  }
-  if (response->payload.size() < sizeof(seek_timestamp_response_v1_t)) {
-    return std::unexpected(CONTROL_RESPONSE_INVALID_MSG_SIZE);
-  }
-
-  seek_timestamp_response_v1_t wire{};
-  std::memcpy(&wire, response->payload.data(), sizeof(wire));
-  if (wire.struct_size < sizeof(seek_timestamp_response_v1_t)) {
-    return std::unexpected(CONTROL_RESPONSE_INVALID_PAYLOAD);
-  }
-
-  return SeekResult{
-      .requested_timestamp_ns = wire.requested_timestamp_ns,
-      .landed_timestamp_ns = wire.landed_timestamp_ns,
-      .landed_frame_count = wire.landed_frame_count,
-      .exact_match = wire.exact_match != 0,
-  };
+  return pimpl_->nats_client->SeekTimestampNs(timestamp_ns, timeout);
 }
 
 std::expected<ControlCapabilities, ControlError>
 CvMmapClient::GetCapabilities(std::chrono::milliseconds timeout) {
-  if (pimpl_->nats_client) {
-    return pimpl_->nats_client->GetCapabilities(timeout);
+  if (!pimpl_->nats_client) {
+    return std::unexpected(make_control_error(CONTROL_RESPONSE_ERROR));
   }
-
-  auto info = GetSourceInfo(timeout);
-  if (!info) {
-    return std::unexpected(make_control_error(info.error()));
-  }
-
-  ControlCapabilities capabilities{
-      .can_seek = info->can_seek(),
-  };
-  if (info->can_record()) {
-    capabilities.available_recording_formats.push_back(RecordingFormat::Svo);
-  }
-  return capabilities;
+  return pimpl_->nats_client->GetCapabilities(timeout);
 }
 
 std::expected<RecordingStatus, ControlError>
 CvMmapClient::StartRecording(const RecordingRequest &request,
                              std::chrono::milliseconds timeout) {
-  if (pimpl_->nats_client) {
-    return pimpl_->nats_client->StartRecording(request, timeout);
+  if (!pimpl_->nats_client) {
+    return std::unexpected(make_control_error(CONTROL_RESPONSE_ERROR));
   }
-
-  if (request.format != RecordingFormat::Svo) {
-    return std::unexpected(
-        make_control_error(CONTROL_RESPONSE_UNSUPPORTED,
-                           "legacy ZMQ control only supports SVO recording"));
-  }
-  if (has_svo_options(request) || has_mcap_options(request)) {
-    return std::unexpected(
-        make_control_error(CONTROL_RESPONSE_UNSUPPORTED,
-                           "structured recording options require NATS control"));
-  }
-
-  const auto output_path = std::string_view(request.output_path);
-  if (output_path.empty()) {
-    return std::unexpected(
-        make_control_error(CONTROL_RESPONSE_INVALID_PAYLOAD,
-                           "recording path is empty"));
-  }
-  if (output_path.find('\0') != std::string_view::npos) {
-    return std::unexpected(
-        make_control_error(CONTROL_RESPONSE_INVALID_PAYLOAD,
-                           "recording path contains embedded NUL"));
-  }
-  if (output_path.size() >
-      std::numeric_limits<uint16_t>::max() - sizeof(recording_start_request_v1_t)) {
-    return std::unexpected(
-        make_control_error(CONTROL_RESPONSE_INVALID_PAYLOAD,
-                           "recording path is too long"));
-  }
-
-  recording_start_request_v1_t wire_request{};
-  wire_request.path_length = static_cast<uint16_t>(output_path.size());
-
-  std::vector<uint8_t> payload(sizeof(wire_request) + output_path.size());
-  std::memcpy(payload.data(), &wire_request, sizeof(wire_request));
-  std::memcpy(payload.data() + sizeof(wire_request), output_path.data(), output_path.size());
-
-  auto response = pimpl_->send_control_request(
-      CONTROL_MSG_CMD_START_RECORDING,
-      timeout,
-      std::span<const uint8_t>(payload.data(), payload.size()));
-  if (!response) {
-    return std::unexpected(make_control_error(response.error()));
-  }
-  if (response->response_code != CONTROL_RESPONSE_OK) {
-    return std::unexpected(
-        make_control_error(response->response_code, response->payload));
-  }
-  auto parsed = parse_recording_status_payload(response->payload);
-  if (!parsed) {
-    return std::unexpected(make_control_error(parsed.error()));
-  }
-  return *parsed;
+  return pimpl_->nats_client->StartRecording(request, timeout);
 }
 
 std::expected<RecordingStatus, ControlError>
@@ -896,28 +537,10 @@ CvMmapClient::StartRecording(std::string_view output_path,
 std::expected<RecordingStatus, ControlError>
 CvMmapClient::StopRecording(RecordingFormat format,
                             std::chrono::milliseconds timeout) {
-  if (pimpl_->nats_client) {
-    return pimpl_->nats_client->StopRecording(format, timeout);
+  if (!pimpl_->nats_client) {
+    return std::unexpected(make_control_error(CONTROL_RESPONSE_ERROR));
   }
-  if (format != RecordingFormat::Svo) {
-    return std::unexpected(
-        make_control_error(CONTROL_RESPONSE_UNSUPPORTED,
-                           "legacy ZMQ control only supports SVO recording"));
-  }
-  auto response =
-      pimpl_->send_control_request(CONTROL_MSG_CMD_STOP_RECORDING, timeout);
-  if (!response) {
-    return std::unexpected(make_control_error(response.error()));
-  }
-  if (response->response_code != CONTROL_RESPONSE_OK) {
-    return std::unexpected(
-        make_control_error(response->response_code, response->payload));
-  }
-  auto parsed = parse_recording_status_payload(response->payload);
-  if (!parsed) {
-    return std::unexpected(make_control_error(parsed.error()));
-  }
-  return *parsed;
+  return pimpl_->nats_client->StopRecording(format, timeout);
 }
 
 std::expected<RecordingStatus, ControlError>
@@ -928,28 +551,10 @@ CvMmapClient::StopRecording(std::chrono::milliseconds timeout) {
 std::expected<RecordingStatus, ControlError>
 CvMmapClient::GetRecordingStatus(RecordingFormat format,
                                  std::chrono::milliseconds timeout) {
-  if (pimpl_->nats_client) {
-    return pimpl_->nats_client->GetRecordingStatus(format, timeout);
+  if (!pimpl_->nats_client) {
+    return std::unexpected(make_control_error(CONTROL_RESPONSE_ERROR));
   }
-  if (format != RecordingFormat::Svo) {
-    return std::unexpected(
-        make_control_error(CONTROL_RESPONSE_UNSUPPORTED,
-                           "legacy ZMQ control only supports SVO recording"));
-  }
-  auto response = pimpl_->send_control_request(
-      CONTROL_MSG_CMD_GET_RECORDING_STATUS, timeout);
-  if (!response) {
-    return std::unexpected(make_control_error(response.error()));
-  }
-  if (response->response_code != CONTROL_RESPONSE_OK) {
-    return std::unexpected(
-        make_control_error(response->response_code, response->payload));
-  }
-  auto parsed = parse_recording_status_payload(response->payload);
-  if (!parsed) {
-    return std::unexpected(make_control_error(parsed.error()));
-  }
-  return *parsed;
+  return pimpl_->nats_client->GetRecordingStatus(format, timeout);
 }
 
 std::expected<RecordingStatus, ControlError>

@@ -15,6 +15,7 @@
 #include <string>
 #include <expected>
 #include <mutex>
+#include <thread>
 #include <vector>
 #include <span>
 #include <CLI/CLI.hpp>
@@ -29,7 +30,6 @@
 #include "version/app_version.hpp"
 #include "config/app_config.hpp"
 #include "models/app_metadata_models.hpp"
-#include "models/app_control_msg_models.hpp"
 #include "app_utils.hpp"
 #include "backends/app_backends_facade.hpp"
 #include "backends/app_backends_dummy.hpp"
@@ -112,23 +112,11 @@ int main(int argc, char **argv) {
 			config.ipc.prefix,
 			config.ipc.name_space));
 
-	const bool body_stream_enabled =
-		(
-			config.video.backend == app::BackendType::ZED &&
-			config.zed &&
-			config.zed->body_tracking &&
-			config.zed->body_tracking->enabled) ||
-		(config.video.backend == app::BackendType::MCAP && config.mcap.has_value());
-
 	// https://libzmq.readthedocs.io/en/latest/zmq_ipc.html
 	// https://libzmq.readthedocs.io/en/latest/zmq_inproc.html
 	// note that `zmq::socket_t` is RAII aware already
 	zmq::context_t ctx;
 	zmq::socket_t sock(ctx, zmq::socket_type::pub);
-	std::optional<zmq::socket_t> body_sock;
-	if (body_stream_enabled) {
-		body_sock.emplace(ctx, zmq::socket_type::pub);
-	}
 	deferrer zmq_deferrer([&sock, &ctx, zmq_address = config.zmq_address()] {
 		if (zmq_address.starts_with(IPC_PREFIX)) {
 			const auto path = zmq_address.substr(std::string_view(IPC_PREFIX).size());
@@ -164,73 +152,10 @@ int main(int argc, char **argv) {
 	}
 	spdlog::info("bond to ZMQ address: `{}`", config.zmq_address());
 
-	deferrer zmq_body_deferrer([&body_sock, zmq_body_address = config.zmq_body_address()] {
-		if (!body_sock) {
-			return;
-		}
-		if (zmq_body_address.starts_with(IPC_PREFIX)) {
-			const auto path = zmq_body_address.substr(std::string_view(IPC_PREFIX).size());
-			const auto err  = unlink(path.c_str());
-			if (err == -1) {
-				spdlog::error("unlink ZMQ body address `{}` because of `{} ({})`", path, strerror(errno), errno);
-			}
-		}
-	});
-
-	if (body_stream_enabled) {
-		try {
-			body_sock->bind(config.zmq_body_address());
-			if (config.zmq_body_address().starts_with(IPC_PREFIX)) {
-				const auto path = config.zmq_body_address().substr(std::string_view(IPC_PREFIX).size());
-				const auto ok = chmod(path.c_str(), S_IRWXU | S_IRWXG | S_IRWXO);
-				if (ok == -1) {
-					spdlog::warn("chmod ZMQ body address `{}` because of `{}`", path, strerror(errno));
-				}
-			}
-		} catch (const zmq::error_t &e) {
-			spdlog::error("bind to ZMQ body address: `{}`", e.what());
-			return 1;
-		}
-		spdlog::info("bond to ZMQ body address: `{}`", config.zmq_body_address());
-	}
-
-	// Control socket (REQ/REP pattern)
-	zmq::socket_t control_sock(ctx, zmq::socket_type::rep);
-	deferrer zmq_control_deferrer([&control_sock, zmq_control_address = config.zmq_control_address()] {
-		if (zmq_control_address.starts_with(IPC_PREFIX)) {
-			const auto path = zmq_control_address.substr(std::string_view(IPC_PREFIX).size());
-			const auto err  = unlink(path.c_str());
-			if (err == -1) {
-				spdlog::error("unlink ZMQ control address `{}` because of `{} ({})`", path, strerror(errno), errno);
-			}
-		}
-	});
-
-	try {
-		control_sock.bind(config.zmq_control_address());
-		if (config.zmq_control_address().starts_with(IPC_PREFIX)) {
-			const auto path = config.zmq_control_address().substr(std::string_view(IPC_PREFIX).size());
-			const auto ok   = chmod(path.c_str(), S_IRWXU | S_IRWXG | S_IRWXO);
-			if (ok == -1) {
-				spdlog::warn("chmod ZMQ control address `{}` because of `{}`", path, strerror(errno));
-			}
-		}
-		// Set receive timeout for non-blocking polling behavior
-		control_sock.set(zmq::sockopt::rcvtimeo, 100); // 100ms timeout
-	} catch (const zmq::error_t &e) {
-		spdlog::error("bind to ZMQ control address: `{}`", e.what());
-		return 1;
-	}
-	spdlog::info("bond to ZMQ control address: `{}`", config.zmq_control_address());
-
-	// NATS control service (optional, coexists with ZMQ)
-	std::unique_ptr<cvmmap::NatsControlService> nats_service;
-	if (config.nats && config.nats->enabled) {
-		nats_service = std::make_unique<cvmmap::NatsControlService>(
-			config.name,
-			resolved_target.nats_target_key,
-			config.nats->url);
-	}
+	auto nats_service = std::make_unique<cvmmap::NatsControlService>(
+		config.name,
+		resolved_target.nats_target_key,
+		config.nats.url);
 
 	static auto is_running   = std::atomic_bool{true};
 	static auto sigint_count = std::atomic_int{0};
@@ -812,38 +737,15 @@ int main(int argc, char **argv) {
 		}
 	});
 
-	backend->SetOnBodyTracking([&body_sock, &serialize_body_tracking_frame, &nats_service](const cvmmap::body_tracking_frame_t &frame) {
-		auto bytes = serialize_body_tracking_frame(frame);
-		if (body_sock) {
-			try {
-				body_sock->send(zmq::buffer(bytes), zmq::send_flags::none);
-			} catch (const zmq::error_t &e) {
-				spdlog::error("send body tracking message for frame@{}; {}", frame.header.frame_count, e.what());
-			}
-		}
-		if (nats_service) {
+		backend->SetOnBodyTracking([&serialize_body_tracking_frame, &nats_service](const cvmmap::body_tracking_frame_t &frame) {
+			auto bytes = serialize_body_tracking_frame(frame);
 			nats_service->PublishBodyTracking(
 				std::span<const uint8_t>(bytes.data(), bytes.size()));
-		}
-	});
+		});
 
-	const auto send_status = [&sock, &nats_service, name = config.name](int32_t status) {
-		try {
-			std::array<uint8_t, module_status_message_t::size()> buffer;
-			auto msg = module_status_message_t{};
-			msg._fill_with_status(status, name);
-			std::copy(
-				msg.as_uint8s().begin(),
-				msg.as_uint8s().end(),
-				buffer.begin());
-			sock.send(zmq::buffer(buffer), zmq::send_flags::none);
-		} catch (const zmq::error_t &e) {
-			spdlog::error("send module status message; {}", e.what());
-		}
-		if (nats_service) {
+		const auto send_status = [&nats_service](int32_t status) {
 			nats_service->PublishModuleStatus(status);
-		}
-	};
+		};
 
 	backend->SetOnError([&backend, &config, send_status](int error_code, std::string_view message) {
 		if (error_code == backends::ERR_EOS) {
@@ -937,7 +839,6 @@ int main(int argc, char **argv) {
 	backend->Init();
 
 	// Wire up NATS handlers and start service
-	if (nats_service) {
 		cvmmap::NatsControlHandlers nats_handlers;
 		nats_handlers.on_reset_frame_count = [&backend, &backend_control_mutex]() -> int {
 			std::lock_guard lock(backend_control_mutex);
@@ -977,334 +878,20 @@ int main(int argc, char **argv) {
 			return get_svo_recording_error();
 		};
 		nats_service->SetHandlers(std::move(nats_handlers));
-		nats_service->Start();
-	}
-
-	send_status(MODULE_STATUS_ONLINE);
-
-	const auto map_control_error = [](int error_code) {
-		switch (error_code) {
-		case -EOPNOTSUPP:
-			return CONTROL_RESPONSE_UNSUPPORTED;
-		case -ERANGE:
-		case -EINVAL:
-			return CONTROL_RESPONSE_OUT_OF_RANGE;
-		default:
-			return CONTROL_RESPONSE_ERROR;
-		}
-	};
-
-	const auto map_recording_control_error = [](int error_code) {
-		switch (error_code) {
-		case -EOPNOTSUPP:
-			return CONTROL_RESPONSE_UNSUPPORTED;
-		case -EINVAL:
-			return CONTROL_RESPONSE_INVALID_PAYLOAD;
-		default:
-			return CONTROL_RESPONSE_ERROR;
-		}
-	};
-
-	const auto recording_error_payload = [&get_svo_recording_error](std::string_view fallback_message = {}) {
-		auto message = get_svo_recording_error();
-		if (message.empty()) {
-			message = std::string(fallback_message);
-		}
-		return std::vector<uint8_t>(message.begin(), message.end());
-	};
-
-	const auto send_response = [&control_sock, &config](int32_t command_id, int32_t response_code, std::span<const uint8_t> response_message = {}) {
-		// Small object optimization: use stack buffer for small messages, heap for large ones
-		constexpr size_t SSO_THRESHOLD = 64;
-		constexpr size_t response_header_size =
-			offsetof(control_message_response_t, _response_message_data);
-		const size_t total_size        = response_header_size + response_message.size();
-
-		alignas(control_message_response_t) uint8_t stack_buffer[response_header_size + SSO_THRESHOLD];
-		std::unique_ptr<uint8_t[]> heap_buffer;
-		uint8_t *buffer_ptr;
-
-		if (response_message.size() <= SSO_THRESHOLD) {
-			buffer_ptr = stack_buffer;
-		} else {
-			heap_buffer = std::make_unique<uint8_t[]>(total_size);
-			buffer_ptr  = heap_buffer.get();
+		if (!nats_service->Start()) {
+			spdlog::error("failed to start NATS control service on '{}'", config.nats.url);
+			backend->Shutdown();
+			return 1;
 		}
 
-		auto *response       = new (buffer_ptr) control_message_response_t{};
-		response->command_id = command_id;
-		response->set_label(config.name);
-		response->response_code           = response_code;
-		response->response_message_length = static_cast<uint16_t>(response_message.size());
-		if (!response_message.empty()) {
-			std::copy(response_message.begin(), response_message.end(), buffer_ptr + response_header_size);
-		}
-		try {
-			control_sock.send(zmq::buffer(buffer_ptr, total_size), zmq::send_flags::none);
-		} catch (const zmq::error_t &e) {
-			spdlog::error("send control response: {}", e.what());
-		}
-	};
-
-	const auto make_recording_status_payload = [](const backends::recording_status_t &status) {
-		recording_status_response_v1_t response{};
-		response.recording_format = status.format;
-		if (status.active_path.size() > std::numeric_limits<uint16_t>::max()) {
-			throw std::length_error("recording status path exceeds wire limit");
-		}
-		response.path_length = static_cast<uint16_t>(status.active_path.size());
-		response.frames_ingested = status.frames_ingested;
-		response.frames_encoded = status.frames_encoded;
-		if (status.can_record) {
-			response.flags |= cvmmap::RECORDING_STATUS_FLAG_CAN_RECORD;
-		}
-		if (status.is_recording) {
-			response.flags |= cvmmap::RECORDING_STATUS_FLAG_IS_RECORDING;
-		}
-		if (status.is_paused) {
-			response.flags |= cvmmap::RECORDING_STATUS_FLAG_IS_PAUSED;
-		}
-		if (status.last_frame_ok) {
-			response.flags |= cvmmap::RECORDING_STATUS_FLAG_LAST_FRAME_OK;
+		send_status(MODULE_STATUS_ONLINE);
+		while (is_running.load(std::memory_order::relaxed)) {
+			std::this_thread::sleep_for(std::chrono::milliseconds{100});
 		}
 
-		std::vector<uint8_t> bytes(sizeof(response) + status.active_path.size());
-		std::memcpy(bytes.data(), &response, sizeof(response));
-		if (!status.active_path.empty()) {
-			std::memcpy(bytes.data() + sizeof(response),
-						status.active_path.data(),
-						status.active_path.size());
-		}
-		return bytes;
-	};
-
-	// Main loop: poll for control messages
-	while (is_running.load(std::memory_order::relaxed)) {
-		zmq::message_t request;
-		zmq::recv_result_t result;
-		try {
-			result = control_sock.recv(request, zmq::recv_flags::none);
-		} catch (const zmq::error_t &e) {
-			if (e.num() == EINTR) {
-				// Interrupted by signal (e.g., SIGINT), check is_running and continue
-				continue;
-			}
-			spdlog::error("recv control message: {}", e.what());
-			continue;
-		}
-		if (!result) {
-			// Timeout or no message, continue polling
-			continue;
-		}
-
-		// Process control message
-		constexpr size_t request_header_size =
-			offsetof(control_message_request_t, _request_message_data);
-		if (request.size() < request_header_size) {
-			spdlog::warn("received control message too small: {} bytes", request.size());
-			send_response(CONTROL_MSG_CMD_GENERIC, CONTROL_RESPONSE_INVALID_MSG_SIZE);
-			continue;
-		}
-
-		const auto *req = static_cast<const control_message_request_t *>(request.data());
-		if (req->_magic != CONTROL_MESSAGE_REQUEST_MAGIC) {
-			spdlog::warn("received control message with invalid magic: 0x{:02x}", req->_magic);
-			send_response(req->command_id, CONTROL_RESPONSE_INVALID_MAGIC);
-			continue;
-		}
-
-		spdlog::debug("received control message: command_id=0x{:04x}", req->command_id);
-
-		// Migration policy: shared-memory metadata may move to major v2 while
-		// sync/control wire messages stay at major v1; reject other control majors deterministically.
-		if (req->versions_major != VERSION_MAJOR) {
-			spdlog::warn("received control message with incompatible version: {}.{} (expected control {}.x)",
-						 req->versions_major, req->versions_minor, VERSION_MAJOR);
-			send_response(req->command_id, CONTROL_RESPONSE_INVALID_VERSION);
-			continue;
-		}
-
-		if (req->label() != config.name) {
-			spdlog::warn("received control message for different instance: `{}` != `{}`", req->label(), config.name);
-			send_response(req->command_id, CONTROL_RESPONSE_INVALID_LABEL);
-			continue;
-		}
-		if (request.size() < request_header_size + req->request_message_length) {
-			spdlog::warn("received truncated control message payload: {} < {}",
-						 request.size(),
-						 request_header_size + req->request_message_length);
-			send_response(req->command_id, CONTROL_RESPONSE_INVALID_MSG_SIZE);
-			continue;
-		}
-
-		switch (req->command_id) {
-		case CONTROL_MSG_CMD_RESET_FRAME_COUNT: {
-			spdlog::info("control: RESET_FRAME_COUNT requested");
-			std::lock_guard lock(backend_control_mutex);
-			auto err = backend->ResetFrameCount();
-			if (err != backends::ERR_OK) {
-				spdlog::error("resetting frame count: {}", err);
-				send_response(req->command_id, CONTROL_RESPONSE_ERROR);
-			} else {
-				send_status(MODULE_STATUS_STREAM_RESET);
-				send_response(req->command_id, CONTROL_RESPONSE_OK);
-			}
-			break;
-		}
-		case CONTROL_MSG_CMD_GET_SOURCE_INFO: {
-			spdlog::debug("control: GET_SOURCE_INFO requested");
-			std::lock_guard lock(backend_control_mutex);
-			const auto info = backend->GetSourceInfo();
-			source_info_response_v1_t response{};
-			response.source_kind = info.source_kind;
-			response.timestamp_domain = info.timestamp_domain;
-			response.flags = info.flags;
-			response.timeline_start_ns = info.timeline_start_ns;
-			response.timeline_end_ns = info.timeline_end_ns;
-			response.duration_ns = info.duration_ns;
-			response.current_timestamp_ns = info.current_timestamp_ns;
-			response.current_frame_count = info.current_frame_count;
-			send_response(req->command_id, CONTROL_RESPONSE_OK,
-						  std::span<const uint8_t>(
-							  reinterpret_cast<const uint8_t *>(&response),
-							  sizeof(response)));
-			break;
-		}
-		case CONTROL_MSG_CMD_SEEK_TIMESTAMP_NS: {
-			if (req->request_message_length < sizeof(seek_timestamp_request_v1_t)) {
-				send_response(req->command_id, CONTROL_RESPONSE_INVALID_MSG_SIZE);
-				break;
-			}
-			seek_timestamp_request_v1_t seek_request{};
-			std::memcpy(&seek_request, req->request_message().data(), sizeof(seek_request));
-			if (seek_request.struct_size < sizeof(seek_timestamp_request_v1_t)) {
-				send_response(req->command_id, CONTROL_RESPONSE_INVALID_PAYLOAD);
-				break;
-			}
-
-			spdlog::info("control: SEEK_TIMESTAMP_NS requested target={}", seek_request.target_timestamp_ns);
-			std::lock_guard lock(backend_control_mutex);
-			auto result = seek_timestamp(seek_request.target_timestamp_ns);
-			if (!result) {
-				spdlog::error("seeking by timestamp failed: {}", result.error());
-				send_response(req->command_id, map_control_error(result.error()));
-			} else {
-				seek_timestamp_response_v1_t response{};
-				response.exact_match = result->exact_match ? 1u : 0u;
-				response.requested_timestamp_ns = result->requested_timestamp_ns;
-				response.landed_timestamp_ns = result->landed_timestamp_ns;
-				response.landed_frame_count = result->landed_frame_count;
-				send_status(MODULE_STATUS_STREAM_RESET);
-				send_response(req->command_id, CONTROL_RESPONSE_OK,
-							  std::span<const uint8_t>(
-								  reinterpret_cast<const uint8_t *>(&response),
-								  sizeof(response)));
-			}
-			break;
-		}
-		case CONTROL_MSG_CMD_START_RECORDING: {
-			if (req->request_message_length < sizeof(recording_start_request_v1_t)) {
-				send_response(req->command_id, CONTROL_RESPONSE_INVALID_MSG_SIZE);
-				break;
-			}
-
-			recording_start_request_v1_t recording_request{};
-			std::memcpy(&recording_request, req->request_message().data(), sizeof(recording_request));
-			if (recording_request.struct_size < sizeof(recording_start_request_v1_t)) {
-				send_response(req->command_id, CONTROL_RESPONSE_INVALID_PAYLOAD);
-				break;
-			}
-			if (recording_request.flags != 0) {
-				send_response(req->command_id, CONTROL_RESPONSE_INVALID_PAYLOAD);
-				break;
-			}
-
-			const auto expected_size =
-				sizeof(recording_start_request_v1_t) +
-				static_cast<size_t>(recording_request.path_length);
-			if (req->request_message_length != expected_size || recording_request.path_length == 0) {
-				send_response(req->command_id, CONTROL_RESPONSE_INVALID_PAYLOAD);
-				break;
-			}
-
-			const auto path_bytes = req->request_message().subspan(
-				sizeof(recording_start_request_v1_t),
-				recording_request.path_length);
-			const auto output_path = std::string(
-				reinterpret_cast<const char *>(path_bytes.data()),
-				path_bytes.size());
-			if (output_path.find('\0') != std::string::npos) {
-				send_response(req->command_id, CONTROL_RESPONSE_INVALID_PAYLOAD);
-				break;
-			}
-
-			spdlog::info("control: START_RECORDING requested path='{}'", output_path);
-			std::lock_guard lock(backend_control_mutex);
-			auto result = start_svo_recording(backends::svo_recording_request_t{
-				.output_path = output_path,
-			});
-			if (!result) {
-				spdlog::error("starting recording failed: {}", result.error());
-				const auto payload = recording_error_payload("starting recording failed");
-				send_response(
-					req->command_id,
-					map_recording_control_error(result.error()),
-					std::span<const uint8_t>(payload.data(), payload.size()));
-			} else {
-				const auto payload = make_recording_status_payload(*result);
-				send_response(req->command_id, CONTROL_RESPONSE_OK,
-							  std::span<const uint8_t>(payload.data(), payload.size()));
-			}
-			break;
-		}
-		case CONTROL_MSG_CMD_STOP_RECORDING: {
-			spdlog::info("control: STOP_RECORDING requested");
-			std::lock_guard lock(backend_control_mutex);
-			auto result = stop_svo_recording();
-			if (!result) {
-				spdlog::error("stopping recording failed: {}", result.error());
-				const auto payload = recording_error_payload("stopping recording failed");
-				send_response(
-					req->command_id,
-					map_recording_control_error(result.error()),
-					std::span<const uint8_t>(payload.data(), payload.size()));
-			} else {
-				const auto payload = make_recording_status_payload(*result);
-				send_response(req->command_id, CONTROL_RESPONSE_OK,
-							  std::span<const uint8_t>(payload.data(), payload.size()));
-			}
-			break;
-		}
-		case CONTROL_MSG_CMD_GET_RECORDING_STATUS: {
-			spdlog::debug("control: GET_RECORDING_STATUS requested");
-			std::lock_guard lock(backend_control_mutex);
-			auto result = get_svo_recording_status();
-			if (!result) {
-				spdlog::error("query recording status failed: {}", result.error());
-				const auto payload = recording_error_payload("query recording status failed");
-				send_response(
-					req->command_id,
-					map_recording_control_error(result.error()),
-					std::span<const uint8_t>(payload.data(), payload.size()));
-			} else {
-				const auto payload = make_recording_status_payload(*result);
-				send_response(req->command_id, CONTROL_RESPONSE_OK,
-							  std::span<const uint8_t>(payload.data(), payload.size()));
-			}
-			break;
-		}
-		default:
-			spdlog::warn("unknown control command: 0x{:04x}", req->command_id);
-			send_response(req->command_id, CONTROL_RESPONSE_UNKNOWN_CMD);
-			break;
-		}
-	}
-
-	backend->Shutdown();
-	send_status(MODULE_STATUS_OFFLINE);
-	if (nats_service) {
+		backend->Shutdown();
+		send_status(MODULE_STATUS_OFFLINE);
 		nats_service->Stop();
-	}
 
 	spdlog::info("normally exit");
 	return 0;

@@ -135,7 +135,7 @@ struct IpcConfig {
 };
 
 struct NatsConfig {
-	bool enabled{false};
+	bool enabled{true};
 	std::string url{"nats://localhost:4222"};
 };
 
@@ -153,7 +153,7 @@ struct Config {
 	std::optional<McapConfig> mcap;
 	std::optional<PreprocessConfig> preprocess;
 	std::optional<ZedConfig> zed;
-	std::optional<NatsConfig> nats;
+	NatsConfig nats{};
 
 	static Config Default();
 
@@ -174,20 +174,6 @@ struct Config {
 		return cvmmap::resolve_cvmmap_target_or_throw(
 			std::format("cvmmap://{}@{}?namespace={}", name, ipc.prefix, ipc.name_space))
 			.zmq_addr;
-	}
-
-	[[nodiscard]]
-	std::string zmq_control_address() const {
-		return cvmmap::resolve_cvmmap_target_or_throw(
-			std::format("cvmmap://{}@{}?namespace={}", name, ipc.prefix, ipc.name_space))
-			.zmq_control_addr;
-	}
-
-	[[nodiscard]]
-	std::string zmq_body_address() const {
-		return cvmmap::resolve_cvmmap_target_or_throw(
-			std::format("cvmmap://{}@{}?namespace={}", name, ipc.prefix, ipc.name_space))
-			.zmq_body_addr;
 	}
 };
 

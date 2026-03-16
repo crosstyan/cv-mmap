@@ -210,6 +210,7 @@ struct NatsControlClient::impl {
 	natsSubscription *sub_body{nullptr};
 	natsSubscription *sub_status{nullptr};
 	OnBodyTrackingCallback on_body_tracking{};
+	OnBodyTrackingRawCallback on_body_tracking_raw{};
 	OnModuleStatusCallback on_module_status{};
 
 	template <typename ReqMsg, typename RespMsg>
@@ -277,6 +278,9 @@ struct NatsControlClient::impl {
 		const auto buffer = std::span<const uint8_t>(
 			reinterpret_cast<const uint8_t *>(natsMsg_GetData(message)),
 			natsMsg_GetDataLength(message));
+		if (self->on_body_tracking_raw) {
+			self->on_body_tracking_raw(buffer);
+		}
 		if (!buffer.empty() && buffer.front() == BODY_TRACKING_MAGIC) {
 			auto parsed = parse_body_tracking_message(buffer);
 			if (parsed) {
@@ -327,7 +331,7 @@ struct NatsControlClient::impl {
 		if (!conn) {
 			return;
 		}
-		if (!on_body_tracking) {
+		if (!on_body_tracking && !on_body_tracking_raw) {
 			destroy_subscription(sub_body);
 			return;
 		}
@@ -386,10 +390,10 @@ NatsControlClient::~NatsControlClient() {
 	Stop();
 }
 
-void NatsControlClient::Start() {
+bool NatsControlClient::Start() {
 	std::lock_guard<std::mutex> lock(pimpl_->conn_mutex);
 	if (pimpl_->conn) {
-		return;
+		return true;
 	}
 
 	natsOptions *options = nullptr;
@@ -403,13 +407,14 @@ void NatsControlClient::Start() {
 			"nats client connect to '{}': {}",
 			pimpl_->nats_url,
 			natsStatus_GetText(status));
-		return;
+		return false;
 	}
 
 	pimpl_->refresh_body_subscription_locked();
 	pimpl_->refresh_status_subscription_locked();
 
 	spdlog::info("nats client started for target '{}'", pimpl_->target_key);
+	return true;
 }
 
 void NatsControlClient::Stop() {
@@ -650,6 +655,13 @@ std::expected<RecordingStatus, ControlError> NatsControlClient::GetRecordingStat
 void NatsControlClient::SetBodyTrackingCallback(OnBodyTrackingCallback &&callback) {
 	std::lock_guard<std::mutex> lock(pimpl_->conn_mutex);
 	pimpl_->on_body_tracking = std::move(callback);
+	pimpl_->refresh_body_subscription_locked();
+}
+
+void NatsControlClient::SetBodyTrackingRawCallback(
+	OnBodyTrackingRawCallback &&callback) {
+	std::lock_guard<std::mutex> lock(pimpl_->conn_mutex);
+	pimpl_->on_body_tracking_raw = std::move(callback);
 	pimpl_->refresh_body_subscription_locked();
 }
 

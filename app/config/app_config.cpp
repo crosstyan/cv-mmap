@@ -692,7 +692,10 @@ Config Config::from_toml(const std::filesystem::path &path) {
 
 	if (auto nats = tbl["nats"].as_table(); nats) {
 		NatsConfig nats_cfg{};
-		nats_cfg.enabled = (*nats)["enabled"].value_or(false);
+		nats_cfg.enabled = (*nats)["enabled"].value_or(true);
+		if (!nats_cfg.enabled) {
+			throw invalid_argument("nats.enabled=false is no longer supported; NATS is required for control and body transport");
+		}
 		if (auto val = (*nats)["url"].value<std::string>(); val) {
 			nats_cfg.url = trim_ascii_spaces(*val);
 		}
@@ -1031,11 +1034,9 @@ std::string Config::to_toml() const {
 		ss << "strict_startup = " << (undistort.strict_startup ? "true" : "false") << "\n";
 	}
 
-	if (nats) {
-		ss << "\n[nats]\n";
-		ss << "enabled = " << (nats->enabled ? "true" : "false") << "\n";
-		ss << "url = \"" << nats->url << "\"\n";
-	}
+	ss << "\n[nats]\n";
+	ss << "enabled = " << (nats.enabled ? "true" : "false") << "\n";
+	ss << "url = \"" << nats.url << "\"\n";
 
 	if (zed) {
 		ss << "\n[zed]\n";

@@ -21,7 +21,8 @@ public:
 	NatsControlClient(const NatsControlClient &) = delete;
 	NatsControlClient &operator=(const NatsControlClient &) = delete;
 
-	void Start();
+	[[nodiscard]]
+	bool Start();
 	void Stop();
 
 	// Control (NATS request-reply, blocking with timeout)
@@ -51,8 +52,10 @@ public:
 
 	// Subscriptions (NATS pub/sub)
 	using OnBodyTrackingCallback = std::move_only_function<void(const body_tracking_frame_t &)>;
+	using OnBodyTrackingRawCallback = std::move_only_function<void(std::span<const uint8_t>)>;
 	using OnModuleStatusCallback = std::move_only_function<void(int32_t status_code)>;
 	void SetBodyTrackingCallback(OnBodyTrackingCallback &&cb);
+	void SetBodyTrackingRawCallback(OnBodyTrackingRawCallback &&cb);
 	void SetModuleStatusCallback(OnModuleStatusCallback &&cb);
 
 private:

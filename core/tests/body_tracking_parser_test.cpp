@@ -69,7 +69,7 @@ std::vector<uint8_t> make_valid_body_message() {
 bool test_target_resolution() {
 	const auto resolved = cvmmap::resolve_cvmmap_target_or_throw(
 		"cvmmap://camera0@/run/cvmmap?namespace=zed");
-	return resolved.zmq_body_addr == "ipc:///run/cvmmap/zed_camera0_body";
+	return resolved.nats_target_key == "zed_camera0";
 }
 
 bool test_valid_body_parse() {
