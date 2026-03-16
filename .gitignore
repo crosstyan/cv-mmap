@@ -210,3 +210,5 @@ output
 
 .sisyphus/evidence/
 .sisyphus/boulder.json
+.idea
+.ruff_cache
