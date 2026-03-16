@@ -112,6 +112,7 @@ constexpr uint32_t SOURCE_INFO_FLAG_CAN_RECORD = 0x00000010u;
 enum class RecordingFormat : uint8_t {
 	Unknown = 0,
 	Svo = 1,
+	Mcap = 2,
 };
 
 constexpr uint16_t RECORDING_STATUS_FLAG_CAN_RECORD = 0x0001u;

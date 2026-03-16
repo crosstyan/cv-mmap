@@ -690,6 +690,15 @@ Config Config::from_toml(const std::filesystem::path &path) {
 		config.preprocess = std::move(preprocess_cfg);
 	}
 
+	if (auto nats = tbl["nats"].as_table(); nats) {
+		NatsConfig nats_cfg{};
+		nats_cfg.enabled = (*nats)["enabled"].value_or(false);
+		if (auto val = (*nats)["url"].value<std::string>(); val) {
+			nats_cfg.url = trim_ascii_spaces(*val);
+		}
+		config.nats = std::move(nats_cfg);
+	}
+
 	if (auto zed = tbl["zed"].as_table(); zed) {
 		ZedConfig zed_cfg{};
 
@@ -1020,6 +1029,12 @@ std::string Config::to_toml() const {
 		ss << "alpha = " << undistort.alpha << "\n";
 		ss << "crop_to_valid_roi = " << (undistort.crop_to_valid_roi ? "true" : "false") << "\n";
 		ss << "strict_startup = " << (undistort.strict_startup ? "true" : "false") << "\n";
+	}
+
+	if (nats) {
+		ss << "\n[nats]\n";
+		ss << "enabled = " << (nats->enabled ? "true" : "false") << "\n";
+		ss << "url = \"" << nats->url << "\"\n";
 	}
 
 	if (zed) {

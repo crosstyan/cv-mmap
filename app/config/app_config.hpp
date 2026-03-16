@@ -134,6 +134,11 @@ struct IpcConfig {
 	std::string prefix{"/tmp"};
 };
 
+struct NatsConfig {
+	bool enabled{false};
+	std::string url{"nats://localhost:4222"};
+};
+
 struct Config {
 	/// name of cvmmap server instance
 	std::string name;
@@ -148,6 +153,7 @@ struct Config {
 	std::optional<McapConfig> mcap;
 	std::optional<PreprocessConfig> preprocess;
 	std::optional<ZedConfig> zed;
+	std::optional<NatsConfig> nats;
 
 	static Config Default();
 
