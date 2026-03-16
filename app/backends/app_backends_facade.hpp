@@ -66,6 +66,7 @@ PRO_DEF_MEM_DISPATCH(MemResetFrameCount, ResetFrameCount);
 PRO_DEF_MEM_DISPATCH(MemStartRecording, StartRecording);
 PRO_DEF_MEM_DISPATCH(MemStopRecording, StopRecording);
 PRO_DEF_MEM_DISPATCH(MemGetRecordingStatus, GetRecordingStatus);
+PRO_DEF_MEM_DISPATCH(MemGetLastRecordingError, GetLastRecordingError);
 
 // clang-format off
 struct IBackend : pro::facade_builder 
@@ -81,6 +82,7 @@ struct IBackend : pro::facade_builder
     ::add_convention<MemStartRecording, std::expected<recording_status_t, error_t>(std::string_view)>
     ::add_convention<MemStopRecording, std::expected<recording_status_t, error_t>()>
     ::add_convention<MemGetRecordingStatus, std::expected<recording_status_t, error_t>()>
+    ::add_convention<MemGetLastRecordingError, std::string()>
     ::build {};
 // clang-format on
 

@@ -435,4 +435,8 @@ std::expected<recording_status_t, error_t> OpenCVBackend::StopRecording() {
 std::expected<recording_status_t, error_t> OpenCVBackend::GetRecordingStatus() {
 	return std::unexpected(-EOPNOTSUPP);
 }
+
+std::string OpenCVBackend::GetLastRecordingError() {
+	return "recording is not supported by the OpenCV backend";
+}
 }

@@ -18,6 +18,8 @@
 #include <cstring>
 #include <cstdint>
 #include <cmath>
+#include <filesystem>
+#include <format>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -557,6 +559,7 @@ struct ZedBackendImpl {
 	std::vector<uint8_t> last_good_depth_plane;
 	sl::REFERENCE_FRAME body_reference_frame{sl::REFERENCE_FRAME::CAMERA};
 	std::string active_recording_path{};
+	std::string last_recording_error{};
 
 	// =======================================================================
 	// TASK 10 EXTENSION POINTS: Ethernet-ready placeholder stubs
@@ -615,6 +618,19 @@ struct ZedBackendImpl {
 		if (_on_body_tracking) {
 			_on_body_tracking(frame);
 		}
+	}
+
+	void clear_recording_error_locked() {
+		last_recording_error.clear();
+	}
+
+	void set_recording_error_locked(std::string message) {
+		last_recording_error = std::move(message);
+	}
+
+	std::string GetLastRecordingError() {
+		std::lock_guard lock(state_mutex);
+		return last_recording_error;
 	}
 
 	recording_status_t make_recording_status_locked() {
@@ -1334,20 +1350,41 @@ struct ZedBackendImpl {
 
 	std::expected<recording_status_t, error_t> StartRecording(std::string_view output_path) {
 		if (output_path.empty()) {
+			std::lock_guard lock(state_mutex);
+			set_recording_error_locked("recording path is empty");
 			return std::unexpected(-EINVAL);
 		}
 		if (output_path.find('\0') != std::string_view::npos) {
+			std::lock_guard lock(state_mutex);
+			set_recording_error_locked("recording path contains embedded NUL");
 			return std::unexpected(-EINVAL);
 		}
 
 		std::lock_guard lock(state_mutex);
+		clear_recording_error_locked();
 		if (!initialized.load(std::memory_order_relaxed) || !camera.isOpened()) {
+			set_recording_error_locked("ZED camera is not opened");
 			return std::unexpected(-ENODEV);
 		}
 
 		const auto current_status = camera.getRecordingStatus();
 		if (current_status.is_recording) {
+			set_recording_error_locked("recording is already active");
 			return std::unexpected(-EINVAL);
+		}
+
+		const auto output_path_fs = std::filesystem::path(output_path);
+		const auto parent_dir = output_path_fs.parent_path();
+		if (!parent_dir.empty()) {
+			std::error_code ec;
+			std::filesystem::create_directories(parent_dir, ec);
+			if (ec) {
+				set_recording_error_locked(std::format(
+					"failed to create recording directory '{}': {}",
+					parent_dir.string(),
+					ec.message()));
+				return std::unexpected(-EIO);
+			}
 		}
 
 		sl::RecordingParameters recording_parameters{};
@@ -1361,11 +1398,26 @@ struct ZedBackendImpl {
 
 		const auto recording_result = camera.enableRecording(recording_parameters);
 		if (recording_result != sl::ERROR_CODE::SUCCESS) {
-			spdlog::error("failed to start ZED recording '{}': code={}", output_path, static_cast<int>(recording_result));
+			const std::string code_name = sl::toString(recording_result).get();
+			const std::string verbose = sl::toVerbose(recording_result).get();
+			if (verbose.empty() || verbose == code_name) {
+				set_recording_error_locked(std::format(
+					"ZED recording failed: {} ({})",
+					code_name,
+					static_cast<int>(recording_result)));
+			} else {
+				set_recording_error_locked(std::format(
+					"ZED recording failed: {} ({}): {}",
+					code_name,
+					static_cast<int>(recording_result),
+					verbose));
+			}
+			spdlog::error("failed to start ZED recording '{}': {}", output_path, last_recording_error);
 			return std::unexpected(-EIO);
 		}
 
 		active_recording_path = std::string(output_path);
+		clear_recording_error_locked();
 		return make_recording_status_locked();
 	}
 
@@ -1444,6 +1496,10 @@ std::expected<recording_status_t, error_t> ZedBackend::GetRecordingStatus() {
 	return impl->GetRecordingStatus();
 }
 
+std::string ZedBackend::GetLastRecordingError() {
+	return impl->GetLastRecordingError();
+}
+
 #else
 
 struct ZedBackendImpl {
@@ -1451,6 +1507,7 @@ struct ZedBackendImpl {
 	on_frame_fn_t _on_frame{nullptr};
 	on_body_tracking_fn_t _on_body_tracking{nullptr};
 	on_error_fn_t _on_error{nullptr};
+	std::string last_recording_error{"ZED SDK not available in this build environment"};
 
 	void Init() {
 		spdlog::error("ZED SDK headers not found at compile time");
@@ -1502,6 +1559,10 @@ struct ZedBackendImpl {
 
 	std::expected<recording_status_t, error_t> GetRecordingStatus() {
 		return std::unexpected(-EOPNOTSUPP);
+	}
+
+	std::string GetLastRecordingError() {
+		return last_recording_error;
 	}
 };
 
@@ -1556,6 +1617,10 @@ std::expected<recording_status_t, error_t> ZedBackend::StopRecording() {
 
 std::expected<recording_status_t, error_t> ZedBackend::GetRecordingStatus() {
 	return impl->GetRecordingStatus();
+}
+
+std::string ZedBackend::GetLastRecordingError() {
+	return impl->GetLastRecordingError();
 }
 
 #endif

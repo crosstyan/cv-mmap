@@ -64,6 +64,7 @@ struct GStreamerBackend {
 	std::expected<recording_status_t, error_t> StartRecording(std::string_view output_path);
 	std::expected<recording_status_t, error_t> StopRecording();
 	std::expected<recording_status_t, error_t> GetRecordingStatus();
+	std::string GetLastRecordingError();
 };
 
 } // namespace app::backends

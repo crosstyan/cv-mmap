@@ -68,6 +68,11 @@ struct RecordingStatus {
 	std::string active_path{};
 };
 
+struct ControlError {
+	int32_t code{CONTROL_RESPONSE_ERROR};
+	std::string message{};
+};
+
 class CvMmapClient {
 public:
 	using OnFrameCallback = std::move_only_function<void(
@@ -113,16 +118,16 @@ public:
 				   std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
-	std::expected<RecordingStatus, int32_t>
+	std::expected<RecordingStatus, ControlError>
 	StartRecording(std::string_view output_path,
 				  std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
-	std::expected<RecordingStatus, int32_t>
+	std::expected<RecordingStatus, ControlError>
 	StopRecording(std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
-	std::expected<RecordingStatus, int32_t>
+	std::expected<RecordingStatus, ControlError>
 	GetRecordingStatus(std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 private:

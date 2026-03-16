@@ -693,4 +693,8 @@ std::expected<recording_status_t, error_t> GStreamerBackend::GetRecordingStatus(
 	return std::unexpected(-EOPNOTSUPP);
 }
 
+std::string GStreamerBackend::GetLastRecordingError() {
+	return "recording is not supported by the GStreamer backend";
+}
+
 } // namespace app::backends

@@ -1068,4 +1068,8 @@ std::expected<recording_status_t, error_t> McapBackend::GetRecordingStatus() {
 	return std::unexpected(-EOPNOTSUPP);
 }
 
+std::string McapBackend::GetLastRecordingError() {
+	return "recording is not supported by the MCAP backend";
+}
+
 } // namespace app::backends

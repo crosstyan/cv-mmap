@@ -343,4 +343,8 @@ std::expected<recording_status_t, error_t> DummyBackend::GetRecordingStatus() {
 	return std::unexpected(-EOPNOTSUPP);
 }
 
+std::string DummyBackend::GetLastRecordingError() {
+	return "recording is not supported by the dummy backend";
+}
+
 } // namespace app::backends

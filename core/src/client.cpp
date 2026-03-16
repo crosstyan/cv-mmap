@@ -72,6 +72,25 @@ std::expected<RecordingStatus, int32_t> parse_recording_status_payload(
   };
 }
 
+ControlError make_control_error(int32_t code, std::span<const uint8_t> payload = {}) {
+  auto message = std::string{};
+  if (!payload.empty()) {
+    const auto *begin = reinterpret_cast<const char *>(payload.data());
+    message.assign(begin, begin + payload.size());
+  }
+  return ControlError{
+      .code = code,
+      .message = std::move(message),
+  };
+}
+
+ControlError make_control_error(int32_t code, std::string_view message) {
+  return ControlError{
+      .code = code,
+      .message = std::string(message),
+  };
+}
+
 } // namespace
 
 struct SharedBuffer {
@@ -679,18 +698,24 @@ CvMmapClient::SeekTimestampNs(uint64_t timestamp_ns,
   };
 }
 
-std::expected<RecordingStatus, int32_t>
+std::expected<RecordingStatus, ControlError>
 CvMmapClient::StartRecording(std::string_view output_path,
                              std::chrono::milliseconds timeout) {
   if (output_path.empty()) {
-    return std::unexpected(CONTROL_RESPONSE_INVALID_PAYLOAD);
+    return std::unexpected(
+        make_control_error(CONTROL_RESPONSE_INVALID_PAYLOAD,
+                           "recording path is empty"));
   }
   if (output_path.find('\0') != std::string_view::npos) {
-    return std::unexpected(CONTROL_RESPONSE_INVALID_PAYLOAD);
+    return std::unexpected(
+        make_control_error(CONTROL_RESPONSE_INVALID_PAYLOAD,
+                           "recording path contains embedded NUL"));
   }
   if (output_path.size() >
       std::numeric_limits<uint16_t>::max() - sizeof(recording_start_request_v1_t)) {
-    return std::unexpected(CONTROL_RESPONSE_INVALID_PAYLOAD);
+    return std::unexpected(
+        make_control_error(CONTROL_RESPONSE_INVALID_PAYLOAD,
+                           "recording path is too long"));
   }
 
   recording_start_request_v1_t request{};
@@ -705,37 +730,52 @@ CvMmapClient::StartRecording(std::string_view output_path,
       timeout,
       std::span<const uint8_t>(payload.data(), payload.size()));
   if (!response) {
-    return std::unexpected(response.error());
+    return std::unexpected(make_control_error(response.error()));
   }
   if (response->response_code != CONTROL_RESPONSE_OK) {
-    return std::unexpected(response->response_code);
+    return std::unexpected(
+        make_control_error(response->response_code, response->payload));
   }
-  return parse_recording_status_payload(response->payload);
+  auto parsed = parse_recording_status_payload(response->payload);
+  if (!parsed) {
+    return std::unexpected(make_control_error(parsed.error()));
+  }
+  return *parsed;
 }
 
-std::expected<RecordingStatus, int32_t>
+std::expected<RecordingStatus, ControlError>
 CvMmapClient::StopRecording(std::chrono::milliseconds timeout) {
   auto response =
       pimpl_->send_control_request(CONTROL_MSG_CMD_STOP_RECORDING, timeout);
   if (!response) {
-    return std::unexpected(response.error());
+    return std::unexpected(make_control_error(response.error()));
   }
   if (response->response_code != CONTROL_RESPONSE_OK) {
-    return std::unexpected(response->response_code);
+    return std::unexpected(
+        make_control_error(response->response_code, response->payload));
   }
-  return parse_recording_status_payload(response->payload);
+  auto parsed = parse_recording_status_payload(response->payload);
+  if (!parsed) {
+    return std::unexpected(make_control_error(parsed.error()));
+  }
+  return *parsed;
 }
 
-std::expected<RecordingStatus, int32_t>
+std::expected<RecordingStatus, ControlError>
 CvMmapClient::GetRecordingStatus(std::chrono::milliseconds timeout) {
   auto response = pimpl_->send_control_request(
       CONTROL_MSG_CMD_GET_RECORDING_STATUS, timeout);
   if (!response) {
-    return std::unexpected(response.error());
+    return std::unexpected(make_control_error(response.error()));
   }
   if (response->response_code != CONTROL_RESPONSE_OK) {
-    return std::unexpected(response->response_code);
+    return std::unexpected(
+        make_control_error(response->response_code, response->payload));
   }
-  return parse_recording_status_payload(response->payload);
+  auto parsed = parse_recording_status_payload(response->payload);
+  if (!parsed) {
+    return std::unexpected(make_control_error(parsed.error()));
+  }
+  return *parsed;
 }
 } // namespace cvmmap

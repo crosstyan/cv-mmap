@@ -866,6 +866,14 @@ int main(int argc, char **argv) {
 		}
 	};
 
+	const auto recording_error_payload = [&backend](std::string_view fallback_message = {}) {
+		auto message = backend->GetLastRecordingError();
+		if (message.empty()) {
+			message = std::string(fallback_message);
+		}
+		return std::vector<uint8_t>(message.begin(), message.end());
+	};
+
 	const auto send_response = [&control_sock, &config](int32_t command_id, int32_t response_code, std::span<const uint8_t> response_message = {}) {
 		// Small object optimization: use stack buffer for small messages, heap for large ones
 		constexpr size_t SSO_THRESHOLD = 64;
@@ -1092,7 +1100,11 @@ int main(int argc, char **argv) {
 			auto result = backend->StartRecording(output_path);
 			if (!result) {
 				spdlog::error("starting recording failed: {}", result.error());
-				send_response(req->command_id, map_recording_control_error(result.error()));
+				const auto payload = recording_error_payload("starting recording failed");
+				send_response(
+					req->command_id,
+					map_recording_control_error(result.error()),
+					std::span<const uint8_t>(payload.data(), payload.size()));
 			} else {
 				const auto payload = make_recording_status_payload(*result);
 				send_response(req->command_id, CONTROL_RESPONSE_OK,
@@ -1105,7 +1117,11 @@ int main(int argc, char **argv) {
 			auto result = backend->StopRecording();
 			if (!result) {
 				spdlog::error("stopping recording failed: {}", result.error());
-				send_response(req->command_id, map_recording_control_error(result.error()));
+				const auto payload = recording_error_payload("stopping recording failed");
+				send_response(
+					req->command_id,
+					map_recording_control_error(result.error()),
+					std::span<const uint8_t>(payload.data(), payload.size()));
 			} else {
 				const auto payload = make_recording_status_payload(*result);
 				send_response(req->command_id, CONTROL_RESPONSE_OK,
@@ -1118,7 +1134,11 @@ int main(int argc, char **argv) {
 			auto result = backend->GetRecordingStatus();
 			if (!result) {
 				spdlog::error("query recording status failed: {}", result.error());
-				send_response(req->command_id, map_recording_control_error(result.error()));
+				const auto payload = recording_error_payload("query recording status failed");
+				send_response(
+					req->command_id,
+					map_recording_control_error(result.error()),
+					std::span<const uint8_t>(payload.data(), payload.size()));
 			} else {
 				const auto payload = make_recording_status_payload(*result);
 				send_response(req->command_id, CONTROL_RESPONSE_OK,
