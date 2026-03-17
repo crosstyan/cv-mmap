@@ -1,7 +1,7 @@
 # cv-mmap
 
 `cv-mmap` is the producer/runtime repository for the cvmmap shared-memory video IPC stack.
-It captures frames from a real backend or a built-in synthetic backend, writes them into POSIX shared memory, publishes frame sync over ZeroMQ IPC, and serves control/status/body over NATS.
+It captures frames from a real backend or a built-in synthetic backend, writes them into POSIX shared memory, publishes frame sync over ZeroMQ IPC, and, when NATS is enabled, serves control/status/body over NATS. With NATS disabled, the producer still publishes frames via shared memory + ZMQ frame sync, but control feedback, module status, and body-tracking transport are unavailable.
 
 This repo also installs the reusable C++ package `cvmmap-core`, which is the canonical consumer-facing API used by:
 
@@ -47,8 +47,8 @@ The current protocol state is intentionally mixed-version:
 
 - shared-memory frame metadata: v1 and v2 layouts exist, consumers are expected to handle both
 - frame sync wire: v1 over ZMQ
-- control and module status: protobuf over NATS
-- body tracking: raw `cvmmap_body_tracking_v1` payload bytes over NATS
+- control and module status: protobuf over NATS when enabled
+- body tracking: raw `cvmmap_body_tracking_v1` payload bytes over NATS when enabled
 
 `cvmmap-core` owns the shared consumer-side protocol surface for:
 
@@ -171,6 +171,8 @@ target_link_libraries(my_consumer
 ./build/cv-mmap
 ./build/cv-mmap --config config_example.toml
 ```
+
+When `nats.enabled = false`, startup continues in degraded producer-only mode: shared memory creation and ZMQ frame sync still run, but control/status transport and body-tracking transport are skipped.
 
 ## Dependencies
 

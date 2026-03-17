@@ -139,10 +139,16 @@ int main(int argc, char **argv) {
 	}
 	spdlog::info("bond to ZMQ address: `{}`", config.zmq_address());
 
-	auto nats_service = std::make_unique<cvmmap::NatsControlService>(
-		config.name,
-		resolved_target.nats_target_key,
-		config.nats.url);
+	const bool nats_enabled = config.nats.enabled;
+	std::unique_ptr<cvmmap::NatsControlService> nats_service;
+	if (nats_enabled) {
+		nats_service = std::make_unique<cvmmap::NatsControlService>(
+			config.name,
+			resolved_target.nats_target_key,
+			config.nats.url);
+	} else {
+		spdlog::warn("NATS disabled; control/status and body-tracking transport are unavailable");
+	}
 
 	static auto is_running   = std::atomic_bool{true};
 	static auto sigint_count = std::atomic_int{0};
@@ -722,15 +728,21 @@ int main(int argc, char **argv) {
 		}
 	});
 
-	backend.SetOnBodyTracking([&serialize_body_tracking_frame, &nats_service](const cvmmap::body_tracking_frame_t &frame) {
+	backend.SetOnBodyTracking([&serialize_body_tracking_frame, &nats_service, nats_enabled](const cvmmap::body_tracking_frame_t &frame) {
+			if (!nats_enabled || !nats_service) {
+				return;
+			}
 			auto bytes = serialize_body_tracking_frame(frame);
 			nats_service->PublishBodyTracking(
 				std::span<const uint8_t>(bytes.data(), bytes.size()));
 		});
 
-		const auto send_status = [&nats_service](int32_t status) {
-			nats_service->PublishModuleStatus(status);
-		};
+	const auto send_status = [&nats_service, nats_enabled](int32_t status) {
+		if (!nats_enabled || !nats_service) {
+			return;
+		}
+		nats_service->PublishModuleStatus(status);
+	};
 
 	backend.SetOnError([&backend, &config, send_status](int error_code, std::string_view message) {
 		if (error_code == backends::ERR_EOS) {
@@ -823,7 +835,8 @@ int main(int argc, char **argv) {
 
 	backend.Init();
 
-	// Wire up NATS handlers and start service
+	// Wire up NATS handlers and start service only when transport is enabled.
+	if (nats_enabled) {
 		cvmmap::NatsControlHandlers nats_handlers;
 		nats_handlers.on_reset_frame_count = [&backend, &backend_control_mutex]() -> int {
 			std::lock_guard lock(backend_control_mutex);
@@ -868,15 +881,18 @@ int main(int argc, char **argv) {
 			backend.Shutdown();
 			return 1;
 		}
+	}
 
-		send_status(MODULE_STATUS_ONLINE);
-		while (is_running.load(std::memory_order::relaxed)) {
-			std::this_thread::sleep_for(std::chrono::milliseconds{100});
-		}
+	send_status(MODULE_STATUS_ONLINE);
+	while (is_running.load(std::memory_order::relaxed)) {
+		std::this_thread::sleep_for(std::chrono::milliseconds{100});
+	}
 
-		backend.Shutdown();
-		send_status(MODULE_STATUS_OFFLINE);
+	backend.Shutdown();
+	send_status(MODULE_STATUS_OFFLINE);
+	if (nats_service) {
 		nats_service->Stop();
+	}
 
 	spdlog::info("normally exit");
 	return 0;

@@ -694,9 +694,6 @@ Config Config::from_toml(const std::filesystem::path &path) {
 	if (auto nats = tbl["nats"].as_table(); nats) {
 		NatsConfig nats_cfg{};
 		nats_cfg.enabled = (*nats)["enabled"].value_or(true);
-		if (!nats_cfg.enabled) {
-			throw invalid_argument("nats.enabled=false is no longer supported; NATS is required for control and body transport");
-		}
 		if (auto val = (*nats)["url"].value<std::string>(); val) {
 			nats_cfg.url = trim_ascii_spaces(*val);
 		}

@@ -22,10 +22,14 @@ prefix = '/tmp'
 #   3. Never deploy producer-v2 before consumers are ready.
 #
 # Frame sync remains ZMQ v1 throughout the migration window.
-# Control/status use protobuf over NATS.
-# Body tracking uses the existing cvmmap body payload bytes over NATS.
+# Control/status use protobuf over NATS when enabled.
+# Body tracking uses the existing cvmmap body payload bytes over NATS when enabled.
+# With nats.enabled = false, the producer still publishes frames via shared memory + ZMQ frame sync,
+# but control/status and body-tracking transport are unavailable.
 # See docs/abi_v2_contract_checklist.md for full v2 field specifications.
 [nats]
+# Disable only for degraded producer-only frame publishing: shared memory + ZMQ frame sync stay up,
+# but control/status and body-tracking transport are skipped.
 enabled = true
 url = "nats://localhost:4222"
 
