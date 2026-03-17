@@ -33,6 +33,8 @@ zmq::context_t &global_zmq_context() {
 namespace cvmmap {
 constexpr size_t CV_MMAP_MAGIC_LEN = frame_metadata_t::CV_MMAP_MAGIC.size();
 static_assert(CV_MMAP_MAGIC_LEN == 8);
+constexpr std::string_view NATS_DISABLED_MESSAGE =
+    "NATS is disabled for this client";
 
 namespace {
 ControlError make_control_error(int32_t code, std::span<const uint8_t> payload = {}) {
@@ -52,6 +54,10 @@ ControlError make_control_error(int32_t code, std::string_view message) {
       .code = code,
       .message = std::string(message),
   };
+}
+
+ControlError make_nats_disabled_error() {
+  return make_control_error(CONTROL_RESPONSE_UNSUPPORTED, NATS_DISABLED_MESSAGE);
 }
 
 } // namespace
@@ -178,6 +184,7 @@ struct CvMmapClient::impl {
   std::string instance_name{};
   std::string shm_name{};
   std::string zmq_addr{};
+  bool enable_nats = true;
   std::unique_ptr<NatsControlClient> nats_client{};
 
   bool has_init = false;
@@ -228,11 +235,15 @@ void CvMmapClient::impl::start() {
   socket.connect(zmq_addr);
   socket.set(zmq::sockopt::subscribe_t{}, "");
 
-  sync_nats_callbacks();
-  if (!nats_client || !nats_client->Start()) {
-    throw std::runtime_error("failed to start NATS control client");
+  if (enable_nats) {
+    sync_nats_callbacks();
+    if (!nats_client || !nats_client->Start()) {
+      throw std::runtime_error("failed to start NATS control client");
+    } else {
+      spdlog::debug("cvmmap client NATS control/body connected");
+    }
   } else {
-    spdlog::debug("cvmmap client NATS control/body connected");
+    spdlog::debug("cvmmap client started without NATS");
   }
 
   is_running.store(true, std::memory_order_release);
@@ -410,6 +421,7 @@ CvMmapClient::CvMmapClient(const std::string &instance_name)
   pimpl_->instance_name = resolved.instance;
   pimpl_->shm_name = resolved.shm_name;
   pimpl_->zmq_addr = resolved.zmq_addr;
+  pimpl_->enable_nats = true;
   pimpl_->nats_client = std::make_unique<NatsControlClient>(
       resolved.nats_target_key, std::string(CvMmapClient::DEFAULT_NATS_URL));
   pimpl_->init();
@@ -421,9 +433,12 @@ CvMmapClient::CvMmapClient(const ClientConfig &config)
   pimpl_->instance_name = resolved.instance;
   pimpl_->shm_name = resolved.shm_name;
   pimpl_->zmq_addr = resolved.zmq_addr;
-  pimpl_->nats_client = std::make_unique<NatsControlClient>(
-      resolved.nats_target_key,
-      config.nats_url.value_or(std::string(CvMmapClient::DEFAULT_NATS_URL)));
+  pimpl_->enable_nats = config.enable_nats;
+  if (pimpl_->enable_nats) {
+    pimpl_->nats_client = std::make_unique<NatsControlClient>(
+        resolved.nats_target_key,
+        config.nats_url.value_or(std::string(CvMmapClient::DEFAULT_NATS_URL)));
+  }
   pimpl_->init();
 }
 
@@ -480,7 +495,7 @@ void CvMmapClient::Stop() { return pimpl_->stop(); }
 
 int32_t CvMmapClient::ResetFrameCount(std::chrono::milliseconds timeout) {
   if (!pimpl_->nats_client) {
-    return CONTROL_RESPONSE_ERROR;
+    return CONTROL_RESPONSE_UNSUPPORTED;
   }
   auto response = pimpl_->nats_client->ResetFrameCount(timeout);
   if (!response) {
@@ -492,7 +507,7 @@ int32_t CvMmapClient::ResetFrameCount(std::chrono::milliseconds timeout) {
 std::expected<SourceInfo, int32_t>
 CvMmapClient::GetSourceInfo(std::chrono::milliseconds timeout) {
   if (!pimpl_->nats_client) {
-    return std::unexpected(CONTROL_RESPONSE_ERROR);
+    return std::unexpected(CONTROL_RESPONSE_UNSUPPORTED);
   }
   return pimpl_->nats_client->GetSourceInfo(timeout);
 }
@@ -501,7 +516,7 @@ std::expected<SeekResult, int32_t>
 CvMmapClient::SeekTimestampNs(uint64_t timestamp_ns,
                               std::chrono::milliseconds timeout) {
   if (!pimpl_->nats_client) {
-    return std::unexpected(CONTROL_RESPONSE_ERROR);
+    return std::unexpected(CONTROL_RESPONSE_UNSUPPORTED);
   }
   return pimpl_->nats_client->SeekTimestampNs(timestamp_ns, timeout);
 }
@@ -509,7 +524,7 @@ CvMmapClient::SeekTimestampNs(uint64_t timestamp_ns,
 std::expected<ControlCapabilities, ControlError>
 CvMmapClient::GetCapabilities(std::chrono::milliseconds timeout) {
   if (!pimpl_->nats_client) {
-    return std::unexpected(make_control_error(CONTROL_RESPONSE_ERROR));
+    return std::unexpected(make_nats_disabled_error());
   }
   return pimpl_->nats_client->GetCapabilities(timeout);
 }
@@ -518,7 +533,7 @@ std::expected<RecordingStatus, ControlError>
 CvMmapClient::StartRecording(const RecordingRequest &request,
                              std::chrono::milliseconds timeout) {
   if (!pimpl_->nats_client) {
-    return std::unexpected(make_control_error(CONTROL_RESPONSE_ERROR));
+    return std::unexpected(make_nats_disabled_error());
   }
   return pimpl_->nats_client->StartRecording(request, timeout);
 }
@@ -538,7 +553,7 @@ std::expected<RecordingStatus, ControlError>
 CvMmapClient::StopRecording(RecordingFormat format,
                             std::chrono::milliseconds timeout) {
   if (!pimpl_->nats_client) {
-    return std::unexpected(make_control_error(CONTROL_RESPONSE_ERROR));
+    return std::unexpected(make_nats_disabled_error());
   }
   return pimpl_->nats_client->StopRecording(format, timeout);
 }
@@ -552,7 +567,7 @@ std::expected<RecordingStatus, ControlError>
 CvMmapClient::GetRecordingStatus(RecordingFormat format,
                                  std::chrono::milliseconds timeout) {
   if (!pimpl_->nats_client) {
-    return std::unexpected(make_control_error(CONTROL_RESPONSE_ERROR));
+    return std::unexpected(make_nats_disabled_error());
   }
   return pimpl_->nats_client->GetRecordingStatus(format, timeout);
 }

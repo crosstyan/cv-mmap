@@ -109,6 +109,7 @@ struct ClientConfig {
 	std::string instance_name;
 	/// Control, body tracking, and module status use NATS.
 	/// Frame sync stays on ZMQ PUB/SUB (unchanged).
+	bool enable_nats{true};
 	std::optional<std::string> nats_url{};
 };
 
