@@ -125,6 +125,25 @@ cmake -B build -S .
 cmake --build build
 ```
 
+## C++ Compatibility
+
+`cv-mmap` prefers the native C++23 standard library when the toolchain provides:
+
+- `std::expected`
+- `std::format`
+- `std::move_only_function`
+
+The project also ships compatibility headers under `core/include/cvmmap/compat/`
+so older standard-library environments can still build:
+
+- `cvmmap/compat/expected.hpp` uses `std::expected` when available, otherwise `tl::expected`
+- `cvmmap/compat/format.hpp` uses `std::format` when available, otherwise `fmt`
+- `cvmmap/compat/functional.hpp` uses `std::move_only_function` when available, otherwise `std::function`
+
+In practice this means newer toolchains can build with native C++23 library
+support, while older environments can keep working with `libfmt-dev` and
+`libexpected-dev`.
+
 Backend build defaults:
 
 - `dummy` is always built.
@@ -180,9 +199,9 @@ When `nats.enabled = false`, startup continues in degraded producer-only mode: s
 
 ```bash
 sudo apt install build-essential cmake pkg-config \
-    cppzmq-dev \
     libzmq3-dev \
     libfmt-dev \
+    libexpected-dev \
     libspdlog-dev \
     libprotobuf-dev \
     protobuf-compiler \
@@ -209,6 +228,13 @@ sudo apt install libgstreamer1.0-dev \
     gstreamer1.0-pulseaudio
 ```
 
+Ubuntu 22.04 notes:
+
+- `cppzmq-dev` is not available from the default Ubuntu 22.04 repositories, so `cppzmq` must be installed manually.
+- The default GCC toolchain on Ubuntu 22.04 does not provide the full C++23 standard-library surface needed for `std::expected` and `std::format`.
+- On that toolchain, keep `libfmt-dev` and `libexpected-dev` installed. `libexpected-dev` provides the `tl::expected` fallback used by `cvmmap/compat/expected.hpp`.
+- If you build with a newer compiler and newer libstdc++ that provide those C++23 library features, the compat layer will prefer the standard-library implementations automatically.
+
 ### Arch Linux
 
 ```bash
@@ -227,7 +253,8 @@ sudo pacman -S opencv \
 
 ### Notes
 
-- Base build requirements for the current default configuration are `cppzmq`, ZeroMQ, `fmt`, `spdlog`, Protobuf (`libprotobuf-dev` and `protobuf-compiler`), and OpenSSL (`libssl-dev`) for the vendored `nats.c` client.
+- Base build requirements for the current default configuration are `cppzmq`, ZeroMQ, `spdlog`, Protobuf (`libprotobuf-dev` and `protobuf-compiler`), and OpenSSL (`libssl-dev`) for the vendored `nats.c` client.
+- `fmt` and `tl::expected` are compatibility dependencies for toolchains that do not yet provide usable `std::format` and `std::expected`.
 - OpenCV, GStreamer, and ZED support are optional build/runtime concerns depending on backend selection.
 - `dummy` is always available and is the lowest-friction backend for local testing.
 
