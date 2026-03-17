@@ -1,42 +1,44 @@
 cmake_minimum_required(VERSION 3.20)
 project(cv-mmap)
 set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_CXX_STANDARD_REQUIRED OFF)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(CVMMAP_BUILD_TESTS "Build cv-mmap test targets" OFF)
 if(CVMMAP_BUILD_TESTS)
 	enable_testing()
 endif()
 
-include(CheckCXXSourceCompiles)
+function(cvmmap_check_cxx23_source_compiles output_var source_name source_content)
+	try_compile(${output_var}
+		SOURCE_FROM_CONTENT "${source_name}" "${source_content}"
+		CMAKE_FLAGS
+			"-DCMAKE_CXX_STANDARD=23"
+			"-DCMAKE_CXX_STANDARD_REQUIRED=ON"
+			"-DCMAKE_CXX_EXTENSIONS=OFF")
+	set(${output_var} "${${output_var}}" PARENT_SCOPE)
+endfunction()
 
 set(CVMMAP_HAS_STD_EXPECTED 0)
 set(CVMMAP_HAS_STD_FORMAT 0)
-
-set(_CVMMAP_REQUIRED_FLAGS_SAVED "${CMAKE_REQUIRED_FLAGS}")
-if(DEFINED CMAKE_CXX23_STANDARD_COMPILE_OPTION)
-	string(APPEND CMAKE_REQUIRED_FLAGS " ${CMAKE_CXX23_STANDARD_COMPILE_OPTION}")
-endif()
-
-check_cxx_source_compiles(
+cvmmap_check_cxx23_source_compiles(
+	CVMMAP_HAS_STD_EXPECTED
+	"cvmmap_check_expected.cpp"
 	"#include <expected>
 	int main() {
 		[[maybe_unused]] std::expected<int, int> value{42};
 		[[maybe_unused]] auto error = std::unexpected(7);
 		return value.value();
-	}"
-	CVMMAP_HAS_STD_EXPECTED)
+	}")
 
-check_cxx_source_compiles(
+cvmmap_check_cxx23_source_compiles(
+	CVMMAP_HAS_STD_FORMAT
+	"cvmmap_check_format.cpp"
 	"#include <format>
 	#include <string>
 	int main() {
 		return std::format(\"{}\", 42) == std::string{\"42\"} ? 0 : 1;
-	}"
-	CVMMAP_HAS_STD_FORMAT)
-
-set(CMAKE_REQUIRED_FLAGS "${_CVMMAP_REQUIRED_FLAGS_SAVED}")
-unset(_CVMMAP_REQUIRED_FLAGS_SAVED)
+	}")
 
 if(CVMMAP_HAS_STD_EXPECTED)
 	set(CVMMAP_HAS_STD_EXPECTED 1)

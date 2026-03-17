@@ -2,7 +2,19 @@
 
 #include <utility>
 
-#if defined(CVMMAP_HAS_STD_FORMAT) && CVMMAP_HAS_STD_FORMAT
+#if defined(CVMMAP_HAS_STD_FORMAT)
+#define CVMMAP_COMPAT_USE_STD_FORMAT CVMMAP_HAS_STD_FORMAT
+#elif defined(__has_include)
+#if __has_include(<format>)
+#define CVMMAP_COMPAT_USE_STD_FORMAT 1
+#else
+#define CVMMAP_COMPAT_USE_STD_FORMAT 0
+#endif
+#else
+#define CVMMAP_COMPAT_USE_STD_FORMAT 0
+#endif
+
+#if CVMMAP_COMPAT_USE_STD_FORMAT
 #include <format>
 #else
 #include <fmt/format.h>
@@ -10,7 +22,7 @@
 
 namespace cvmmap {
 
-#if defined(CVMMAP_HAS_STD_FORMAT) && CVMMAP_HAS_STD_FORMAT
+#if CVMMAP_COMPAT_USE_STD_FORMAT
 using std::format;
 #else
 template <typename... Args>
@@ -21,3 +33,5 @@ template <typename... Args>
 #endif
 
 } // namespace cvmmap
+
+#undef CVMMAP_COMPAT_USE_STD_FORMAT
