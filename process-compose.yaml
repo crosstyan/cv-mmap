@@ -1,0 +1,35 @@
+version: "0.5"
+is_strict: true
+processes:
+  zed1:
+    namespace: cameras
+    description: cv-mmap producer for config_zed_1.toml
+    command: "${CVMMAP_BIN:-./build/cv-mmap} --config config_zed_1.toml"
+    working_dir: .
+    availability:
+      restart: on_failure
+      backoff_seconds: 2
+  zed2:
+    namespace: cameras
+    description: cv-mmap producer for config_zed_2.toml
+    command: "${CVMMAP_BIN:-./build/cv-mmap} --config config_zed_2.toml"
+    working_dir: .
+    availability:
+      restart: on_failure
+      backoff_seconds: 2
+  zed3:
+    namespace: cameras
+    description: cv-mmap producer for config_zed_3.toml
+    command: "${CVMMAP_BIN:-./build/cv-mmap} --config config_zed_3.toml"
+    working_dir: .
+    availability:
+      restart: on_failure
+      backoff_seconds: 2
+  zed4:
+    namespace: cameras
+    description: cv-mmap producer for config_zed_4.toml
+    command: "${CVMMAP_BIN:-./build/cv-mmap} --config config_zed_4.toml"
+    working_dir: .
+    availability:
+      restart: on_failure
+      backoff_seconds: 2

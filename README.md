@@ -189,7 +189,70 @@ target_link_libraries(my_consumer
 ```bash
 ./build/cv-mmap
 ./build/cv-mmap --config config_example.toml
+./build/cv-mmap --config config_zed_1.toml
 ```
+
+### Config inheritance with `extends`
+
+`cv-mmap` supports single-parent TOML inheritance at the loader boundary. Add a top-level `extends` key pointing at another config file, then override only the keys that differ.
+
+Inheritance rules:
+
+- child scalars override parent scalars
+- child tables merge recursively into parent tables
+- child arrays replace parent arrays wholesale
+- relative `extends` paths resolve from the child config file directory
+- inheritance cycles and missing parents fail with a readable error
+
+Example base config:
+
+```toml
+name = "zed1"
+
+[video]
+backend = "zed"
+
+[zed]
+stream_mode = "local"
+index = 0
+resolution = "AUTO"
+fps = 30
+depth_mode = "NONE"
+```
+
+Example overlay:
+
+```toml
+extends = "config_zed_base.toml"
+name = "zed3"
+
+[zed]
+index = 2
+```
+
+The repo now ships `config_zed_base.toml` plus `config_zed_{1..4}.toml` overlays for the common multi-camera local ZED setup.
+
+### Multi-instance startup with Process Compose
+
+Use the checked-in `process-compose.yaml` when you want one command that starts several `cv-mmap` instances together, with a TUI for interactive use and optional detached mode for longer-running sessions.
+
+```bash
+process-compose --dry-run -f process-compose.yaml
+process-compose -f process-compose.yaml
+process-compose -D -f process-compose.yaml
+```
+
+By default the launcher expects the producer binary at `./build/cv-mmap`. Override it with `CVMMAP_BIN` if needed:
+
+```bash
+CVMMAP_BIN=/absolute/path/to/cv-mmap process-compose -f process-compose.yaml
+```
+
+The checked-in launcher starts four independent camera producers: `zed1`, `zed2`, `zed3`, and `zed4`, each with its own config overlay and `on_failure` restart policy.
+
+### When to prefer systemd instead
+
+Use a `systemd` template unit such as `cv-mmap@.service` when you need boot-time startup, restart after reboot, journal integration, or tighter OS-level service management. Keep `process-compose.yaml` as the primary in-repo workflow for development, testing, and user-managed multi-instance sessions.
 
 When `nats.enabled = false`, startup continues in degraded producer-only mode: shared memory creation and ZMQ frame sync still run, but control/status transport and body-tracking transport are skipped.
 

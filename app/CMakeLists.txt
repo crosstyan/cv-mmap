@@ -327,3 +327,22 @@ target_link_libraries(app_preprocess_benchmark PRIVATE app_preprocess spdlog::sp
 		target_compile_definitions(app_preprocess_benchmark PRIVATE WITH_PREPROCESS_UNDISTORT_OPENCV=1)
 	endif()
 endif()
+
+
+if (CVMMAP_BUILD_TESTS)
+	add_executable(cvmmap_app_config_tests
+		tests/app_config_tests.cpp
+)
+	target_include_directories(cvmmap_app_config_tests PRIVATE config)
+	target_link_libraries(cvmmap_app_config_tests
+		PRIVATE
+			app_config
+			app_models
+			cvmmap_target
+			spdlog::spdlog
+)
+	add_test(
+		NAME cvmmap_app_config_tests
+		COMMAND cvmmap_app_config_tests
+	)
+endif()

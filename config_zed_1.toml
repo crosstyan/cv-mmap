@@ -1,0 +1,5 @@
+extends = "config_zed_base.toml"
+name = 'zed1'
+
+[zed]
+index = 0
