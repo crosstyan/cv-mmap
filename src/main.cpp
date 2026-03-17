@@ -744,10 +744,11 @@ int main(int argc, char **argv) {
 		nats_service->PublishModuleStatus(status);
 	};
 
-	backend.SetOnError([&backend, &config, send_status](int error_code, std::string_view message) {
+	backend.SetOnError([&backend, send_status](int error_code, std::string_view message) {
 		if (error_code == backends::ERR_EOS) {
 			spdlog::info("backend EOF: {}", message);
-			if (config.video.finite_stream_ending_behavior == app::FiniteStreamEndingBehavior::Loop) {
+			const auto source_info = backend.GetSourceInfo();
+			if ((source_info.flags & cvmmap::SOURCE_INFO_FLAG_LOOP_EMITS_RESET) != 0) {
 				spdlog::info("looping finite stream (encore)");
 				auto err = backend.ResetFrameCount();
 				if (err != backends::ERR_OK) {
@@ -768,27 +769,18 @@ int main(int argc, char **argv) {
 	// Mutex to protect backend calls from concurrent NATS and ZMQ threads
 	std::mutex backend_control_mutex;
 
-	const auto can_seek = [&backend]() {
-#ifdef WITH_BACKEND_MCAP
-		return backend.get_if<app::backends::McapBackend>() != nullptr;
-#else
-		return false;
-#endif
-	};
-
 	const auto seek_timestamp = [&backend](const uint64_t timestamp_ns)
 		-> cvmmap::expected<backends::seek_result_t, backends::error_t> {
-#ifdef WITH_BACKEND_MCAP
-		if (auto *mcap_backend = backend.get_if<app::backends::McapBackend>()) {
-			return mcap_backend->SeekTimestampNs(timestamp_ns);
-		}
-#endif
-		return cvmmap::unexpected(-EOPNOTSUPP);
+		return backend.SeekTimestampNs(timestamp_ns);
 	};
 
 	const auto can_record_svo = [&backend]() {
 #ifdef WITH_BACKEND_ZED
-		return backend.get_if<app::backends::ZedBackend>() != nullptr;
+		if (auto *zed_backend = backend.get_if<app::backends::ZedBackend>()) {
+			auto status = zed_backend->GetRecordingStatus();
+			return status && status->can_record;
+		}
+		return false;
 #else
 		return false;
 #endif
@@ -845,9 +837,6 @@ int main(int argc, char **argv) {
 		nats_handlers.on_get_source_info = [&backend, &backend_control_mutex]() {
 			std::lock_guard lock(backend_control_mutex);
 			return backend.GetSourceInfo();
-		};
-		nats_handlers.on_source_can_seek = [&can_seek]() {
-			return can_seek();
 		};
 		nats_handlers.on_seek_timestamp = [&backend_control_mutex, &seek_timestamp](uint64_t ts) {
 			std::lock_guard lock(backend_control_mutex);

@@ -166,16 +166,26 @@ bool is_zed_network_stream_mode(const std::string_view mode) {
 	return normalized == "network" || normalized == "ethernet" || normalized == "stream";
 }
 
+bool is_zed_svo_stream_mode(const std::string_view mode) {
+	const auto normalized = normalize_ascii_lower(std::string(mode));
+	return normalized == "svo";
+}
+
 bool is_zed_local_stream_mode(const std::string_view mode) {
 	const auto normalized = normalize_ascii_lower(std::string(mode));
 	return normalized == "local" || normalized == "usb" || normalized == "device" || normalized == "auto";
 }
 
 bool is_valid_zed_stream_mode(const std::string_view mode) {
-	return is_zed_network_stream_mode(mode) || is_zed_local_stream_mode(mode);
+	return is_zed_network_stream_mode(mode) ||
+		   is_zed_local_stream_mode(mode) ||
+		   is_zed_svo_stream_mode(mode);
 }
 
 std::string canonical_zed_stream_mode(const std::string_view mode) {
+	if (is_zed_svo_stream_mode(mode)) {
+		return "svo";
+	}
 	return is_zed_network_stream_mode(mode) ? "network" : "local";
 }
 
@@ -546,16 +556,23 @@ std::string_view to_string(FiniteStreamEndingBehavior behavior) {
 		return "stop";
 	case FiniteStreamEndingBehavior::Loop:
 		return "loop";
+	case FiniteStreamEndingBehavior::LoopSilent:
+		return "loop_silent";
 	default:
 		return "unknown";
 	}
 }
 
 FiniteStreamEndingBehavior finite_stream_ending_behavior_from_string(std::string_view s) {
-	if (s == "stop" || s == "Stop") {
+	auto normalized = normalize_ascii_lower(trim_ascii_spaces(std::string(s)));
+	std::replace(normalized.begin(), normalized.end(), '-', '_');
+	std::replace(normalized.begin(), normalized.end(), ' ', '_');
+	if (normalized == "stop") {
 		return FiniteStreamEndingBehavior::Stop;
-	} else if (s == "loop" || s == "Loop") {
+	} else if (normalized == "loop") {
 		return FiniteStreamEndingBehavior::Loop;
+	} else if (normalized == "loop_silent") {
+		return FiniteStreamEndingBehavior::LoopSilent;
 	}
 	throw invalid_argument("unknown finite_stream_ending_behavior: " + std::string(s));
 }
@@ -581,7 +598,6 @@ Config Config::Default() {
 		.name  = "default",
 		.video = VideoConfig{
 			.backend                       = BackendType::Dummy,
-			.use_finite_as_infinite_stream = false,
 			.finite_stream_ending_behavior = FiniteStreamEndingBehavior::Stop,
 		},
 		.opencv = std::nullopt,
@@ -637,8 +653,11 @@ Config Config::from_toml(const std::filesystem::path &path) {
 			config.video.backend = BackendType::Dummy; // default
 		}
 
-		// use_finite_as_infinite_stream
-		config.video.use_finite_as_infinite_stream = (*video)["use_finite_as_infinite_stream"].value_or(false);
+		if ((*video)["use_finite_as_infinite_stream"]) {
+			throw invalid_argument(
+				"video.use_finite_as_infinite_stream was removed; "
+				"use video.finite_stream_ending_behavior = \"loop_silent\"");
+		}
 
 		// finite_stream_ending_behavior
 		if (auto val = (*video)["finite_stream_ending_behavior"].value<std::string>(); val) {
@@ -689,19 +708,26 @@ Config Config::from_toml(const std::filesystem::path &path) {
 		config.gstreamer = gst_cfg;
 	}
 
-	if (auto dummy = tbl["dummy"].as_table(); dummy) {
-		DummyConfig dummy_cfg{};
+		if (auto dummy = tbl["dummy"].as_table(); dummy) {
+			DummyConfig dummy_cfg{};
 
-		dummy_cfg.width = (*dummy)["width"].value_or(dummy_cfg.width);
-		dummy_cfg.height = (*dummy)["height"].value_or(dummy_cfg.height);
-		dummy_cfg.fps = (*dummy)["fps"].value_or(dummy_cfg.fps);
-		dummy_cfg.frames = (*dummy)["frames"].value_or(dummy_cfg.frames);
-		dummy_cfg.startup_delay_ms = (*dummy)["startup_delay_ms"].value_or(dummy_cfg.startup_delay_ms);
+			dummy_cfg.width = (*dummy)["width"].value_or(dummy_cfg.width);
+			dummy_cfg.height = (*dummy)["height"].value_or(dummy_cfg.height);
+			dummy_cfg.fps = (*dummy)["fps"].value_or(dummy_cfg.fps);
+			dummy_cfg.frames = (*dummy)["frames"].value_or(dummy_cfg.frames);
+			dummy_cfg.startup_delay_ms = (*dummy)["startup_delay_ms"].value_or(dummy_cfg.startup_delay_ms);
+			if (auto val = (*dummy)["timestamp_overlay_font_path"].value<std::string>(); val) {
+				auto trimmed = trim_ascii_spaces(*val);
+				if (trimmed.empty()) {
+					throw invalid_argument("dummy.timestamp_overlay_font_path must not be empty");
+				}
+				dummy_cfg.timestamp_overlay_font_path = std::move(trimmed);
+			}
 
-		if (dummy_cfg.width <= 0) {
-			throw invalid_argument("dummy.width must be positive");
-		}
-		if (dummy_cfg.height <= 0) {
+			if (dummy_cfg.width <= 0) {
+				throw invalid_argument("dummy.width must be positive");
+			}
+			if (dummy_cfg.height <= 0) {
 			throw invalid_argument("dummy.height must be positive");
 		}
 		if (dummy_cfg.fps <= 0) {
@@ -802,7 +828,7 @@ Config Config::from_toml(const std::filesystem::path &path) {
 		}
 
 		if (!is_valid_zed_stream_mode(zed_cfg.stream_mode)) {
-			throw invalid_argument("zed.stream_mode must be one of: local, usb, device, auto, network, ethernet, stream");
+			throw invalid_argument("zed.stream_mode must be one of: local, usb, device, auto, network, ethernet, stream, svo");
 		}
 
 		if (auto val = (*zed)["serial"]; val) {
@@ -850,14 +876,30 @@ Config Config::from_toml(const std::filesystem::path &path) {
 			}
 		}
 
+		if (auto val = (*zed)["svo_path"]; val) {
+			if (auto path = val.value<std::string>(); path) {
+				auto trimmed_path = trim_ascii_spaces(*path);
+				if (trimmed_path.empty()) {
+					throw invalid_argument("zed.svo_path must not be empty when provided");
+				}
+				zed_cfg.svo_path = std::move(trimmed_path);
+			} else {
+				throw invalid_argument("zed.svo_path must be string");
+			}
+		}
+
 		if (auto val = (*zed)["resolution"].value<std::string>(); val) {
 			zed_cfg.resolution = validate_and_canonicalize_zed_resolution(*val);
+		} else if (is_zed_svo_stream_mode(zed_cfg.stream_mode)) {
+			zed_cfg.resolution = "AUTO";
 		} else {
 			throw invalid_argument("zed.resolution is required when [zed] section exists");
 		}
 
 		if (auto val = (*zed)["fps"].value<int>(); val) {
 			zed_cfg.fps = *val;
+		} else if (is_zed_svo_stream_mode(zed_cfg.stream_mode)) {
+			zed_cfg.fps = 0;
 		} else {
 			throw invalid_argument("zed.fps is required when [zed] section exists and must be integer");
 		}
@@ -1007,12 +1049,28 @@ Config Config::from_toml(const std::filesystem::path &path) {
 			throw invalid_argument("zed.serial and zed.index are mutually exclusive");
 		}
 
-		if (is_zed_network_stream_mode(zed_cfg.stream_mode)) {
+		if (is_zed_svo_stream_mode(zed_cfg.stream_mode)) {
+			if (!zed_cfg.svo_path || zed_cfg.svo_path->empty()) {
+				throw invalid_argument("zed.svo_path is required when zed.stream_mode is svo");
+			}
+			if (zed_cfg.serial || zed_cfg.index) {
+				throw invalid_argument("zed.serial and zed.index must not be set when zed.stream_mode is svo");
+			}
+			if (zed_cfg.ip_address) {
+				throw invalid_argument("zed.ip_address must not be set when zed.stream_mode is svo");
+			}
+			if (zed_cfg.port) {
+				throw invalid_argument("zed.port must not be set when zed.stream_mode is svo");
+			}
+		} else if (is_zed_network_stream_mode(zed_cfg.stream_mode)) {
 			if (!zed_cfg.ip_address || zed_cfg.ip_address->empty()) {
 				throw invalid_argument("zed.ip_address is required when zed.stream_mode is network/ethernet/stream");
 			}
 			if (zed_cfg.serial || zed_cfg.index) {
 				throw invalid_argument("zed.serial and zed.index must not be set when zed.stream_mode is network/ethernet/stream");
+			}
+			if (zed_cfg.svo_path) {
+				throw invalid_argument("zed.svo_path is only valid when zed.stream_mode is svo");
 			}
 		} else {
 			if (zed_cfg.ip_address) {
@@ -1020,6 +1078,9 @@ Config Config::from_toml(const std::filesystem::path &path) {
 			}
 			if (zed_cfg.port) {
 				throw invalid_argument("zed.port is only valid when zed.stream_mode is network/ethernet/stream");
+			}
+			if (zed_cfg.svo_path) {
+				throw invalid_argument("zed.svo_path is only valid when zed.stream_mode is svo");
 			}
 		}
 
@@ -1059,7 +1120,6 @@ std::string Config::to_toml() const {
 
 	ss << "[video]\n";
 	ss << "backend = \"" << to_string(video.backend) << "\"\n";
-	ss << "use_finite_as_infinite_stream = " << (video.use_finite_as_infinite_stream ? "true" : "false") << "\n";
 	ss << "finite_stream_ending_behavior = \"" << to_string(video.finite_stream_ending_behavior) << "\"\n\n";
 
 	if (opencv) {
@@ -1079,14 +1139,17 @@ std::string Config::to_toml() const {
 		ss << "pipeline = \"" << gstreamer->pipeline << "\"\n";
 	}
 
-	if (dummy) {
-		ss << "[dummy]\n";
-		ss << "width = " << dummy->width << "\n";
-		ss << "height = " << dummy->height << "\n";
-		ss << "fps = " << dummy->fps << "\n";
-		ss << "frames = " << dummy->frames << "\n";
-		ss << "startup_delay_ms = " << dummy->startup_delay_ms << "\n";
-	}
+		if (dummy) {
+			ss << "[dummy]\n";
+			ss << "width = " << dummy->width << "\n";
+			ss << "height = " << dummy->height << "\n";
+			ss << "fps = " << dummy->fps << "\n";
+			ss << "frames = " << dummy->frames << "\n";
+			ss << "startup_delay_ms = " << dummy->startup_delay_ms << "\n";
+			if (dummy->timestamp_overlay_font_path) {
+				ss << "timestamp_overlay_font_path = \"" << *dummy->timestamp_overlay_font_path << "\"\n";
+			}
+		}
 
 	if (mcap) {
 		ss << "\n[mcap]\n";
@@ -1131,6 +1194,9 @@ std::string Config::to_toml() const {
 	if (zed) {
 		ss << "\n[zed]\n";
 		ss << "stream_mode = \"" << canonical_zed_stream_mode(zed->stream_mode) << "\"\n";
+		if (zed->svo_path) {
+			ss << "svo_path = \"" << *zed->svo_path << "\"\n";
+		}
 		if (zed->ip_address) {
 			ss << "ip_address = \"" << *zed->ip_address << "\"\n";
 		}

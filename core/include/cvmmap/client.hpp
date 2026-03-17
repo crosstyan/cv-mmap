@@ -37,6 +37,11 @@ struct SourceInfo {
 	}
 
 	[[nodiscard]]
+	bool loop_emits_reset() const {
+		return (flags & SOURCE_INFO_FLAG_LOOP_EMITS_RESET) != 0;
+	}
+
+	[[nodiscard]]
 	bool has_depth() const {
 		return (flags & SOURCE_INFO_FLAG_HAS_DEPTH) != 0;
 	}

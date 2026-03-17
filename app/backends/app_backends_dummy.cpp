@@ -148,7 +148,7 @@ struct DummyBackendImpl {
 	cvmmap::expected<seek_result_t, error_t> SeekTimestampNs(
 		uint64_t timestamp_ns) {
 		if (!is_finite_source() ||
-			options.video_config.use_finite_as_infinite_stream) {
+			!options.video_config.finite_source_can_seek()) {
 			return cvmmap::unexpected(-EOPNOTSUPP);
 		}
 

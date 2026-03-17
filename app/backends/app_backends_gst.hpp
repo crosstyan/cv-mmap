@@ -57,9 +57,9 @@ struct GStreamerBackend {
 	/**
 	 * @brief Reset frame count to zero
 	 * @return 0 on success, -EIO on I/O error
-	 * @note For finite sources, this seeks back to the beginning unless
-	 * `use_finite_as_infinite_stream` is true, when it only resets the internal
-	 * frame count without any seeking.
+	 * @note For finite sources, this seeks back to the beginning for `stop` and
+	 * `loop` modes. In `loop_silent` mode, it only resets the internal frame
+	 * count without seeking.
 	 */
 	error_t ResetFrameCount();
 	cvmmap::expected<recording_status_t, error_t> StartRecording(std::string_view output_path);

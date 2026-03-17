@@ -793,7 +793,7 @@ struct McapBackendImpl {
 		const uint64_t timestamp_ns,
 		const bool notify_worker,
 		PublishPacket *packet_out) {
-		if (video_config.use_finite_as_infinite_stream) {
+		if (!video_config.finite_source_can_seek()) {
 			return cvmmap::unexpected(-EOPNOTSUPP);
 		}
 		if (video_samples.empty()) {

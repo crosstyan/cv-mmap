@@ -1339,8 +1339,81 @@ struct ZedBackendImpl {
 		return info;
 	}
 
-	cvmmap::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t) {
-		return cvmmap::unexpected(-EOPNOTSUPP);
+	cvmmap::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns) {
+		if (!svo_mode || !options.video_config.finite_source_can_seek()) {
+			return cvmmap::unexpected(-EOPNOTSUPP);
+		}
+
+		stop_worker_thread();
+
+		frame_metadata_t frame_snapshot{};
+		std::optional<cvmmap::body_tracking_frame_t> body_snapshot{};
+		cvmmap::expected<seek_result_t, error_t> result = cvmmap::unexpected(-EIO);
+		bool restart_worker = false;
+
+		{
+			std::lock_guard lock(state_mutex);
+			restart_worker =
+				initialized.load(std::memory_order_relaxed) &&
+				camera.isOpened() &&
+				total_svo_frames > 0;
+
+			if (!restart_worker) {
+				result = cvmmap::unexpected(-ENODEV);
+			} else {
+				const auto clamped_timestamp_ns =
+					std::clamp(timestamp_ns, timeline_start_ns, timeline_end_ns);
+				const sl::Timestamp target_timestamp =
+					static_cast<uint64_t>(clamped_timestamp_ns);
+
+				int target_position = camera.getSVOPositionAtTimestamp(target_timestamp);
+				if (target_position < 0) {
+					target_position = clamped_timestamp_ns <= timeline_start_ns ?
+						0 :
+						std::max(0, total_svo_frames - 1);
+				}
+
+				camera.setSVOPosition(target_position);
+				pending_body_tracking_frame.reset();
+				last_good_depth_plane.clear();
+				metadata.frame_count = 0;
+
+				if (!capture_frame_locked()) {
+					result = cvmmap::unexpected(
+						last_grab_error == sl::ERROR_CODE::END_OF_SVOFILE_REACHED ?
+							-ERANGE :
+							-EIO);
+				} else {
+					metadata.timestamp_ns = effective_timestamp_ns_locked();
+					metadata.info.buffer_size =
+						static_cast<uint32_t>(current_frame_buffer().size());
+					frame_snapshot = metadata;
+					if (pending_body_tracking_frame) {
+						pending_body_tracking_frame->header.frame_count =
+							metadata.frame_count;
+						body_snapshot = *pending_body_tracking_frame;
+					}
+
+					result = seek_result_t{
+						.requested_timestamp_ns = timestamp_ns,
+						.landed_timestamp_ns = metadata.timestamp_ns,
+						.landed_frame_count = metadata.frame_count,
+						.exact_match = (metadata.timestamp_ns == timestamp_ns),
+					};
+				}
+			}
+		}
+
+		if (result) {
+			on_frame(current_frame_buffer(), frame_snapshot);
+			if (body_snapshot) {
+				on_body_tracking(*body_snapshot);
+			}
+		}
+		if (restart_worker) {
+			start_worker_thread();
+		}
+		return result;
 	}
 
 	error_t ResetFrameCount() {
@@ -1350,6 +1423,12 @@ struct ZedBackendImpl {
 	}
 
 	cvmmap::expected<recording_status_t, error_t> StartRecording(const svo_recording_request_t &request) {
+		if (svo_mode) {
+			std::lock_guard lock(state_mutex);
+			set_recording_error_locked("recording not supported for SVO playback input");
+			return cvmmap::unexpected(-EOPNOTSUPP);
+		}
+
 		if (request.output_path.empty()) {
 			std::lock_guard lock(state_mutex);
 			set_recording_error_locked("recording path is empty");

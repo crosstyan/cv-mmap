@@ -210,6 +210,8 @@ types:
         value: (flags & 0x00000008) != 0
       can_record:
         value: (flags & 0x00000010) != 0
+      loop_emits_reset:
+        value: (flags & 0x00000020) != 0
 
   seek_timestamp_request_v1:
     doc: |

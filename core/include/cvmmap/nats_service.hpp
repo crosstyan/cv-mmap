@@ -16,7 +16,6 @@ namespace cvmmap {
 struct NatsControlHandlers {
 	std::function<int()> on_reset_frame_count;
 	std::function<app::backends::source_info_t()> on_get_source_info;
-	std::function<bool()> on_source_can_seek;
 	std::function<cvmmap::expected<app::backends::seek_result_t, int>(uint64_t)> on_seek_timestamp;
 	std::function<bool()> on_svo_recording_available;
 	std::function<cvmmap::expected<app::backends::recording_status_t, int>(const app::backends::svo_recording_request_t &)> on_start_svo_recording;

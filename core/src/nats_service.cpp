@@ -264,21 +264,22 @@ struct NatsControlService::impl {
 		self->reply(message, response);
 	}
 
-	static void on_source_capabilities_msg(
-		natsConnection *,
-		natsSubscription *,
-		natsMsg *message,
-		void *closure) {
-		auto *self = static_cast<impl *>(closure);
-		pb::CapabilitiesResponse response;
-		if (self->handlers.on_source_can_seek) {
-			fill_capabilities_response(
-				response,
-				self->handlers.on_source_can_seek(),
-				{});
-		} else {
-			response.set_error(pb::ERROR_CODE_UNSUPPORTED);
-		}
+static void on_source_capabilities_msg(
+	natsConnection *,
+	natsSubscription *,
+	natsMsg *message,
+	void *closure) {
+	auto *self = static_cast<impl *>(closure);
+	pb::CapabilitiesResponse response;
+	if (self->handlers.on_get_source_info) {
+		const auto info = self->handlers.on_get_source_info();
+		fill_capabilities_response(
+			response,
+			(info.flags & SOURCE_INFO_FLAG_CAN_SEEK) != 0,
+			{});
+	} else {
+		response.set_error(pb::ERROR_CODE_UNSUPPORTED);
+	}
 		self->reply(message, response);
 	}
 

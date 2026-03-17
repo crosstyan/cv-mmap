@@ -578,7 +578,7 @@ struct GStreamerBackendImpl {
 		if (!finite_source_info) {
 			return cvmmap::unexpected(-EOPNOTSUPP);
 		}
-		if (options.video_config.use_finite_as_infinite_stream) {
+		if (!effective_can_seek()) {
 			return cvmmap::unexpected(-EOPNOTSUPP);
 		}
 		if (!pipeline) {

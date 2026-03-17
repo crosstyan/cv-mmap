@@ -41,6 +41,30 @@ What stays in `cv-mmap` and is not part of `cvmmap-core`:
 - CLI and TOML config loading
 - shared-memory creation and producer-side publish orchestration
 
+## ZED Playback
+
+The ZED backend now supports direct `.svo` and `.svo2` playback in addition to
+live local cameras and ZED network streams.
+
+Minimal playback example:
+
+```toml
+[video]
+backend = "zed"
+
+[zed]
+stream_mode = "svo"
+svo_path = "/data/example.svo2"
+depth_mode = "neural"
+```
+
+Playback notes:
+
+- SVO playback is reported as a finite source with `UnixEpochNs` frame timestamps
+- seeking is available through the existing source control API unless `video.finite_stream_ending_behavior = "loop_silent"`
+- `zed.resolution` and `zed.fps` are accepted in config for compatibility but ignored at runtime for SVO input
+- SDK-side SVO recording controls are disabled while the backend is reading from an SVO file
+
 ## ABI Policy
 
 The current protocol state is intentionally mixed-version:
@@ -100,7 +124,6 @@ name = "example"
 
 [video]
 backend = "dummy"
-use_finite_as_infinite_stream = false
 finite_stream_ending_behavior = "loop"
 
 [dummy]
@@ -109,12 +132,37 @@ height = 720
 fps = 30
 frames = 0
 startup_delay_ms = 0
+# optional: override the bundled JetBrains Mono font
+# timestamp_overlay_font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+```
+
+Explicit finite example:
+
+```toml
+name = "finite-example"
+
+[video]
+backend = "dummy"
+finite_stream_ending_behavior = "stop"
+
+[dummy]
+width = 1280
+height = 720
+fps = 30
+frames = 300
 ```
 
 Dummy backend notes:
 
 - output format is fixed to BGR8 / U8 / 3 channels
-- `frames = 0` means infinite stream
+- every frame includes a burned-in top-left debug overlay with `frame`, `timestamp_ns`, and the timestamp domain (`media_ns` or `unix_ns`)
+- the default overlay font is the bundled `JetBrainsMono-Regular.ttf`; `dummy.timestamp_overlay_font_path` can override it with a custom TTF
+- `frames = 0` means live/infinite dummy source
+- `frames > 0` means finite dummy source
+- finite loop behavior is controlled entirely by `video.finite_stream_ending_behavior`:
+  - `"stop"`: emit EOS and stop
+  - `"loop"`: emit stream reset at wraparound and continue from frame 0
+  - `"loop_silent"`: wrap internally with no reset event and no seek support
 - `startup_delay_ms` delays first publish
 - when used with finite-stream handling, it is suitable for acceptance and fault scenarios
 

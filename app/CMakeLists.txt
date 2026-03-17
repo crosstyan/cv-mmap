@@ -345,4 +345,5 @@ if (CVMMAP_BUILD_TESTS)
 		NAME cvmmap_app_config_tests
 		COMMAND cvmmap_app_config_tests
 	)
+	add_subdirectory(tests)
 endif()

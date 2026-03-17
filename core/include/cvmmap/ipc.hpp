@@ -108,6 +108,7 @@ constexpr uint32_t SOURCE_INFO_FLAG_AUTO_LOOP = 0x00000002u;
 constexpr uint32_t SOURCE_INFO_FLAG_HAS_DEPTH = 0x00000004u;
 constexpr uint32_t SOURCE_INFO_FLAG_HAS_BODY = 0x00000008u;
 constexpr uint32_t SOURCE_INFO_FLAG_CAN_RECORD = 0x00000010u;
+constexpr uint32_t SOURCE_INFO_FLAG_LOOP_EMITS_RESET = 0x00000020u;
 
 enum class RecordingFormat : uint8_t {
 	Unknown = 0,

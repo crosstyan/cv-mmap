@@ -35,14 +35,18 @@ url = "nats://localhost:4222"
 
 [video]
 backend = 'dummy'
-use_finite_as_infinite_stream = false
-finite_stream_ending_behavior = 'loop' # stop | loop
+finite_stream_ending_behavior = 'loop' # stop | loop | loop_silent
 [dummy]
 width = 1280
 height = 720
 fps = 30
-frames = 0 # 0 means infinite
+frames = 0 # 0 = live/infinite; >0 = finite bounded replay
 startup_delay_ms = 0
+# optional: use a custom TTF instead of the bundled JetBrains Mono default
+# timestamp_overlay_font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+# finite dummy example:
+# finite_stream_ending_behavior = 'stop'
+# frames = 300
 
 [opencv]
 parameter = "example.mkv"
@@ -58,9 +62,16 @@ timestamp_domain = "unix_epoch_ns"
 # stream_mode accepts these values:
 #   - Local modes: "local", "usb", "device", "auto"
 #   - Network modes: "ethernet", "network", "stream" (all aliases for the same behavior)
+#   - Playback mode: "svo"
 # When using network modes, ip_address is REQUIRED. port defaults to 30000.
 # Network modes do NOT accept serial or index identifiers.
+# When using svo mode, svo_path is REQUIRED and serial/index/ip_address/port are invalid.
 stream_mode = "local"
+
+# SVO playback example (uncomment to use):
+# stream_mode = "svo"
+# svo_path = "/data/example.svo2"
+# In svo mode, resolution/fps are ignored at runtime and come from the file.
 
 # Network mode example (uncomment to use):
 # stream_mode = "ethernet"

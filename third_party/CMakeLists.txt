@@ -46,6 +46,12 @@ if(NOT CVMMAP_HAS_STD_EXPECTED)
 	endif()
 endif()
 
+add_library(cvmmap_stb_truetype_headers INTERFACE)
+target_include_directories(cvmmap_stb_truetype_headers
+	INTERFACE
+		"${CMAKE_CURRENT_SOURCE_DIR}/stb"
+)
+
 add_subdirectory(CLI11)
 add_subdirectory(tomlplusplus)
 add_subdirectory(proxy)

@@ -25,6 +25,7 @@ enum class BackendType {
 enum class FiniteStreamEndingBehavior {
 	Stop,
 	Loop,
+	LoopSilent,
 };
 
 /// OpenCV-specific configuration
@@ -47,6 +48,7 @@ struct DummyConfig {
 	int fps{30};
 	uint32_t frames{0};
 	int startup_delay_ms{0};
+	std::optional<std::string> timestamp_overlay_font_path;
 };
 
 struct McapConfig {
@@ -84,6 +86,7 @@ struct ZedConfig {
 	std::optional<int> serial;
 	std::optional<int> index;
 	std::string stream_mode{"local"};
+	std::optional<std::string> svo_path;
 	std::optional<std::string> ip_address;
 	std::optional<int> port;
 	std::string resolution;
@@ -103,9 +106,27 @@ struct ZedConfig {
 struct VideoConfig {
 	/// backend type
 	BackendType backend{BackendType::Dummy};
-	/// treat finite source as infinite stream (loop automatically, disable seeking)
-	bool use_finite_as_infinite_stream{false};
 	FiniteStreamEndingBehavior finite_stream_ending_behavior{FiniteStreamEndingBehavior::Stop};
+
+	[[nodiscard]]
+	bool finite_source_auto_loops() const {
+		return finite_stream_ending_behavior != FiniteStreamEndingBehavior::Stop;
+	}
+
+	[[nodiscard]]
+	bool finite_source_loop_emits_reset() const {
+		return finite_stream_ending_behavior == FiniteStreamEndingBehavior::Loop;
+	}
+
+	[[nodiscard]]
+	bool finite_source_can_seek() const {
+		return finite_stream_ending_behavior != FiniteStreamEndingBehavior::LoopSilent;
+	}
+
+	[[nodiscard]]
+	bool finite_source_loops_silently() const {
+		return finite_stream_ending_behavior == FiniteStreamEndingBehavior::LoopSilent;
+	}
 };
 
 enum class UndistortModel {
