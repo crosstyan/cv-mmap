@@ -5,6 +5,7 @@
 #include <optional>
 #include <regex>
 #include <mutex>
+#include <cvmmap/compat/expected.hpp>
 #include <spdlog/spdlog.h>
 #include <errno.h>
 #include "app_backends_opencv.hpp"
@@ -327,19 +328,19 @@ struct OpenCVBackendImpl {
 		_on_error = std::move(on_error_);
 	}
 
-	std::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns) {
+	cvmmap::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns) {
 		if (!finite_source_info) {
-			return std::unexpected(-EOPNOTSUPP);
+			return cvmmap::unexpected(-EOPNOTSUPP);
 		}
 		if (options.video_config.use_finite_as_infinite_stream) {
-			return std::unexpected(-EOPNOTSUPP);
+			return cvmmap::unexpected(-EOPNOTSUPP);
 		}
 		const auto interval_ns = finite_frame_interval_ns();
 		const auto max_timestamp_ns =
 			static_cast<uint64_t>(finite_source_info->frame_count - 1) *
 			interval_ns;
 		if (timestamp_ns > max_timestamp_ns) {
-			return std::unexpected(-ERANGE);
+			return cvmmap::unexpected(-ERANGE);
 		}
 
 		const auto frame_index = static_cast<uint32_t>(
@@ -348,7 +349,7 @@ struct OpenCVBackendImpl {
 		bool success =
 			cap.set(cv::CAP_PROP_POS_FRAMES, static_cast<double>(frame_index));
 		if (!success) {
-			return std::unexpected(-EIO);
+			return cvmmap::unexpected(-EIO);
 		}
 		source_frame_index = frame_index;
 		metadata.frame_count = 0;
@@ -416,7 +417,7 @@ source_info_t OpenCVBackend::GetSourceInfo() {
 	return impl->GetSourceInfo();
 }
 
-std::expected<seek_result_t, error_t> OpenCVBackend::SeekTimestampNs(uint64_t timestamp_ns) {
+cvmmap::expected<seek_result_t, error_t> OpenCVBackend::SeekTimestampNs(uint64_t timestamp_ns) {
 	return impl->SeekTimestampNs(timestamp_ns);
 }
 
@@ -424,16 +425,16 @@ error_t OpenCVBackend::ResetFrameCount() {
 	return impl->ResetFrameCount();
 }
 
-std::expected<recording_status_t, error_t> OpenCVBackend::StartRecording(std::string_view) {
-	return std::unexpected(-EOPNOTSUPP);
+cvmmap::expected<recording_status_t, error_t> OpenCVBackend::StartRecording(std::string_view) {
+	return cvmmap::unexpected(-EOPNOTSUPP);
 }
 
-std::expected<recording_status_t, error_t> OpenCVBackend::StopRecording() {
-	return std::unexpected(-EOPNOTSUPP);
+cvmmap::expected<recording_status_t, error_t> OpenCVBackend::StopRecording() {
+	return cvmmap::unexpected(-EOPNOTSUPP);
 }
 
-std::expected<recording_status_t, error_t> OpenCVBackend::GetRecordingStatus() {
-	return std::unexpected(-EOPNOTSUPP);
+cvmmap::expected<recording_status_t, error_t> OpenCVBackend::GetRecordingStatus() {
+	return cvmmap::unexpected(-EOPNOTSUPP);
 }
 
 std::string OpenCVBackend::GetLastRecordingError() {

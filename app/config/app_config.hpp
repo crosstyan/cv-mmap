@@ -6,7 +6,7 @@
 #include <vector>
 #include <app_enum_models.hpp>
 #include <filesystem>
-#include <format>
+#include <cvmmap/compat/format.hpp>
 
 #include <cvmmap/ipc.hpp>
 #include <cvmmap/target.hpp>
@@ -165,14 +165,14 @@ struct Config {
 	[[nodiscard]]
 	std::string shm_name() const {
 		return cvmmap::resolve_cvmmap_target_or_throw(
-			std::format("cvmmap://{}@{}?namespace={}", name, ipc.prefix, ipc.name_space))
+			cvmmap::format("cvmmap://{}@{}?namespace={}", name, ipc.prefix, ipc.name_space))
 			.shm_name;
 	}
 
 	[[nodiscard]]
 	std::string zmq_address() const {
 		return cvmmap::resolve_cvmmap_target_or_throw(
-			std::format("cvmmap://{}@{}?namespace={}", name, ipc.prefix, ipc.name_space))
+			cvmmap::format("cvmmap://{}@{}?namespace={}", name, ipc.prefix, ipc.name_space))
 			.zmq_addr;
 	}
 };

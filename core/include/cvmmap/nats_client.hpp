@@ -2,8 +2,8 @@
 
 #include <chrono>
 #include <cstdint>
-#include <expected>
-#include <functional>
+#include <cvmmap/compat/expected.hpp>
+#include <cvmmap/compat/functional.hpp>
 #include <memory>
 #include <span>
 #include <string>
@@ -26,34 +26,34 @@ public:
 	void Stop();
 
 	// Control (NATS request-reply, blocking with timeout)
-	std::expected<int, int>
+	cvmmap::expected<int, int>
 	ResetFrameCount(std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
-	std::expected<SourceInfo, int>
+	cvmmap::expected<SourceInfo, int>
 	GetSourceInfo(std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
-	std::expected<SeekResult, int>
+	cvmmap::expected<SeekResult, int>
 	SeekTimestampNs(uint64_t ts, std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
-	std::expected<ControlCapabilities, ControlError>
+	cvmmap::expected<ControlCapabilities, ControlError>
 	GetCapabilities(std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
-	std::expected<RecordingStatus, ControlError>
+	cvmmap::expected<RecordingStatus, ControlError>
 	StartRecording(const RecordingRequest &request,
 				   std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
-	std::expected<RecordingStatus, ControlError>
+	cvmmap::expected<RecordingStatus, ControlError>
 	StopRecording(RecordingFormat format,
 				  std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
-	std::expected<RecordingStatus, ControlError>
+	cvmmap::expected<RecordingStatus, ControlError>
 	GetRecordingStatus(RecordingFormat format,
-					   std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
+				       std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
 	// Subscriptions (NATS pub/sub)
-	using OnBodyTrackingCallback = std::move_only_function<void(const body_tracking_frame_t &)>;
-	using OnBodyTrackingRawCallback = std::move_only_function<void(std::span<const uint8_t>)>;
-	using OnModuleStatusCallback = std::move_only_function<void(int32_t status_code)>;
+	using OnBodyTrackingCallback = cvmmap::move_only_function<void(const body_tracking_frame_t &)>;
+	using OnBodyTrackingRawCallback = cvmmap::move_only_function<void(std::span<const uint8_t>)>;
+	using OnModuleStatusCallback = cvmmap::move_only_function<void(int32_t status_code)>;
 	void SetBodyTrackingCallback(OnBodyTrackingCallback &&cb);
 	void SetBodyTrackingRawCallback(OnBodyTrackingRawCallback &&cb);
 	void SetModuleStatusCallback(OnModuleStatusCallback &&cb);

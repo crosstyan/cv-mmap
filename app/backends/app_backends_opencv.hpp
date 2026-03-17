@@ -2,6 +2,7 @@
 #define D85CE6BB_6714_4CC0_871D_EB7629F6E811
 #include <memory>
 #include <variant>
+#include <cvmmap/compat/expected.hpp>
 #include "app_backends_facade.hpp"
 #include "app_enum_models.hpp"
 
@@ -28,7 +29,7 @@ struct OpenCVBackend {
 	void SetOnBodyTracking(on_body_tracking_fn_t on_body_tracking);
 	void SetOnError(on_error_fn_t on_error);
 	source_info_t GetSourceInfo();
-	std::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns);
+	cvmmap::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns);
 	/**
 	 * @brief Reset frame count to zero
 	 * @return 0 on success, -EIO on I/O error
@@ -37,9 +38,9 @@ struct OpenCVBackend {
 	 * frame count without any seeking.
 	 */
 	error_t ResetFrameCount();
-	std::expected<recording_status_t, error_t> StartRecording(std::string_view output_path);
-	std::expected<recording_status_t, error_t> StopRecording();
-	std::expected<recording_status_t, error_t> GetRecordingStatus();
+	cvmmap::expected<recording_status_t, error_t> StartRecording(std::string_view output_path);
+	cvmmap::expected<recording_status_t, error_t> StopRecording();
+	cvmmap::expected<recording_status_t, error_t> GetRecordingStatus();
 	std::string GetLastRecordingError();
 };
 }

@@ -1,6 +1,7 @@
 ####### MODELS #######
 add_library(app_models STATIC models/app_models.cpp)
 target_include_directories(app_models PUBLIC models)
+target_link_libraries(app_models PUBLIC cvmmap_target)
 
 ####### CONFIG #######
 add_library(app_config STATIC config/app_config.cpp)
@@ -308,7 +309,6 @@ if (WITH_BACKEND_ZED)
         target_link_libraries(app_video_backends PRIVATE ${ZED_LIBS})
 endif()
 
-target_link_libraries(app_video_backends PUBLIC msft_proxy4::proxy)
 target_link_libraries(app_video_backends PUBLIC app_models)
 target_link_libraries(app_video_backends PUBLIC app_config)
 target_link_libraries(app_video_backends PUBLIC cvmmap_ipc)

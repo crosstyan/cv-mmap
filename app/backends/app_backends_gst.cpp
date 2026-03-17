@@ -6,6 +6,7 @@
 #include <optional>
 #include <atomic>
 #include <mutex>
+#include <cvmmap/compat/expected.hpp>
 #include <spdlog/spdlog.h>
 #include <errno.h>
 #include "app_backends_gst.hpp"
@@ -573,20 +574,20 @@ struct GStreamerBackendImpl {
 		_on_error = std::move(on_error_);
 	}
 
-	std::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns) {
+	cvmmap::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns) {
 		if (!finite_source_info) {
-			return std::unexpected(-EOPNOTSUPP);
+			return cvmmap::unexpected(-EOPNOTSUPP);
 		}
 		if (options.video_config.use_finite_as_infinite_stream) {
-			return std::unexpected(-EOPNOTSUPP);
+			return cvmmap::unexpected(-EOPNOTSUPP);
 		}
 		if (!pipeline) {
-			return std::unexpected(-ENODEV);
+			return cvmmap::unexpected(-ENODEV);
 		}
 
 		const auto duration = static_cast<uint64_t>(finite_source_info->duration_ns);
 		if (timestamp_ns > duration) {
-			return std::unexpected(-ERANGE);
+			return cvmmap::unexpected(-ERANGE);
 		}
 
 		const auto interval_ns = finite_frame_interval_ns();
@@ -599,7 +600,7 @@ struct GStreamerBackendImpl {
 			static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT),
 			static_cast<gint64>(timestamp_ns));
 		if (!success) {
-			return std::unexpected(-EIO);
+			return cvmmap::unexpected(-EIO);
 		}
 
 		source_frame_index = frame_index;
@@ -673,7 +674,7 @@ source_info_t GStreamerBackend::GetSourceInfo() {
 	return impl->GetSourceInfo();
 }
 
-std::expected<seek_result_t, error_t> GStreamerBackend::SeekTimestampNs(uint64_t timestamp_ns) {
+cvmmap::expected<seek_result_t, error_t> GStreamerBackend::SeekTimestampNs(uint64_t timestamp_ns) {
 	return impl->SeekTimestampNs(timestamp_ns);
 }
 
@@ -681,16 +682,16 @@ error_t GStreamerBackend::ResetFrameCount() {
 	return impl->ResetFrameCount();
 }
 
-std::expected<recording_status_t, error_t> GStreamerBackend::StartRecording(std::string_view) {
-	return std::unexpected(-EOPNOTSUPP);
+cvmmap::expected<recording_status_t, error_t> GStreamerBackend::StartRecording(std::string_view) {
+	return cvmmap::unexpected(-EOPNOTSUPP);
 }
 
-std::expected<recording_status_t, error_t> GStreamerBackend::StopRecording() {
-	return std::unexpected(-EOPNOTSUPP);
+cvmmap::expected<recording_status_t, error_t> GStreamerBackend::StopRecording() {
+	return cvmmap::unexpected(-EOPNOTSUPP);
 }
 
-std::expected<recording_status_t, error_t> GStreamerBackend::GetRecordingStatus() {
-	return std::unexpected(-EOPNOTSUPP);
+cvmmap::expected<recording_status_t, error_t> GStreamerBackend::GetRecordingStatus() {
+	return cvmmap::unexpected(-EOPNOTSUPP);
 }
 
 std::string GStreamerBackend::GetLastRecordingError() {

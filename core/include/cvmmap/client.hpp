@@ -5,8 +5,8 @@
 
 #include <chrono>
 #include <cstdint>
-#include <expected>
-#include <functional>
+#include <cvmmap/compat/expected.hpp>
+#include <cvmmap/compat/functional.hpp>
 #include <memory>
 #include <optional>
 #include <span>
@@ -115,13 +115,13 @@ struct ClientConfig {
 
 class CvMmapClient {
 public:
-	using OnFrameCallback = std::move_only_function<void(
+	using OnFrameCallback = cvmmap::move_only_function<void(
 		const frame_metadata_t &metadata, std::span<const uint8_t> buffer)>;
-	using OnFramePlanesCallback = std::move_only_function<void(
+	using OnFramePlanesCallback = cvmmap::move_only_function<void(
 		const frame_metadata_t &metadata, frame_planes_view_t planes)>;
-	using OnBodyTrackingCallback = std::move_only_function<void(
+	using OnBodyTrackingCallback = cvmmap::move_only_function<void(
 		const body_tracking_frame_t &frame)>;
-	using OnEventCallback = std::move_only_function<void(ModuleStatus status)>;
+	using OnEventCallback = cvmmap::move_only_function<void(ModuleStatus status)>;
 
 	static constexpr auto DEFAULT_CONTROL_TIMEOUT =
 		std::chrono::milliseconds{1000};
@@ -152,44 +152,44 @@ public:
 	ResetFrameCount(std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
-	std::expected<SourceInfo, int32_t>
+	cvmmap::expected<SourceInfo, int32_t>
 	GetSourceInfo(std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
-	std::expected<SeekResult, int32_t>
+	cvmmap::expected<SeekResult, int32_t>
 	SeekTimestampNs(uint64_t timestamp_ns,
 				   std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
-	std::expected<ControlCapabilities, ControlError>
+	cvmmap::expected<ControlCapabilities, ControlError>
 	GetCapabilities(std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
-	std::expected<RecordingStatus, ControlError>
+	cvmmap::expected<RecordingStatus, ControlError>
 	StartRecording(const RecordingRequest &request,
 				  std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
-	std::expected<RecordingStatus, ControlError>
+	cvmmap::expected<RecordingStatus, ControlError>
 	StartRecording(std::string_view output_path,
 				  std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
-	std::expected<RecordingStatus, ControlError>
+	cvmmap::expected<RecordingStatus, ControlError>
 	StopRecording(RecordingFormat format,
 				 std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
-	std::expected<RecordingStatus, ControlError>
+	cvmmap::expected<RecordingStatus, ControlError>
 	StopRecording(std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
-	std::expected<RecordingStatus, ControlError>
+	cvmmap::expected<RecordingStatus, ControlError>
 	GetRecordingStatus(RecordingFormat format,
-						  std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
+					  std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
-	std::expected<RecordingStatus, ControlError>
+	cvmmap::expected<RecordingStatus, ControlError>
 	GetRecordingStatus(std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 private:

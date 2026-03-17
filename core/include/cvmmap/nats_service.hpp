@@ -1,7 +1,7 @@
 #pragma once
 
 #include <cstdint>
-#include <expected>
+#include <cvmmap/compat/expected.hpp>
 #include <functional>
 #include <memory>
 #include <span>
@@ -17,11 +17,11 @@ struct NatsControlHandlers {
 	std::function<int()> on_reset_frame_count;
 	std::function<app::backends::source_info_t()> on_get_source_info;
 	std::function<bool()> on_source_can_seek;
-	std::function<std::expected<app::backends::seek_result_t, int>(uint64_t)> on_seek_timestamp;
+	std::function<cvmmap::expected<app::backends::seek_result_t, int>(uint64_t)> on_seek_timestamp;
 	std::function<bool()> on_svo_recording_available;
-	std::function<std::expected<app::backends::recording_status_t, int>(const app::backends::svo_recording_request_t &)> on_start_svo_recording;
-	std::function<std::expected<app::backends::recording_status_t, int>()> on_stop_svo_recording;
-	std::function<std::expected<app::backends::recording_status_t, int>()> on_get_svo_recording_status;
+	std::function<cvmmap::expected<app::backends::recording_status_t, int>(const app::backends::svo_recording_request_t &)> on_start_svo_recording;
+	std::function<cvmmap::expected<app::backends::recording_status_t, int>()> on_stop_svo_recording;
+	std::function<cvmmap::expected<app::backends::recording_status_t, int>()> on_get_svo_recording_status;
 	std::function<std::string()> on_get_svo_last_recording_error;
 };
 

@@ -8,7 +8,7 @@
 #include <chrono>
 #include <cstring>
 #include <exception>
-#include <format>
+#include <cvmmap/compat/format.hpp>
 #include <string>
 #include <vector>
 
@@ -370,7 +370,7 @@ struct NatsControlService::impl {
 		} catch (const std::exception &e) {
 			response.set_error(pb::ERROR_CODE_ERROR);
 			response.set_error_message(
-				std::format("unexpected SVO recording start failure: {}", e.what()));
+				cvmmap::format("unexpected SVO recording start failure: {}", e.what()));
 			self->reply(message, response);
 			return;
 		} catch (...) {

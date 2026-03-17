@@ -2,6 +2,7 @@
 #define CE5657DE_F3BD_4D12_B529_2DB6C5F4E72B
 
 #include <memory>
+#include <cvmmap/compat/expected.hpp>
 #include "app_backends_facade.hpp"
 
 namespace app {
@@ -26,11 +27,11 @@ struct ZedBackend {
 	void SetOnBodyTracking(on_body_tracking_fn_t on_body_tracking);
 	void SetOnError(on_error_fn_t on_error);
 	source_info_t GetSourceInfo();
-	std::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns);
+	cvmmap::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns);
 	error_t ResetFrameCount();
-	std::expected<recording_status_t, error_t> StartRecording(const svo_recording_request_t &request);
-	std::expected<recording_status_t, error_t> StopRecording();
-	std::expected<recording_status_t, error_t> GetRecordingStatus();
+	cvmmap::expected<recording_status_t, error_t> StartRecording(const svo_recording_request_t &request);
+	cvmmap::expected<recording_status_t, error_t> StopRecording();
+	cvmmap::expected<recording_status_t, error_t> GetRecordingStatus();
 	std::string GetLastRecordingError();
 };
 

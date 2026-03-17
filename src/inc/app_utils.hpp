@@ -3,8 +3,8 @@
 #include <string>
 #include <span>
 #include <cstdint>
-#include <format>
-#include <functional>
+#include <cvmmap/compat/format.hpp>
+#include <cvmmap/compat/functional.hpp>
 
 namespace app {
 /**
@@ -17,11 +17,11 @@ inline std::string hexdump(std::span<const uint8_t> data, size_t bytes_per_line 
 	std::string result;
 	for (size_t offset = 0; offset < data.size(); offset += bytes_per_line) {
 		// offset
-		result += std::format("{:08x}: ", offset);
+		result += cvmmap::format("{:08x}: ", offset);
 		// hex bytes
 		for (size_t i = 0; i < bytes_per_line; ++i) {
 			if (offset + i < data.size()) {
-				result += std::format("{:02x}", data[offset + i]);
+				result += cvmmap::format("{:02x}", data[offset + i]);
 			} else {
 				result += "  ";
 			}
@@ -44,11 +44,7 @@ inline std::string hexdump(std::span<const uint8_t> data, size_t bytes_per_line 
  * @brief a simple RAII helper for `defer` like behavior
  */
 struct deferrer {
-#ifdef __cpp_lib_move_only_function
-	using fn_t = std::move_only_function<void()>;
-#else
-	using fn_t = std::function<void()>;
-#endif
+	using fn_t = cvmmap::move_only_function<void()>;
 
 	deferrer(fn_t f) : _f(std::move(f)) {}
 	~deferrer() {

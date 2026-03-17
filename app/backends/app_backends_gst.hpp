@@ -2,6 +2,7 @@
 #define EE8D58F7_CFE6_44F9_8A1A_BAF66882A291
 #include <memory>
 #include <string>
+#include <cvmmap/compat/expected.hpp>
 #include "app_backends_facade.hpp"
 
 namespace app {
@@ -52,7 +53,7 @@ struct GStreamerBackend {
 	void SetOnBodyTracking(on_body_tracking_fn_t on_body_tracking);
 	void SetOnError(on_error_fn_t on_error);
 	source_info_t GetSourceInfo();
-	std::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns);
+	cvmmap::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns);
 	/**
 	 * @brief Reset frame count to zero
 	 * @return 0 on success, -EIO on I/O error
@@ -61,9 +62,9 @@ struct GStreamerBackend {
 	 * frame count without any seeking.
 	 */
 	error_t ResetFrameCount();
-	std::expected<recording_status_t, error_t> StartRecording(std::string_view output_path);
-	std::expected<recording_status_t, error_t> StopRecording();
-	std::expected<recording_status_t, error_t> GetRecordingStatus();
+	cvmmap::expected<recording_status_t, error_t> StartRecording(std::string_view output_path);
+	cvmmap::expected<recording_status_t, error_t> StopRecording();
+	cvmmap::expected<recording_status_t, error_t> GetRecordingStatus();
 	std::string GetLastRecordingError();
 };
 

@@ -1,6 +1,23 @@
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
+function(cvmmap_configure_compat target_name)
+	if(CVMMAP_HAS_STD_EXPECTED)
+		target_compile_definitions(${target_name} PUBLIC CVMMAP_HAS_STD_EXPECTED=1)
+	else()
+		target_compile_definitions(${target_name} PUBLIC CVMMAP_HAS_STD_EXPECTED=0)
+		target_link_libraries(${target_name} PUBLIC tl::expected)
+	endif()
+
+	if(CVMMAP_HAS_STD_FORMAT)
+		target_compile_definitions(${target_name} PUBLIC CVMMAP_HAS_STD_FORMAT=1)
+	else()
+		target_compile_definitions(${target_name} PUBLIC CVMMAP_HAS_STD_FORMAT=0)
+		target_link_libraries(${target_name} PUBLIC fmt::fmt)
+	endif()
+endfunction()
+
+
 add_library(cvmmap_target STATIC
 	src/target.cpp
 )
@@ -11,6 +28,7 @@ target_include_directories(cvmmap_target
 		$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 		$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
+cvmmap_configure_compat(cvmmap_target)
 add_library(cvmmap::target ALIAS cvmmap_target)
 
 add_library(cvmmap_ipc STATIC
@@ -23,6 +41,7 @@ target_include_directories(cvmmap_ipc
 		$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 		$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
+cvmmap_configure_compat(cvmmap_ipc)
 add_library(cvmmap::ipc ALIAS cvmmap_ipc)
 
 add_library(cvmmap_client STATIC
@@ -37,13 +56,13 @@ target_include_directories(cvmmap_client
 )
 target_link_libraries(cvmmap_client
 	PUBLIC
-			cvmmap_target
-			cvmmap_ipc
-			cvmmap_nats
-			cppzmq
-			spdlog::spdlog
-			fmt::fmt
-	)
+		cvmmap_target
+		cvmmap_ipc
+		cvmmap_nats
+		cppzmq
+		spdlog::spdlog
+)
+cvmmap_configure_compat(cvmmap_client)
 add_library(cvmmap::client ALIAS cvmmap_client)
 
 # -- Protobuf generated library --
@@ -62,6 +81,7 @@ target_link_libraries(cvmmap_proto
 	PUBLIC
 		protobuf::libprotobuf
 )
+cvmmap_configure_compat(cvmmap_proto)
 add_library(cvmmap::proto ALIAS cvmmap_proto)
 
 # -- NATS control library --
@@ -78,13 +98,13 @@ target_include_directories(cvmmap_nats
 )
 target_link_libraries(cvmmap_nats
 	PUBLIC
-			cvmmap_target
-			cvmmap_ipc
-			cvmmap_proto
-			cnats::nats_static
-			spdlog::spdlog
-			fmt::fmt
-	)
+		cvmmap_target
+		cvmmap_ipc
+		cvmmap_proto
+		cnats::nats_static
+		spdlog::spdlog
+)
+cvmmap_configure_compat(cvmmap_nats)
 add_library(cvmmap::nats ALIAS cvmmap_nats)
 
 write_basic_package_version_file(

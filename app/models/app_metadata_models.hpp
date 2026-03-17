@@ -8,7 +8,7 @@
 #include <cstring>
 #include <optional>
 #include <span>
-#include <format>
+#include <cvmmap/compat/format.hpp>
 #include <string_view>
 #include <sys/types.h>
 #include <type_traits>
@@ -26,7 +26,7 @@ struct sync_message_t {
 	sync_message_t(const std::string_view &label, uint32_t frame_count) : frame_count(frame_count) {
 		_magic = FRAME_TOPIC_MAGIC;
 		if (label.size() > LABEL_LEN_MAX) {
-			throw std::invalid_argument(std::format("label is too long: `{}`", label));
+			throw std::invalid_argument(cvmmap::format("label is too long: `{}`", label));
 		}
 		std::copy(label.begin(), label.end(), _label);
 		std::fill(_label + label.size(), _label + LABEL_LEN_MAX, '\0');
@@ -85,7 +85,7 @@ struct module_status_message_t {
 
 	void _fill_label(const std::string_view &label) {
 		if (label.size() > LABEL_LEN_MAX) {
-			throw std::invalid_argument(std::format("label is too long: `{}`", label));
+			throw std::invalid_argument(cvmmap::format("label is too long: `{}`", label));
 		}
 		std::copy(label.begin(), label.end(), _label);
 		std::fill(_label + label.size(), _label + LABEL_LEN_MAX, '\0');

@@ -7,13 +7,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <format>
+#include <cvmmap/compat/format.hpp>
 #include <csignal>
 #include <limits>
 #include <optional>
 #include <string_view>
 #include <string>
-#include <expected>
+#include <cvmmap/compat/expected.hpp>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -31,22 +31,9 @@
 #include "config/app_config.hpp"
 #include "models/app_metadata_models.hpp"
 #include "app_utils.hpp"
-#include "backends/app_backends_facade.hpp"
-#include "backends/app_backends_dummy.hpp"
+#include "backends/app_backends_handle.hpp"
 #include "app_preprocess_undistort.hpp"
 #include <cvmmap/nats_service.hpp>
-#ifdef WITH_BACKEND_OPENCV
-#include "backends/app_backends_opencv.hpp"
-#endif
-#ifdef WITH_BACKEND_GSTREAMER
-#include "backends/app_backends_gst.hpp"
-#endif
-#ifdef WITH_BACKEND_MCAP
-#include "backends/app_backends_mcap.hpp"
-#endif
-#ifdef WITH_BACKEND_ZED
-#include "backends/app_backends_zed.hpp"
-#endif
 
 #if defined(__APPLE__) && defined(__MACH__)
 #define __APP_MACOS__
@@ -106,7 +93,7 @@ int main(int argc, char **argv) {
 	}
 
 	const auto resolved_target = cvmmap::resolve_cvmmap_target_or_throw(
-		std::format(
+		cvmmap::format(
 			"cvmmap://{}@{}?namespace={}",
 			config.name,
 			config.ipc.prefix,
@@ -204,8 +191,7 @@ int main(int argc, char **argv) {
 			return *this;
 		}
 
-		static std::expected<shm_state_t, int> open(const std::string &name) {
-			using ue_t = std::unexpected<int>;
+		static cvmmap::expected<shm_state_t, int> open(const std::string &name) {
 			spdlog::debug("opening shared memory `{}`", name);
 			// mode=0666
 			// shouldn't be 777. It's generally not needed unless you're putting
@@ -218,13 +204,13 @@ int main(int argc, char **argv) {
 					auto err = shm_unlink(name.c_str());
 					if (err == -1) {
 						spdlog::error("unlinking shared memory `{}`. reason: {}", name, strerror(errno));
-						return ue_t{errno};
+						return cvmmap::unexpected(errno);
 					} else {
 						spdlog::warn("unlinked shared memory `{}`", name);
 						return shm_state_t::open(name);
 					}
 				}
-				return ue_t{errno};
+				return cvmmap::unexpected(errno);
 			}
 			spdlog::debug("opened shared memory `{}` (fd={})", name, shm_fd);
 			return shm_state_t(name, shm_fd);
@@ -309,19 +295,18 @@ int main(int argc, char **argv) {
 			std::memcpy(_metadata_buffer.data(), &metadata, sizeof(metadata));
 		}
 
-		static std::expected<frame_state_t, int> open(int shm_fd, size_t size) {
-			using ue_t = std::unexpected<int>;
+		static cvmmap::expected<frame_state_t, int> open(int shm_fd, size_t size) {
 			// https://www.deepanseeralan.com/tech/playing-with-shared-memory/
 			// ftruncate first, then mmap
 			if (ftruncate(shm_fd, size) == -1) {
 				spdlog::error("truncate shared memory; fd={}, errno={} ({})", shm_fd, errno, strerror(errno));
-				return ue_t{errno};
+				return cvmmap::unexpected(errno);
 			}
 			auto ptr = static_cast<uint8_t *>(mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0));
 			if (ptr == MAP_FAILED) {
 				// https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/mmap.2.html
 				spdlog::error("mmap shared memory; fd={}, errno={} ({})", shm_fd, errno, strerror(errno));
-				return ue_t{errno};
+				return cvmmap::unexpected(errno);
 			}
 			return frame_state_t(std::span<uint8_t>(ptr, size));
 		}
@@ -554,14 +539,14 @@ int main(int argc, char **argv) {
 	};
 
 	// Create backend based on config
-	pro::proxy<app::backends::IBackend> backend;
+	app::backends::BackendHandle backend;
 	switch (config.video.backend) {
 	case app::BackendType::Dummy: {
 		if (!config.dummy) {
 			spdlog::error("Dummy backend selected but [dummy] config section missing");
 			return 1;
 		}
-		backend = pro::make_proxy<app::backends::IBackend, app::backends::DummyBackend>(
+		backend.emplace<app::backends::DummyBackend>(
 			*config.dummy,
 			config.video);
 		spdlog::info("using Dummy backend");
@@ -573,7 +558,7 @@ int main(int argc, char **argv) {
 			spdlog::error("OpenCV backend selected but [opencv] config section missing");
 			return 1;
 		}
-		backend = pro::make_proxy<app::backends::IBackend, app::backends::OpenCVBackend>(
+		backend.emplace<app::backends::OpenCVBackend>(
 			config.opencv->parameter,
 			config.video,
 			config.opencv->api_preference);
@@ -592,7 +577,7 @@ int main(int argc, char **argv) {
 			spdlog::error("GStreamer backend selected but [gstreamer] config section missing");
 			return 1;
 		}
-		backend = pro::make_proxy<app::backends::IBackend, app::backends::GStreamerBackend>(
+		backend.emplace<app::backends::GStreamerBackend>(
 			config.gstreamer->pipeline,
 			config.video);
 		spdlog::info("using GStreamer backend");
@@ -610,7 +595,7 @@ int main(int argc, char **argv) {
 			spdlog::error("MCAP backend selected but [mcap] config section missing");
 			return 1;
 		}
-		backend = pro::make_proxy<app::backends::IBackend, app::backends::McapBackend>(
+		backend.emplace<app::backends::McapBackend>(
 			*config.mcap,
 			config.video);
 		spdlog::info("using MCAP backend");
@@ -628,7 +613,7 @@ int main(int argc, char **argv) {
 			spdlog::error("ZED backend selected but [zed] config section missing");
 			return 1;
 		}
-		backend = pro::make_proxy<app::backends::IBackend, app::backends::ZedBackend>(
+		backend.emplace<app::backends::ZedBackend>(
 			*config.zed,
 			config.video);
 		spdlog::info("using ZED backend");
@@ -643,7 +628,7 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 
-	backend->SetOnMetadata([&shm_state, &frame_state, &sync_msg, &config, &build_v2_metadata, &now_ns](const frame_metadata_t &metadata) {
+	backend.SetOnMetadata([&shm_state, &frame_state, &sync_msg, &config, &build_v2_metadata, &now_ns](const frame_metadata_t &metadata) {
 		const auto picture_buffer_size = metadata.info.buffer_size;
 		if (picture_buffer_size == 0) {
 			spdlog::error("received zero-sized picture buffer in metadata callback");
@@ -670,7 +655,7 @@ int main(int argc, char **argv) {
 		sync_msg.emplace(config.name, 0);
 	});
 
-	backend->SetOnFrame([&frame_state, &sync_msg, &sock, &shm_state, &build_v2_metadata, &undistort_pass](std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata) {
+	backend.SetOnFrame([&frame_state, &sync_msg, &sock, &shm_state, &build_v2_metadata, &undistort_pass](std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata) {
 		if (not frame_state || not sync_msg) {
 			spdlog::error("[BUG] frame callback invoked before metadata callback (should not happen)");
 			return;
@@ -737,7 +722,7 @@ int main(int argc, char **argv) {
 		}
 	});
 
-		backend->SetOnBodyTracking([&serialize_body_tracking_frame, &nats_service](const cvmmap::body_tracking_frame_t &frame) {
+	backend.SetOnBodyTracking([&serialize_body_tracking_frame, &nats_service](const cvmmap::body_tracking_frame_t &frame) {
 			auto bytes = serialize_body_tracking_frame(frame);
 			nats_service->PublishBodyTracking(
 				std::span<const uint8_t>(bytes.data(), bytes.size()));
@@ -747,12 +732,12 @@ int main(int argc, char **argv) {
 			nats_service->PublishModuleStatus(status);
 		};
 
-	backend->SetOnError([&backend, &config, send_status](int error_code, std::string_view message) {
+	backend.SetOnError([&backend, &config, send_status](int error_code, std::string_view message) {
 		if (error_code == backends::ERR_EOS) {
 			spdlog::info("backend EOF: {}", message);
 			if (config.video.finite_stream_ending_behavior == app::FiniteStreamEndingBehavior::Loop) {
 				spdlog::info("looping finite stream (encore)");
-				auto err = backend->ResetFrameCount();
+				auto err = backend.ResetFrameCount();
 				if (err != backends::ERR_OK) {
 					spdlog::error("resetting frame count for loop: {}", err);
 					is_running.store(false, std::memory_order::relaxed);
@@ -773,80 +758,80 @@ int main(int argc, char **argv) {
 
 	const auto can_seek = [&backend]() {
 #ifdef WITH_BACKEND_MCAP
-		return proxy_cast<app::backends::McapBackend>(&*backend) != nullptr;
+		return backend.get_if<app::backends::McapBackend>() != nullptr;
 #else
 		return false;
 #endif
 	};
 
 	const auto seek_timestamp = [&backend](const uint64_t timestamp_ns)
-		-> std::expected<backends::seek_result_t, backends::error_t> {
+		-> cvmmap::expected<backends::seek_result_t, backends::error_t> {
 #ifdef WITH_BACKEND_MCAP
-		if (auto *mcap_backend = proxy_cast<app::backends::McapBackend>(&*backend)) {
+		if (auto *mcap_backend = backend.get_if<app::backends::McapBackend>()) {
 			return mcap_backend->SeekTimestampNs(timestamp_ns);
 		}
 #endif
-		return std::unexpected(-EOPNOTSUPP);
+		return cvmmap::unexpected(-EOPNOTSUPP);
 	};
 
 	const auto can_record_svo = [&backend]() {
 #ifdef WITH_BACKEND_ZED
-		return proxy_cast<app::backends::ZedBackend>(&*backend) != nullptr;
+		return backend.get_if<app::backends::ZedBackend>() != nullptr;
 #else
 		return false;
 #endif
 	};
 
 	const auto start_svo_recording = [&backend](const backends::svo_recording_request_t &request)
-		-> std::expected<backends::recording_status_t, backends::error_t> {
+		-> cvmmap::expected<backends::recording_status_t, backends::error_t> {
 #ifdef WITH_BACKEND_ZED
-		if (auto *zed_backend = proxy_cast<app::backends::ZedBackend>(&*backend)) {
+		if (auto *zed_backend = backend.get_if<app::backends::ZedBackend>()) {
 			return zed_backend->StartRecording(request);
 		}
 #endif
-		return std::unexpected(-EOPNOTSUPP);
+		return cvmmap::unexpected(-EOPNOTSUPP);
 	};
 
 	const auto stop_svo_recording = [&backend]()
-		-> std::expected<backends::recording_status_t, backends::error_t> {
+		-> cvmmap::expected<backends::recording_status_t, backends::error_t> {
 #ifdef WITH_BACKEND_ZED
-		if (auto *zed_backend = proxy_cast<app::backends::ZedBackend>(&*backend)) {
+		if (auto *zed_backend = backend.get_if<app::backends::ZedBackend>()) {
 			return zed_backend->StopRecording();
 		}
 #endif
-		return std::unexpected(-EOPNOTSUPP);
+		return cvmmap::unexpected(-EOPNOTSUPP);
 	};
 
 	const auto get_svo_recording_status = [&backend]()
-		-> std::expected<backends::recording_status_t, backends::error_t> {
+		-> cvmmap::expected<backends::recording_status_t, backends::error_t> {
 #ifdef WITH_BACKEND_ZED
-		if (auto *zed_backend = proxy_cast<app::backends::ZedBackend>(&*backend)) {
+		if (auto *zed_backend = backend.get_if<app::backends::ZedBackend>()) {
 			return zed_backend->GetRecordingStatus();
 		}
 #endif
-		return std::unexpected(-EOPNOTSUPP);
+		return cvmmap::unexpected(-EOPNOTSUPP);
 	};
 
 	const auto get_svo_recording_error = [&backend]() {
 #ifdef WITH_BACKEND_ZED
-		if (auto *zed_backend = proxy_cast<app::backends::ZedBackend>(&*backend)) {
+		if (auto *zed_backend = backend.get_if<app::backends::ZedBackend>()) {
 			return zed_backend->GetLastRecordingError();
 		}
 #endif
 		return std::string("recording is not supported by the active backend");
 	};
 
-	backend->Init();
+	backend.Init();
 
 	// Wire up NATS handlers and start service
 		cvmmap::NatsControlHandlers nats_handlers;
 		nats_handlers.on_reset_frame_count = [&backend, &backend_control_mutex]() -> int {
 			std::lock_guard lock(backend_control_mutex);
-			return backend->ResetFrameCount();
+			return backend.ResetFrameCount();
 		};
 		nats_handlers.on_get_source_info = [&backend, &backend_control_mutex]() {
 			std::lock_guard lock(backend_control_mutex);
-			return backend->GetSourceInfo();
+			return backend.GetSourceInfo();
 		};
 		nats_handlers.on_source_can_seek = [&can_seek]() {
 			return can_seek();
@@ -880,7 +865,7 @@ int main(int argc, char **argv) {
 		nats_service->SetHandlers(std::move(nats_handlers));
 		if (!nats_service->Start()) {
 			spdlog::error("failed to start NATS control service on '{}'", config.nats.url);
-			backend->Shutdown();
+			backend.Shutdown();
 			return 1;
 		}
 
@@ -889,7 +874,7 @@ int main(int argc, char **argv) {
 			std::this_thread::sleep_for(std::chrono::milliseconds{100});
 		}
 
-		backend->Shutdown();
+		backend.Shutdown();
 		send_status(MODULE_STATUS_OFFLINE);
 		nats_service->Stop();
 

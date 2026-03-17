@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include <cvmmap/compat/expected.hpp>
 #include <spdlog/spdlog.h>
 
 #include "app_backends_dummy.hpp"
@@ -144,11 +145,11 @@ struct DummyBackendImpl {
 		return info;
 	}
 
-	std::expected<seek_result_t, error_t> SeekTimestampNs(
+	cvmmap::expected<seek_result_t, error_t> SeekTimestampNs(
 		uint64_t timestamp_ns) {
 		if (!is_finite_source() ||
 			options.video_config.use_finite_as_infinite_stream) {
-			return std::unexpected(-EOPNOTSUPP);
+			return cvmmap::unexpected(-EOPNOTSUPP);
 		}
 
 		const auto interval_ns = frame_interval_ns_for(options.dummy_config);
@@ -157,7 +158,7 @@ struct DummyBackendImpl {
 				options.dummy_config.frames - 1, 0u)) *
 			interval_ns;
 		if (timestamp_ns > max_timestamp_ns) {
-			return std::unexpected(-ERANGE);
+			return cvmmap::unexpected(-ERANGE);
 		}
 
 		const auto frame_index = static_cast<uint32_t>(timestamp_ns / interval_ns);
@@ -323,7 +324,7 @@ source_info_t DummyBackend::GetSourceInfo() {
 	return impl->GetSourceInfo();
 }
 
-std::expected<seek_result_t, error_t> DummyBackend::SeekTimestampNs(uint64_t timestamp_ns) {
+cvmmap::expected<seek_result_t, error_t> DummyBackend::SeekTimestampNs(uint64_t timestamp_ns) {
 	return impl->SeekTimestampNs(timestamp_ns);
 }
 
@@ -331,16 +332,16 @@ error_t DummyBackend::ResetFrameCount() {
 	return impl->ResetFrameCount();
 }
 
-std::expected<recording_status_t, error_t> DummyBackend::StartRecording(std::string_view) {
-	return std::unexpected(-EOPNOTSUPP);
+cvmmap::expected<recording_status_t, error_t> DummyBackend::StartRecording(std::string_view) {
+	return cvmmap::unexpected(-EOPNOTSUPP);
 }
 
-std::expected<recording_status_t, error_t> DummyBackend::StopRecording() {
-	return std::unexpected(-EOPNOTSUPP);
+cvmmap::expected<recording_status_t, error_t> DummyBackend::StopRecording() {
+	return cvmmap::unexpected(-EOPNOTSUPP);
 }
 
-std::expected<recording_status_t, error_t> DummyBackend::GetRecordingStatus() {
-	return std::unexpected(-EOPNOTSUPP);
+cvmmap::expected<recording_status_t, error_t> DummyBackend::GetRecordingStatus() {
+	return cvmmap::unexpected(-EOPNOTSUPP);
 }
 
 std::string DummyBackend::GetLastRecordingError() {

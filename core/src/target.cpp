@@ -3,7 +3,7 @@
 
 #include <algorithm>
 #include <cctype>
-#include <format>
+#include <cvmmap/compat/format.hpp>
 #include <ranges>
 #include <stdexcept>
 #include <string>
@@ -117,7 +117,7 @@ ResolvedTarget resolve_target(const std::string &name_or_uri) {
 				auto key   = part.substr(0, eq);
 				auto value = part.substr(eq + 1);
 				if (key != "namespace") {
-					throw std::invalid_argument(std::format("unsupported cvmmap uri query key: {}", key));
+					throw std::invalid_argument(cvmmap::format("unsupported cvmmap uri query key: {}", key));
 				}
 				if (value.empty()) {
 					throw std::invalid_argument("cvmmap uri namespace is empty");
@@ -145,12 +145,12 @@ ResolvedTarget resolve_target(const std::string &name_or_uri) {
 	}
 
 	prefix = validate_prefix(prefix);
-	auto base_name = std::format("{}_{}", ns, instance);
+	auto base_name = cvmmap::format("{}_{}", ns, instance);
 	auto nats_target_key = base_name;
 	std::replace(nats_target_key.begin(), nats_target_key.end(), '.', '_');
-	auto sync_path = std::format("{}/{}", prefix, base_name);
+	auto sync_path = cvmmap::format("{}/{}", prefix, base_name);
 	if (sync_path.size() > UNIX_PATH_MAX_LEN) {
-		throw std::invalid_argument(std::format("cvmmap ipc path too long ({}>{})", sync_path.size(), UNIX_PATH_MAX_LEN));
+		throw std::invalid_argument(cvmmap::format("cvmmap ipc path too long ({}>{})", sync_path.size(), UNIX_PATH_MAX_LEN));
 	}
 
 	return ResolvedTarget{
@@ -171,7 +171,7 @@ cvmmap_target_t resolve_cvmmap_target_or_throw(const std::string &name_or_uri) {
 	target.base_name    = resolved.base_name;
 	target.nats_target_key = resolved.nats_target_key;
 	target.shm_name     = resolved.base_name;
-	target.zmq_addr     = std::format("ipc://{}/{}", resolved.prefix, resolved.base_name);
+	target.zmq_addr     = cvmmap::format("ipc://{}/{}", resolved.prefix, resolved.base_name);
 	return target;
 }
 

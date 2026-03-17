@@ -1,5 +1,5 @@
 #include <stdexcept>
-#include <format>
+#include <cvmmap/compat/format.hpp>
 #include <unordered_map>
 #include "app_enum_models.hpp"
 
@@ -64,7 +64,7 @@ int size_of(Depth depth) {
 	case Depth::F64:
 		return 8;
 	default:
-		throw app::invalid_argument(std::format("invalid depth value `{}`", static_cast<int>(depth)));
+		throw app::invalid_argument(cvmmap::format("invalid depth value `{}`", static_cast<int>(depth)));
 	}
 }
 
@@ -84,7 +84,7 @@ std::string_view to_string(const VideoCaptureAPIs api) {
 			return key;
 		}
 	}
-	throw invalid_argument(std::format("invalid API value: `{}`", static_cast<int>(api)));
+	throw invalid_argument(cvmmap::format("invalid API value: `{}`", static_cast<int>(api)));
 }
 
 VideoCaptureAPIs from_string(const std::string_view s) {
@@ -93,7 +93,7 @@ VideoCaptureAPIs from_string(const std::string_view s) {
 			return value;
 		}
 	}
-	throw invalid_argument(std::format("invalid API key: `{}`", s));
+	throw invalid_argument(cvmmap::format("invalid API key: `{}`", s));
 }
 
 PixelFormat guess_pixel_format(const int channels) {
@@ -105,7 +105,7 @@ PixelFormat guess_pixel_format(const int channels) {
 	case 4:
 		return PixelFormat::BGRA;
 	default:
-		throw invalid_argument(std::format("invalid channel count: `{}`", channels));
+		throw invalid_argument(cvmmap::format("invalid channel count: `{}`", channels));
 	}
 };
 }

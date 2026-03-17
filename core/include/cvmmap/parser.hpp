@@ -2,7 +2,7 @@
 
 #include "ipc.hpp"
 
-#include <expected>
+#include <cvmmap/compat/expected.hpp>
 #include <optional>
 #include <span>
 #include <string>
@@ -19,11 +19,11 @@ struct parsed_frame_metadata_t {
 	std::span<const uint8_t> confidence_plane{};
 };
 
-std::expected<parsed_frame_metadata_t, std::string>
+cvmmap::expected<parsed_frame_metadata_t, std::string>
 parse_frame_metadata_regions(std::span<const uint8_t> metadata_region,
 							 std::span<const uint8_t> payload_region);
 
-std::expected<body_tracking_frame_t, std::string>
+cvmmap::expected<body_tracking_frame_t, std::string>
 parse_body_tracking_message(std::span<const uint8_t> message);
 
 } // namespace cvmmap

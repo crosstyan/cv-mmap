@@ -2,6 +2,7 @@
 #include <cvmmap/nats_subjects.hpp>
 #include <cvmmap/parser.hpp>
 
+#include <cvmmap/compat/expected.hpp>
 #include <nats.h>
 #include <spdlog/spdlog.h>
 
@@ -71,7 +72,7 @@ int from_proto_error_code(const pb::ErrorCode error_code) {
 	}
 }
 
-std::expected<std::string, ControlError> recorder_capabilities_subject(
+cvmmap::expected<std::string, ControlError> recorder_capabilities_subject(
 	const std::string &target_key,
 	const RecordingFormat format) {
 	switch (format) {
@@ -80,14 +81,14 @@ std::expected<std::string, ControlError> recorder_capabilities_subject(
 	case RecordingFormat::Mcap:
 		return nats::subject_control_recorder_mcap_capabilities(target_key);
 	default:
-		return std::unexpected(ControlError{
+		return cvmmap::unexpected(ControlError{
 			.code = CONTROL_RESPONSE_INVALID_PAYLOAD,
 			.message = "recording format is required",
 		});
 	}
 }
 
-std::expected<std::string, ControlError> recording_start_subject(
+cvmmap::expected<std::string, ControlError> recording_start_subject(
 	const std::string &target_key,
 	const RecordingFormat format) {
 	switch (format) {
@@ -96,14 +97,14 @@ std::expected<std::string, ControlError> recording_start_subject(
 	case RecordingFormat::Mcap:
 		return nats::subject_control_recorder_mcap_start(target_key);
 	default:
-		return std::unexpected(ControlError{
+		return cvmmap::unexpected(ControlError{
 			.code = CONTROL_RESPONSE_INVALID_PAYLOAD,
 			.message = "recording format is required",
 		});
 	}
 }
 
-std::expected<std::string, ControlError> recording_stop_subject(
+cvmmap::expected<std::string, ControlError> recording_stop_subject(
 	const std::string &target_key,
 	const RecordingFormat format) {
 	switch (format) {
@@ -112,14 +113,14 @@ std::expected<std::string, ControlError> recording_stop_subject(
 	case RecordingFormat::Mcap:
 		return nats::subject_control_recorder_mcap_stop(target_key);
 	default:
-		return std::unexpected(ControlError{
+		return cvmmap::unexpected(ControlError{
 			.code = CONTROL_RESPONSE_INVALID_PAYLOAD,
 			.message = "recording format is required",
 		});
 	}
 }
 
-std::expected<std::string, ControlError> recording_status_subject(
+cvmmap::expected<std::string, ControlError> recording_status_subject(
 	const std::string &target_key,
 	const RecordingFormat format) {
 	switch (format) {
@@ -128,7 +129,7 @@ std::expected<std::string, ControlError> recording_status_subject(
 	case RecordingFormat::Mcap:
 		return nats::subject_control_recorder_mcap_status(target_key);
 	default:
-		return std::unexpected(ControlError{
+		return cvmmap::unexpected(ControlError{
 			.code = CONTROL_RESPONSE_INVALID_PAYLOAD,
 			.message = "recording format is required",
 		});
@@ -214,13 +215,13 @@ struct NatsControlClient::impl {
 	OnModuleStatusCallback on_module_status{};
 
 	template <typename ReqMsg, typename RespMsg>
-	std::expected<RespMsg, int> request(
+	cvmmap::expected<RespMsg, int> request(
 		const std::string &subject,
 		const ReqMsg &request_message,
 		const std::chrono::milliseconds timeout) {
 		std::lock_guard<std::mutex> lock(conn_mutex);
 		if (!conn) {
-			return std::unexpected(CONTROL_RESPONSE_ERROR);
+			return cvmmap::unexpected(CONTROL_RESPONSE_ERROR);
 		}
 
 		const auto size = request_message.ByteSizeLong();
@@ -237,19 +238,19 @@ struct NatsControlClient::impl {
 			timeout.count());
 		if (status != NATS_OK) {
 			if (status == NATS_TIMEOUT) {
-				return std::unexpected(CONTROL_RESPONSE_TIMEOUT);
+				return cvmmap::unexpected(CONTROL_RESPONSE_TIMEOUT);
 			}
 			spdlog::error(
 				"nats request to '{}': {}",
 				subject,
 				natsStatus_GetText(status));
-			return std::unexpected(CONTROL_RESPONSE_ERROR);
+			return cvmmap::unexpected(CONTROL_RESPONSE_ERROR);
 		}
 
 		RespMsg response;
 		if (!response.ParseFromArray(natsMsg_GetData(reply), natsMsg_GetDataLength(reply))) {
 			natsMsg_Destroy(reply);
-			return std::unexpected(CONTROL_RESPONSE_INVALID_PAYLOAD);
+			return cvmmap::unexpected(CONTROL_RESPONSE_INVALID_PAYLOAD);
 		}
 		natsMsg_Destroy(reply);
 		return response;
@@ -429,7 +430,7 @@ void NatsControlClient::Stop() {
 	}
 }
 
-std::expected<int, int> NatsControlClient::ResetFrameCount(
+cvmmap::expected<int, int> NatsControlClient::ResetFrameCount(
 	const std::chrono::milliseconds timeout) {
 	pb::ResetFrameCountRequest request;
 	auto response =
@@ -438,12 +439,12 @@ std::expected<int, int> NatsControlClient::ResetFrameCount(
 			request,
 			timeout);
 	if (!response) {
-		return std::unexpected(response.error());
+		return cvmmap::unexpected(response.error());
 	}
 	return from_proto_error_code(response->error());
 }
 
-std::expected<SourceInfo, int> NatsControlClient::GetSourceInfo(
+cvmmap::expected<SourceInfo, int> NatsControlClient::GetSourceInfo(
 	const std::chrono::milliseconds timeout) {
 	pb::GetSourceInfoRequest request;
 	auto response =
@@ -452,10 +453,10 @@ std::expected<SourceInfo, int> NatsControlClient::GetSourceInfo(
 			request,
 			timeout);
 	if (!response) {
-		return std::unexpected(response.error());
+		return cvmmap::unexpected(response.error());
 	}
 	if (response->error() != pb::ERROR_CODE_OK) {
-		return std::unexpected(from_proto_error_code(response->error()));
+		return cvmmap::unexpected(from_proto_error_code(response->error()));
 	}
 	return SourceInfo{
 		.source_kind = from_proto_source_kind(response->source_kind()),
@@ -469,7 +470,7 @@ std::expected<SourceInfo, int> NatsControlClient::GetSourceInfo(
 	};
 }
 
-std::expected<SeekResult, int> NatsControlClient::SeekTimestampNs(
+cvmmap::expected<SeekResult, int> NatsControlClient::SeekTimestampNs(
 	const uint64_t timestamp_ns,
 	const std::chrono::milliseconds timeout) {
 	pb::SeekTimestampRequest request;
@@ -480,10 +481,10 @@ std::expected<SeekResult, int> NatsControlClient::SeekTimestampNs(
 			request,
 			timeout);
 	if (!response) {
-		return std::unexpected(response.error());
+		return cvmmap::unexpected(response.error());
 	}
 	if (response->error() != pb::ERROR_CODE_OK) {
-		return std::unexpected(from_proto_error_code(response->error()));
+		return cvmmap::unexpected(from_proto_error_code(response->error()));
 	}
 	return SeekResult{
 		.requested_timestamp_ns = response->requested_timestamp_ns(),
@@ -493,7 +494,7 @@ std::expected<SeekResult, int> NatsControlClient::SeekTimestampNs(
 	};
 }
 
-std::expected<ControlCapabilities, ControlError> NatsControlClient::GetCapabilities(
+cvmmap::expected<ControlCapabilities, ControlError> NatsControlClient::GetCapabilities(
 	const std::chrono::milliseconds timeout) {
 	pb::CapabilitiesRequest request;
 	auto source_response =
@@ -502,10 +503,10 @@ std::expected<ControlCapabilities, ControlError> NatsControlClient::GetCapabilit
 			request,
 			timeout);
 	if (!source_response) {
-		return std::unexpected(ControlError{.code = source_response.error()});
+		return cvmmap::unexpected(ControlError{.code = source_response.error()});
 	}
 	if (source_response->error() != pb::ERROR_CODE_OK) {
-		return std::unexpected(ControlError{
+		return cvmmap::unexpected(ControlError{
 			.code = from_proto_error_code(source_response->error()),
 		});
 	}
@@ -535,11 +536,11 @@ std::expected<ControlCapabilities, ControlError> NatsControlClient::GetCapabilit
 	return capabilities;
 }
 
-std::expected<RecordingStatus, ControlError> NatsControlClient::StartRecording(
+cvmmap::expected<RecordingStatus, ControlError> NatsControlClient::StartRecording(
 	const RecordingRequest &request,
 	const std::chrono::milliseconds timeout) {
 	if (request.output_path.empty()) {
-		return std::unexpected(ControlError{
+		return cvmmap::unexpected(ControlError{
 			.code = CONTROL_RESPONSE_INVALID_PAYLOAD,
 			.message = "recording path is empty",
 		});
@@ -547,7 +548,7 @@ std::expected<RecordingStatus, ControlError> NatsControlClient::StartRecording(
 
 	auto subject = recording_start_subject(pimpl_->target_key, request.format);
 	if (!subject) {
-		return std::unexpected(subject.error());
+		return cvmmap::unexpected(subject.error());
 	}
 
 	pb::RecordingStartRequest wire_request;
@@ -556,7 +557,7 @@ std::expected<RecordingStatus, ControlError> NatsControlClient::StartRecording(
 	switch (request.format) {
 	case RecordingFormat::Svo:
 		if (request.mcap_options) {
-			return std::unexpected(ControlError{
+			return cvmmap::unexpected(ControlError{
 				.code = CONTROL_RESPONSE_INVALID_PAYLOAD,
 				.message = "MCAP options are invalid for SVO recording",
 			});
@@ -567,7 +568,7 @@ std::expected<RecordingStatus, ControlError> NatsControlClient::StartRecording(
 		break;
 	case RecordingFormat::Mcap:
 		if (request.svo_options) {
-			return std::unexpected(ControlError{
+			return cvmmap::unexpected(ControlError{
 				.code = CONTROL_RESPONSE_INVALID_PAYLOAD,
 				.message = "SVO options are invalid for MCAP recording",
 			});
@@ -577,7 +578,7 @@ std::expected<RecordingStatus, ControlError> NatsControlClient::StartRecording(
 		}
 		break;
 	default:
-		return std::unexpected(ControlError{
+		return cvmmap::unexpected(ControlError{
 			.code = CONTROL_RESPONSE_INVALID_PAYLOAD,
 			.message = "recording format is required",
 		});
@@ -589,10 +590,10 @@ std::expected<RecordingStatus, ControlError> NatsControlClient::StartRecording(
 			wire_request,
 			timeout);
 	if (!response) {
-		return std::unexpected(ControlError{.code = response.error()});
+		return cvmmap::unexpected(ControlError{.code = response.error()});
 	}
 	if (response->error() != pb::ERROR_CODE_OK) {
-		return std::unexpected(ControlError{
+		return cvmmap::unexpected(ControlError{
 			.code = from_proto_error_code(response->error()),
 			.message = response->error_message(),
 		});
@@ -600,12 +601,12 @@ std::expected<RecordingStatus, ControlError> NatsControlClient::StartRecording(
 	return to_recording_status(*response);
 }
 
-std::expected<RecordingStatus, ControlError> NatsControlClient::StopRecording(
+cvmmap::expected<RecordingStatus, ControlError> NatsControlClient::StopRecording(
 	const RecordingFormat format,
 	const std::chrono::milliseconds timeout) {
 	auto subject = recording_stop_subject(pimpl_->target_key, format);
 	if (!subject) {
-		return std::unexpected(subject.error());
+		return cvmmap::unexpected(subject.error());
 	}
 
 	pb::RecordingStopRequest request;
@@ -615,10 +616,10 @@ std::expected<RecordingStatus, ControlError> NatsControlClient::StopRecording(
 			request,
 			timeout);
 	if (!response) {
-		return std::unexpected(ControlError{.code = response.error()});
+		return cvmmap::unexpected(ControlError{.code = response.error()});
 	}
 	if (response->error() != pb::ERROR_CODE_OK) {
-		return std::unexpected(ControlError{
+		return cvmmap::unexpected(ControlError{
 			.code = from_proto_error_code(response->error()),
 			.message = response->error_message(),
 		});
@@ -626,12 +627,12 @@ std::expected<RecordingStatus, ControlError> NatsControlClient::StopRecording(
 	return to_recording_status(*response);
 }
 
-std::expected<RecordingStatus, ControlError> NatsControlClient::GetRecordingStatus(
+cvmmap::expected<RecordingStatus, ControlError> NatsControlClient::GetRecordingStatus(
 	const RecordingFormat format,
 	const std::chrono::milliseconds timeout) {
 	auto subject = recording_status_subject(pimpl_->target_key, format);
 	if (!subject) {
-		return std::unexpected(subject.error());
+		return cvmmap::unexpected(subject.error());
 	}
 
 	pb::RecordingStatusRequest request;
@@ -641,10 +642,10 @@ std::expected<RecordingStatus, ControlError> NatsControlClient::GetRecordingStat
 			request,
 			timeout);
 	if (!response) {
-		return std::unexpected(ControlError{.code = response.error()});
+		return cvmmap::unexpected(ControlError{.code = response.error()});
 	}
 	if (response->error() != pb::ERROR_CODE_OK) {
-		return std::unexpected(ControlError{
+		return cvmmap::unexpected(ControlError{
 			.code = from_proto_error_code(response->error()),
 			.message = response->error_message(),
 		});

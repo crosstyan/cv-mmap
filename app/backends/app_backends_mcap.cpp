@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <errno.h>
-#include <expected>
+#include <cvmmap/compat/expected.hpp>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -345,11 +345,11 @@ struct McapBackendImpl {
 		return info;
 	}
 
-	std::expected<void, std::string> load_file() {
+	cvmmap::expected<void, std::string> load_file() {
 		mcap::McapReader reader{};
 		const auto open_status = reader.open(mcap_config.path);
 		if (!open_status.ok()) {
-			return std::unexpected("open MCAP failed: " + open_status.message);
+			return cvmmap::unexpected("open MCAP failed: " + open_status.message);
 		}
 
 		mcap::ReadMessageOptions options{};
@@ -377,7 +377,7 @@ struct McapBackendImpl {
 				if (!video.ParseFromArray(it->message.data,
 										  static_cast<int>(it->message.dataSize))) {
 					reader.close();
-					return std::unexpected("failed to parse foxglove.CompressedVideo payload");
+					return cvmmap::unexpected("failed to parse foxglove.CompressedVideo payload");
 				}
 				auto timestamp_ns = proto_timestamp_to_ns(video.timestamp());
 				if (timestamp_ns == 0) {
@@ -455,7 +455,7 @@ struct McapBackendImpl {
 				  });
 
 		if (video_samples.empty()) {
-			return std::unexpected("MCAP file does not contain any video messages on topic '" +
+			return cvmmap::unexpected("MCAP file does not contain any video messages on topic '" +
 								   mcap_config.video_topic + "'");
 		}
 
@@ -481,44 +481,44 @@ struct McapBackendImpl {
 		return {};
 	}
 
-	std::expected<void, std::string> open_decoder_for_format(
+	cvmmap::expected<void, std::string> open_decoder_for_format(
 		const std::string_view format) {
 		decoder.close();
 
 		decoder.codec_id = codec_id_from_format(format);
 		if (decoder.codec_id == AV_CODEC_ID_NONE) {
-			return std::unexpected("unsupported compressed video format '" +
+			return cvmmap::unexpected("unsupported compressed video format '" +
 								   std::string(format) + "'");
 		}
 
 		decoder.codec = avcodec_find_decoder(decoder.codec_id);
 		if (decoder.codec == nullptr) {
-			return std::unexpected("ffmpeg decoder unavailable for format '" +
+			return cvmmap::unexpected("ffmpeg decoder unavailable for format '" +
 								   std::string(format) + "'");
 		}
 
 		decoder.context = avcodec_alloc_context3(decoder.codec);
 		if (decoder.context == nullptr) {
-			return std::unexpected("failed to allocate ffmpeg decoder context");
+			return cvmmap::unexpected("failed to allocate ffmpeg decoder context");
 		}
 		if (avcodec_open2(decoder.context, decoder.codec, nullptr) < 0) {
-			return std::unexpected("failed to open ffmpeg decoder");
+			return cvmmap::unexpected("failed to open ffmpeg decoder");
 		}
 
 		decoder.packet = av_packet_alloc();
 		decoder.frame = av_frame_alloc();
 		if (decoder.packet == nullptr || decoder.frame == nullptr) {
-			return std::unexpected("failed to allocate ffmpeg frame/packet");
+			return cvmmap::unexpected("failed to allocate ffmpeg frame/packet");
 		}
 		return {};
 	}
 
-	std::expected<std::vector<uint8_t>, std::string> decode_packet_locked(
+	cvmmap::expected<std::vector<uint8_t>, std::string> decode_packet_locked(
 		const VideoSample &sample) {
 		if (decoder.context == nullptr) {
 			auto opened = open_decoder_for_format(sample.format);
 			if (!opened) {
-				return std::unexpected(opened.error());
+				return cvmmap::unexpected(opened.error());
 			}
 		}
 
@@ -526,14 +526,14 @@ struct McapBackendImpl {
 		const auto packet_alloc =
 			av_new_packet(decoder.packet, static_cast<int>(sample.bytes.size()));
 		if (packet_alloc < 0) {
-			return std::unexpected("av_new_packet failed: " +
+			return cvmmap::unexpected("av_new_packet failed: " +
 								   ffmpeg_error_string(packet_alloc));
 		}
 		std::memcpy(decoder.packet->data, sample.bytes.data(), sample.bytes.size());
 
 		const auto send_result = avcodec_send_packet(decoder.context, decoder.packet);
 		if (send_result < 0) {
-			return std::unexpected("avcodec_send_packet failed: " +
+			return cvmmap::unexpected("avcodec_send_packet failed: " +
 								   ffmpeg_error_string(send_result));
 		}
 
@@ -546,7 +546,7 @@ struct McapBackendImpl {
 				break;
 			}
 			if (receive_result < 0) {
-				return std::unexpected("avcodec_receive_frame failed: " +
+				return cvmmap::unexpected("avcodec_receive_frame failed: " +
 									   ffmpeg_error_string(receive_result));
 			}
 
@@ -554,7 +554,7 @@ struct McapBackendImpl {
 			const auto height = decoder.frame->height;
 			const auto format = static_cast<AVPixelFormat>(decoder.frame->format);
 			if (width <= 0 || height <= 0) {
-				return std::unexpected("decoded frame has invalid dimensions");
+				return cvmmap::unexpected("decoded frame has invalid dimensions");
 			}
 
 			if (decoder.scaler == nullptr ||
@@ -574,7 +574,7 @@ struct McapBackendImpl {
 					nullptr,
 					nullptr);
 				if (decoder.scaler == nullptr) {
-					return std::unexpected("failed to create ffmpeg scaler");
+					return cvmmap::unexpected("failed to create ffmpeg scaler");
 				}
 				decoder.source_width = width;
 				decoder.source_height = height;
@@ -600,20 +600,20 @@ struct McapBackendImpl {
 		}
 
 		if (decoded.empty()) {
-			return std::unexpected("decoder produced no output frame");
+			return cvmmap::unexpected("decoder produced no output frame");
 		}
 		return decoded;
 	}
 
-	std::expected<std::vector<float>, std::string> decode_depth_locked(
+	cvmmap::expected<std::vector<float>, std::string> decode_depth_locked(
 		const DepthSample &sample) {
 		if (sample.encoding == cvmmap_streamer::DepthMap::RVL_U16_LOSSLESS) {
 			auto decoded = rvl::try_decompress_image(sample.bytes);
 			if (!decoded) {
-				return std::unexpected(decoded.error());
+				return cvmmap::unexpected(decoded.error());
 			}
 			if (decoded->rows != sample.height || decoded->cols != sample.width) {
-				return std::unexpected("decoded uint16 depth image size mismatch");
+				return cvmmap::unexpected("decoded uint16 depth image size mismatch");
 			}
 			std::vector<float> pixels(decoded->pixels.size());
 			for (size_t index = 0; index < decoded->pixels.size(); ++index) {
@@ -628,10 +628,10 @@ struct McapBackendImpl {
 		if (sample.encoding == cvmmap_streamer::DepthMap::RVL_F32) {
 			auto decoded = rvl::try_decompress_float_image(sample.bytes);
 			if (!decoded) {
-				return std::unexpected(decoded.error());
+				return cvmmap::unexpected(decoded.error());
 			}
 			if (decoded->rows != sample.height || decoded->cols != sample.width) {
-				return std::unexpected("decoded float depth image size mismatch");
+				return cvmmap::unexpected("decoded float depth image size mismatch");
 			}
 			std::vector<float> pixels(decoded->pixels.size());
 			for (size_t index = 0; index < decoded->pixels.size(); ++index) {
@@ -643,7 +643,7 @@ struct McapBackendImpl {
 			return pixels;
 		}
 
-		return std::unexpected("unsupported depth encoding");
+		return cvmmap::unexpected("unsupported depth encoding");
 	}
 
 	size_t seek_decode_start_index(size_t target_index) const {
@@ -690,17 +690,17 @@ struct McapBackendImpl {
 		return out;
 	}
 
-	std::expected<PublishPacket, std::string> build_publish_packet_locked(
+	cvmmap::expected<PublishPacket, std::string> build_publish_packet_locked(
 		const size_t video_index,
 		const uint32_t local_frame_count,
 		const bool republish_latest_body) {
 		if (video_index >= video_samples.size()) {
-			return std::unexpected("video index out of range");
+			return cvmmap::unexpected("video index out of range");
 		}
 
 		auto decoded_frame = decode_packet_locked(video_samples[video_index]);
 		if (!decoded_frame) {
-			return std::unexpected(decoded_frame.error());
+			return cvmmap::unexpected(decoded_frame.error());
 		}
 
 		PublishPacket packet{};
@@ -764,13 +764,13 @@ struct McapBackendImpl {
 		return packet;
 	}
 
-	std::expected<PublishPacket, std::string> seek_to_index_locked(
+	cvmmap::expected<PublishPacket, std::string> seek_to_index_locked(
 		const size_t target_index,
 		const uint32_t local_frame_count) {
 		const auto start_index = seek_decode_start_index(target_index);
 		auto reopen = open_decoder_for_format(video_samples[target_index].format);
 		if (!reopen) {
-			return std::unexpected(reopen.error());
+			return cvmmap::unexpected(reopen.error());
 		}
 
 		PublishPacket packet{};
@@ -780,7 +780,7 @@ struct McapBackendImpl {
 				index == target_index ? local_frame_count : local_frame_count,
 				index == target_index);
 			if (!built) {
-				return std::unexpected(built.error());
+				return cvmmap::unexpected(built.error());
 			}
 			if (index == target_index) {
 				packet = std::move(*built);
@@ -789,34 +789,19 @@ struct McapBackendImpl {
 		return packet;
 	}
 
-	void publish_packet(const PublishPacket &packet) {
-		if (!metadata_emitted) {
-			on_metadata(packet.metadata);
-			metadata_emitted = true;
-		}
-		on_frame(
-			std::span<uint8_t>(
-				const_cast<uint8_t *>(packet.payload.data()),
-				packet.payload.size()),
-			packet.metadata);
-		for (const auto &body_frame : packet.body_frames) {
-			on_body_tracking(body_frame);
-		}
-	}
-
-	std::expected<seek_result_t, error_t> seek_timestamp_locked(
+	cvmmap::expected<seek_result_t, error_t> seek_timestamp_locked(
 		const uint64_t timestamp_ns,
 		const bool notify_worker,
 		PublishPacket *packet_out) {
 		if (video_config.use_finite_as_infinite_stream) {
-			return std::unexpected(-EOPNOTSUPP);
+			return cvmmap::unexpected(-EOPNOTSUPP);
 		}
 		if (video_samples.empty()) {
-			return std::unexpected(-EINVAL);
+			return cvmmap::unexpected(-EINVAL);
 		}
 		if (timestamp_ns < video_samples.front().timestamp_ns ||
 			timestamp_ns > video_samples.back().timestamp_ns) {
-			return std::unexpected(-ERANGE);
+			return cvmmap::unexpected(-ERANGE);
 		}
 
 		const auto it = std::lower_bound(
@@ -827,7 +812,7 @@ struct McapBackendImpl {
 				return sample.timestamp_ns < ts;
 			});
 		if (it == video_samples.end()) {
-			return std::unexpected(-ERANGE);
+			return cvmmap::unexpected(-ERANGE);
 		}
 
 		const auto target_index =
@@ -835,7 +820,7 @@ struct McapBackendImpl {
 		auto packet = seek_to_index_locked(target_index, 0);
 		if (!packet) {
 			spdlog::error("mcap seek decode failed: {}", packet.error());
-			return std::unexpected(-EIO);
+			return cvmmap::unexpected(-EIO);
 		}
 
 		if (notify_worker) {
@@ -980,9 +965,9 @@ struct McapBackendImpl {
 		_on_error = std::move(on_error_);
 	}
 
-	std::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns) {
+	cvmmap::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns) {
 		PublishPacket packet{};
-		std::expected<seek_result_t, error_t> result = std::unexpected(-EIO);
+		cvmmap::expected<seek_result_t, error_t> result = cvmmap::unexpected(-EIO);
 		{
 			std::lock_guard lock(state_mutex);
 			result = seek_timestamp_locked(timestamp_ns, true, &packet);
@@ -1047,7 +1032,7 @@ source_info_t McapBackend::GetSourceInfo() {
 	return impl->GetSourceInfo();
 }
 
-std::expected<seek_result_t, error_t> McapBackend::SeekTimestampNs(
+cvmmap::expected<seek_result_t, error_t> McapBackend::SeekTimestampNs(
 	uint64_t timestamp_ns) {
 	return impl->SeekTimestampNs(timestamp_ns);
 }
@@ -1056,16 +1041,16 @@ error_t McapBackend::ResetFrameCount() {
 	return impl->ResetFrameCount();
 }
 
-std::expected<recording_status_t, error_t> McapBackend::StartRecording(std::string_view) {
-	return std::unexpected(-EOPNOTSUPP);
+cvmmap::expected<recording_status_t, error_t> McapBackend::StartRecording(std::string_view) {
+	return cvmmap::unexpected(-EOPNOTSUPP);
 }
 
-std::expected<recording_status_t, error_t> McapBackend::StopRecording() {
-	return std::unexpected(-EOPNOTSUPP);
+cvmmap::expected<recording_status_t, error_t> McapBackend::StopRecording() {
+	return cvmmap::unexpected(-EOPNOTSUPP);
 }
 
-std::expected<recording_status_t, error_t> McapBackend::GetRecordingStatus() {
-	return std::unexpected(-EOPNOTSUPP);
+cvmmap::expected<recording_status_t, error_t> McapBackend::GetRecordingStatus() {
+	return cvmmap::unexpected(-EOPNOTSUPP);
 }
 
 std::string McapBackend::GetLastRecordingError() {

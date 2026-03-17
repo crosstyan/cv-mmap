@@ -2,7 +2,7 @@
 #define A5270ABA_F5A6_4D0A_B75A_D89DADCC0FC3
 #include <string_view>
 #include <span>
-#include <format>
+#include <cvmmap/compat/format.hpp>
 #include "app_common_models.hpp"
 #include <cvmmap/ipc.hpp>
 
@@ -22,7 +22,7 @@ struct control_message_request_t {
 	void set_label(const std::string_view &label) {
 		if (label.size() > LABEL_LEN_MAX) {
 			throw std::invalid_argument(
-				std::format("too long label: `{}`; {} > {}", label, label.size(), LABEL_LEN_MAX));
+				cvmmap::format("too long label: `{}`; {} > {}", label, label.size(), LABEL_LEN_MAX));
 		}
 		std::copy(label.begin(), label.end(), _label);
 		std::fill(_label + label.size(), _label + LABEL_LEN_MAX, '\0');
@@ -61,7 +61,7 @@ struct control_message_response_t {
 	void set_label(const std::string_view &label) {
 		if (label.size() > LABEL_LEN_MAX) {
 			throw std::invalid_argument(
-				std::format("too long label: `{}`; {} > {}", label, label.size(), LABEL_LEN_MAX));
+				cvmmap::format("too long label: `{}`; {} > {}", label, label.size(), LABEL_LEN_MAX));
 		}
 		std::copy(label.begin(), label.end(), _label);
 		std::fill(_label + label.size(), _label + LABEL_LEN_MAX, '\0');

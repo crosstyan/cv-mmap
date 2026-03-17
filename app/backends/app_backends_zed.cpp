@@ -19,7 +19,7 @@
 #include <cstdint>
 #include <cmath>
 #include <filesystem>
-#include <format>
+#include <cvmmap/compat/format.hpp>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -29,6 +29,7 @@
 #include <vector>
 #endif
 
+#include <cvmmap/compat/expected.hpp>
 #include <spdlog/spdlog.h>
 
 #include "app_backends_facade.hpp"
@@ -1338,8 +1339,8 @@ struct ZedBackendImpl {
 		return info;
 	}
 
-	std::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t) {
-		return std::unexpected(-EOPNOTSUPP);
+	cvmmap::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t) {
+		return cvmmap::unexpected(-EOPNOTSUPP);
 	}
 
 	error_t ResetFrameCount() {
@@ -1348,29 +1349,29 @@ struct ZedBackendImpl {
 		return 0;
 	}
 
-	std::expected<recording_status_t, error_t> StartRecording(const svo_recording_request_t &request) {
+	cvmmap::expected<recording_status_t, error_t> StartRecording(const svo_recording_request_t &request) {
 		if (request.output_path.empty()) {
 			std::lock_guard lock(state_mutex);
 			set_recording_error_locked("recording path is empty");
-			return std::unexpected(-EINVAL);
+			return cvmmap::unexpected(-EINVAL);
 		}
 		if (request.output_path.find('\0') != std::string_view::npos) {
 			std::lock_guard lock(state_mutex);
 			set_recording_error_locked("recording path contains embedded NUL");
-			return std::unexpected(-EINVAL);
+			return cvmmap::unexpected(-EINVAL);
 		}
 
 		std::lock_guard lock(state_mutex);
 		clear_recording_error_locked();
 		if (!initialized.load(std::memory_order_relaxed) || !camera.isOpened()) {
 			set_recording_error_locked("ZED camera is not opened");
-			return std::unexpected(-ENODEV);
+			return cvmmap::unexpected(-ENODEV);
 		}
 
 		const auto current_status = camera.getRecordingStatus();
 		if (current_status.is_recording) {
 			set_recording_error_locked("recording is already active");
-			return std::unexpected(-EBUSY);
+			return cvmmap::unexpected(-EBUSY);
 		}
 
 		const auto output_path_fs = std::filesystem::path(request.output_path);
@@ -1379,11 +1380,11 @@ struct ZedBackendImpl {
 			std::error_code ec;
 			std::filesystem::create_directories(parent_dir, ec);
 			if (ec) {
-				set_recording_error_locked(std::format(
+				set_recording_error_locked(cvmmap::format(
 					"failed to create recording directory '{}': {}",
 					parent_dir.string(),
 					ec.message()));
-				return std::unexpected(-EIO);
+				return cvmmap::unexpected(-EIO);
 			}
 		}
 
@@ -1403,19 +1404,19 @@ struct ZedBackendImpl {
 				request.options.transcode_streaming_input.value_or(
 					options.zed_config.recording.transcode_streaming_input);
 		} catch (const std::invalid_argument &e) {
-			set_recording_error_locked(std::format(
+			set_recording_error_locked(cvmmap::format(
 				"invalid SVO recording options: {}",
 				e.what()));
-			return std::unexpected(-EINVAL);
+			return cvmmap::unexpected(-EINVAL);
 		} catch (const std::exception &e) {
-			set_recording_error_locked(std::format(
+			set_recording_error_locked(cvmmap::format(
 				"failed to prepare ZED recording parameters: {}",
 				e.what()));
 			spdlog::error(
 				"failed to prepare ZED recording '{}': {}",
 				request.output_path,
 				last_recording_error);
-			return std::unexpected(-EIO);
+			return cvmmap::unexpected(-EIO);
 		}
 
 		const auto recording_result = camera.enableRecording(recording_parameters);
@@ -1423,12 +1424,12 @@ struct ZedBackendImpl {
 			const std::string code_name = sl::toString(recording_result).get();
 			const std::string verbose = sl::toVerbose(recording_result).get();
 			if (verbose.empty() || verbose == code_name) {
-				set_recording_error_locked(std::format(
+				set_recording_error_locked(cvmmap::format(
 					"ZED recording failed: {} ({})",
 					code_name,
 					static_cast<int>(recording_result)));
 			} else {
-				set_recording_error_locked(std::format(
+				set_recording_error_locked(cvmmap::format(
 					"ZED recording failed: {} ({}): {}",
 					code_name,
 					static_cast<int>(recording_result),
@@ -1438,7 +1439,7 @@ struct ZedBackendImpl {
 				"failed to start ZED recording '{}': {}",
 				request.output_path,
 				last_recording_error);
-			return std::unexpected(-EIO);
+			return cvmmap::unexpected(-EIO);
 		}
 
 		active_recording_path = request.output_path;
@@ -1446,7 +1447,7 @@ struct ZedBackendImpl {
 		return make_recording_status_locked();
 	}
 
-	std::expected<recording_status_t, error_t> StopRecording() {
+	cvmmap::expected<recording_status_t, error_t> StopRecording() {
 		std::lock_guard lock(state_mutex);
 		if (!camera.isOpened()) {
 			recording_status_t status{};
@@ -1459,7 +1460,7 @@ struct ZedBackendImpl {
 		return make_recording_status_locked();
 	}
 
-	std::expected<recording_status_t, error_t> GetRecordingStatus() {
+	cvmmap::expected<recording_status_t, error_t> GetRecordingStatus() {
 		std::lock_guard lock(state_mutex);
 		return make_recording_status_locked();
 	}
@@ -1501,7 +1502,7 @@ source_info_t ZedBackend::GetSourceInfo() {
 	return impl->GetSourceInfo();
 }
 
-std::expected<seek_result_t, error_t> ZedBackend::SeekTimestampNs(uint64_t timestamp_ns) {
+cvmmap::expected<seek_result_t, error_t> ZedBackend::SeekTimestampNs(uint64_t timestamp_ns) {
 	return impl->SeekTimestampNs(timestamp_ns);
 }
 
@@ -1509,16 +1510,16 @@ error_t ZedBackend::ResetFrameCount() {
 	return impl->ResetFrameCount();
 }
 
-std::expected<recording_status_t, error_t> ZedBackend::StartRecording(
+cvmmap::expected<recording_status_t, error_t> ZedBackend::StartRecording(
 	const svo_recording_request_t &request) {
 	return impl->StartRecording(request);
 }
 
-std::expected<recording_status_t, error_t> ZedBackend::StopRecording() {
+cvmmap::expected<recording_status_t, error_t> ZedBackend::StopRecording() {
 	return impl->StopRecording();
 }
 
-std::expected<recording_status_t, error_t> ZedBackend::GetRecordingStatus() {
+cvmmap::expected<recording_status_t, error_t> ZedBackend::GetRecordingStatus() {
 	return impl->GetRecordingStatus();
 }
 
@@ -1567,24 +1568,24 @@ struct ZedBackendImpl {
 		return info;
 	}
 
-	std::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t) {
-		return std::unexpected(-EOPNOTSUPP);
+	cvmmap::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t) {
+		return cvmmap::unexpected(-EOPNOTSUPP);
 	}
 
 	error_t ResetFrameCount() {
 		return 0;
 	}
 
-	std::expected<recording_status_t, error_t> StartRecording(const svo_recording_request_t &) {
-		return std::unexpected(-EOPNOTSUPP);
+	cvmmap::expected<recording_status_t, error_t> StartRecording(const svo_recording_request_t &) {
+		return cvmmap::unexpected(-EOPNOTSUPP);
 	}
 
-	std::expected<recording_status_t, error_t> StopRecording() {
-		return std::unexpected(-EOPNOTSUPP);
+	cvmmap::expected<recording_status_t, error_t> StopRecording() {
+		return cvmmap::unexpected(-EOPNOTSUPP);
 	}
 
-	std::expected<recording_status_t, error_t> GetRecordingStatus() {
-		return std::unexpected(-EOPNOTSUPP);
+	cvmmap::expected<recording_status_t, error_t> GetRecordingStatus() {
+		return cvmmap::unexpected(-EOPNOTSUPP);
 	}
 
 	std::string GetLastRecordingError() {
@@ -1625,7 +1626,7 @@ source_info_t ZedBackend::GetSourceInfo() {
 	return impl->GetSourceInfo();
 }
 
-std::expected<seek_result_t, error_t> ZedBackend::SeekTimestampNs(uint64_t timestamp_ns) {
+cvmmap::expected<seek_result_t, error_t> ZedBackend::SeekTimestampNs(uint64_t timestamp_ns) {
 	return impl->SeekTimestampNs(timestamp_ns);
 }
 
@@ -1633,16 +1634,16 @@ error_t ZedBackend::ResetFrameCount() {
 	return impl->ResetFrameCount();
 }
 
-std::expected<recording_status_t, error_t> ZedBackend::StartRecording(
+cvmmap::expected<recording_status_t, error_t> ZedBackend::StartRecording(
 	const svo_recording_request_t &request) {
 	return impl->StartRecording(request);
 }
 
-std::expected<recording_status_t, error_t> ZedBackend::StopRecording() {
+cvmmap::expected<recording_status_t, error_t> ZedBackend::StopRecording() {
 	return impl->StopRecording();
 }
 
-std::expected<recording_status_t, error_t> ZedBackend::GetRecordingStatus() {
+cvmmap::expected<recording_status_t, error_t> ZedBackend::GetRecordingStatus() {
 	return impl->GetRecordingStatus();
 }
 

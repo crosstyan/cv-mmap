@@ -1,3 +1,4 @@
+#include <cvmmap/compat/format.hpp>
 #include "app_config.hpp"
 #include <algorithm>
 #include <cctype>
@@ -145,7 +146,7 @@ std::string validate_ipc_prefix(std::string prefix) {
 }
 
 std::string make_config_target_uri(const app::Config &config) {
-	return std::format(
+	return cvmmap::format(
 		"cvmmap://{}@{}?namespace={}",
 		config.name,
 		config.ipc.prefix,

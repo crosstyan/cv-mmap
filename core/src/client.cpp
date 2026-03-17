@@ -8,9 +8,9 @@
 #include <atomic>
 #include <cassert>
 #include <cstring>
-#include <expected>
+#include <cvmmap/compat/expected.hpp>
 #include <fcntl.h>
-#include <format>
+#include <cvmmap/compat/format.hpp>
 #include <memory>
 #include <limits>
 #include <mutex>
@@ -79,7 +79,7 @@ struct SharedBuffer {
     struct stat sb;
     if (fstat(shm_fd_, &sb) < 0) {
       throw std::runtime_error(
-          std::format("fstat {}({})", errno, strerror(errno)));
+          cvmmap::format("fstat {}({})", errno, strerror(errno)));
     }
     shm_size_ = sb.st_size;
 
@@ -87,7 +87,7 @@ struct SharedBuffer {
         mmap(nullptr, shm_size_, PROT_READ, MAP_SHARED, shm_fd_, 0));
     if (shm_ptr_ == MAP_FAILED) {
       throw std::runtime_error(
-          std::format("mmap {}({})", errno, strerror(errno)));
+          cvmmap::format("mmap {}({})", errno, strerror(errno)));
     }
 
     // Metadata starts at offset 0 (includes magic)
@@ -104,9 +104,9 @@ struct SharedBuffer {
     }
   };
 
-  std::expected<std::monostate, std::string> verify() {
+  cvmmap::expected<std::monostate, std::string> verify() {
     if (shm_size_ < SHM_PAYLOAD_OFFSET) {
-      return std::unexpected(std::format("shared memory too small: {} < {}",
+      return cvmmap::unexpected(cvmmap::format("shared memory too small: {} < {}",
                                          shm_size_, SHM_PAYLOAD_OFFSET));
     }
 
@@ -114,7 +114,7 @@ struct SharedBuffer {
         *reinterpret_cast<const frame_metadata_t *>(metadata_data_);
     if (std::equal(metadata.magic, metadata.magic + CV_MMAP_MAGIC_LEN,
                    frame_metadata_t::CV_MMAP_MAGIC.data()) == false) {
-      return std::unexpected("invalid magic");
+      return cvmmap::unexpected("invalid magic");
     }
 
     if (metadata.versions_major == 0 && metadata.versions_minor == 0) {
@@ -123,7 +123,7 @@ struct SharedBuffer {
 
     if (metadata.versions_major != FRAME_METADATA_V1_MAJOR &&
         metadata.versions_major != FRAME_METADATA_V2_MAJOR) {
-      return std::unexpected(std::format(
+      return cvmmap::unexpected(cvmmap::format(
           "incompatible major version; got {}.{}, expected {}.x or {}.x",
           metadata.versions_major, metadata.versions_minor,
           FRAME_METADATA_V1_MAJOR, FRAME_METADATA_V2_MAJOR));
@@ -133,7 +133,7 @@ struct SharedBuffer {
         std::span<const uint8_t>(metadata_data_, SHM_PAYLOAD_OFFSET),
         std::span<const uint8_t>(image_data_, shm_size_ - SHM_PAYLOAD_OFFSET));
     if (!parsed) {
-      return std::unexpected(parsed.error());
+      return cvmmap::unexpected(parsed.error());
     }
 
     normalized_metadata_ = parsed->normalized_metadata;
@@ -504,41 +504,41 @@ int32_t CvMmapClient::ResetFrameCount(std::chrono::milliseconds timeout) {
   return *response;
 }
 
-std::expected<SourceInfo, int32_t>
+cvmmap::expected<SourceInfo, int32_t>
 CvMmapClient::GetSourceInfo(std::chrono::milliseconds timeout) {
   if (!pimpl_->nats_client) {
-    return std::unexpected(CONTROL_RESPONSE_UNSUPPORTED);
+    return cvmmap::unexpected(CONTROL_RESPONSE_UNSUPPORTED);
   }
   return pimpl_->nats_client->GetSourceInfo(timeout);
 }
 
-std::expected<SeekResult, int32_t>
+cvmmap::expected<SeekResult, int32_t>
 CvMmapClient::SeekTimestampNs(uint64_t timestamp_ns,
                               std::chrono::milliseconds timeout) {
   if (!pimpl_->nats_client) {
-    return std::unexpected(CONTROL_RESPONSE_UNSUPPORTED);
+    return cvmmap::unexpected(CONTROL_RESPONSE_UNSUPPORTED);
   }
   return pimpl_->nats_client->SeekTimestampNs(timestamp_ns, timeout);
 }
 
-std::expected<ControlCapabilities, ControlError>
+cvmmap::expected<ControlCapabilities, ControlError>
 CvMmapClient::GetCapabilities(std::chrono::milliseconds timeout) {
   if (!pimpl_->nats_client) {
-    return std::unexpected(make_nats_disabled_error());
+    return cvmmap::unexpected(make_nats_disabled_error());
   }
   return pimpl_->nats_client->GetCapabilities(timeout);
 }
 
-std::expected<RecordingStatus, ControlError>
+cvmmap::expected<RecordingStatus, ControlError>
 CvMmapClient::StartRecording(const RecordingRequest &request,
                              std::chrono::milliseconds timeout) {
   if (!pimpl_->nats_client) {
-    return std::unexpected(make_nats_disabled_error());
+    return cvmmap::unexpected(make_nats_disabled_error());
   }
   return pimpl_->nats_client->StartRecording(request, timeout);
 }
 
-std::expected<RecordingStatus, ControlError>
+cvmmap::expected<RecordingStatus, ControlError>
 CvMmapClient::StartRecording(std::string_view output_path,
                              std::chrono::milliseconds timeout) {
   return StartRecording(
@@ -549,30 +549,30 @@ CvMmapClient::StartRecording(std::string_view output_path,
       timeout);
 }
 
-std::expected<RecordingStatus, ControlError>
+cvmmap::expected<RecordingStatus, ControlError>
 CvMmapClient::StopRecording(RecordingFormat format,
                             std::chrono::milliseconds timeout) {
   if (!pimpl_->nats_client) {
-    return std::unexpected(make_nats_disabled_error());
+    return cvmmap::unexpected(make_nats_disabled_error());
   }
   return pimpl_->nats_client->StopRecording(format, timeout);
 }
 
-std::expected<RecordingStatus, ControlError>
+cvmmap::expected<RecordingStatus, ControlError>
 CvMmapClient::StopRecording(std::chrono::milliseconds timeout) {
   return StopRecording(RecordingFormat::Svo, timeout);
 }
 
-std::expected<RecordingStatus, ControlError>
+cvmmap::expected<RecordingStatus, ControlError>
 CvMmapClient::GetRecordingStatus(RecordingFormat format,
                                  std::chrono::milliseconds timeout) {
   if (!pimpl_->nats_client) {
-    return std::unexpected(make_nats_disabled_error());
+    return cvmmap::unexpected(make_nats_disabled_error());
   }
   return pimpl_->nats_client->GetRecordingStatus(format, timeout);
 }
 
-std::expected<RecordingStatus, ControlError>
+cvmmap::expected<RecordingStatus, ControlError>
 CvMmapClient::GetRecordingStatus(std::chrono::milliseconds timeout) {
   return GetRecordingStatus(RecordingFormat::Svo, timeout);
 }
