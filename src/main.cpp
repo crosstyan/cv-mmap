@@ -11,6 +11,7 @@
 #include <csignal>
 #include <limits>
 #include <optional>
+#include <functional>
 #include <string_view>
 #include <string>
 #include <cvmmap/compat/expected.hpp>
@@ -774,55 +775,113 @@ int main(int argc, char **argv) {
 		return backend.SeekTimestampNs(timestamp_ns);
 	};
 
-	const auto can_record_svo = [&backend]() {
-#ifdef WITH_BACKEND_ZED
-		if (auto *zed_backend = backend.get_if<app::backends::ZedBackend>()) {
-			auto status = zed_backend->GetRecordingStatus();
-			return status && status->can_record;
+	const auto map_recording_error = [](const int error_code,
+									 std::string message = {}) {
+		auto control_code = cvmmap::CONTROL_RESPONSE_ERROR;
+		switch (error_code) {
+		case 0:
+			control_code = cvmmap::CONTROL_RESPONSE_OK;
+			break;
+		case -EOPNOTSUPP:
+			control_code = cvmmap::CONTROL_RESPONSE_UNSUPPORTED;
+			break;
+		case -EINVAL:
+			control_code = cvmmap::CONTROL_RESPONSE_INVALID_PAYLOAD;
+			break;
+		case -ERANGE:
+			control_code = cvmmap::CONTROL_RESPONSE_OUT_OF_RANGE;
+			break;
+		default:
+			control_code = cvmmap::CONTROL_RESPONSE_ERROR;
+			break;
 		}
-		return false;
-#else
-		return false;
-#endif
+		return cvmmap::ControlError{
+			.code = control_code,
+			.message = std::move(message),
+		};
 	};
 
-	const auto start_svo_recording = [&backend](const backends::svo_recording_request_t &request)
-		-> cvmmap::expected<backends::recording_status_t, backends::error_t> {
-#ifdef WITH_BACKEND_ZED
-		if (auto *zed_backend = backend.get_if<app::backends::ZedBackend>()) {
-			return zed_backend->StartRecording(request);
-		}
-#endif
-		return cvmmap::unexpected(-EOPNOTSUPP);
+	const auto to_public_recording_status = [](const backends::recording_status_t &status) {
+		return cvmmap::RecordingStatus{
+			.format = status.format,
+			.can_record = status.can_record,
+			.is_recording = status.is_recording,
+			.is_paused = status.is_paused,
+			.last_frame_ok = status.last_frame_ok,
+			.frames_ingested = status.frames_ingested,
+			.frames_encoded = status.frames_encoded,
+			.active_path = status.active_path,
+		};
 	};
 
-	const auto stop_svo_recording = [&backend]()
-		-> cvmmap::expected<backends::recording_status_t, backends::error_t> {
-#ifdef WITH_BACKEND_ZED
-		if (auto *zed_backend = backend.get_if<app::backends::ZedBackend>()) {
-			return zed_backend->StopRecording();
-		}
-#endif
-		return cvmmap::unexpected(-EOPNOTSUPP);
+	struct RecorderProvider {
+		cvmmap::RecordingFormat format{cvmmap::RecordingFormat::Unknown};
+		std::function<bool()> is_available;
+		std::function<cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError>(const cvmmap::RecordingRequest &)> start;
+		std::function<cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError>()> stop;
+		std::function<cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError>()> status;
 	};
 
-	const auto get_svo_recording_status = [&backend]()
-		-> cvmmap::expected<backends::recording_status_t, backends::error_t> {
-#ifdef WITH_BACKEND_ZED
-		if (auto *zed_backend = backend.get_if<app::backends::ZedBackend>()) {
-			return zed_backend->GetRecordingStatus();
-		}
-#endif
-		return cvmmap::unexpected(-EOPNOTSUPP);
-	};
+	std::vector<RecorderProvider> recorder_providers{};
 
-	const auto get_svo_recording_error = [&backend]() {
 #ifdef WITH_BACKEND_ZED
-		if (auto *zed_backend = backend.get_if<app::backends::ZedBackend>()) {
-			return zed_backend->GetLastRecordingError();
-		}
+	if (auto *zed_backend = backend.get_if<app::backends::ZedBackend>()) {
+		recorder_providers.push_back(RecorderProvider{
+			.format = cvmmap::RecordingFormat::Svo,
+			.is_available = [zed_backend]() {
+				auto status = zed_backend->GetRecordingStatus();
+				return status && status->can_record;
+			},
+			.start = [zed_backend, &map_recording_error, &to_public_recording_status](
+						const cvmmap::RecordingRequest &request)
+				-> cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError> {
+				backends::svo_recording_request_t backend_request{
+					.output_path = request.output_path,
+				};
+				if (request.svo_options) {
+					backend_request.options.compression_mode = request.svo_options->compression_mode;
+					backend_request.options.bitrate = request.svo_options->bitrate;
+					backend_request.options.target_framerate = request.svo_options->target_framerate;
+					backend_request.options.transcode_streaming_input =
+						request.svo_options->transcode_streaming_input;
+				}
+				auto result = zed_backend->StartRecording(backend_request);
+				if (!result) {
+					return cvmmap::unexpected(
+						map_recording_error(result.error(), zed_backend->GetLastRecordingError()));
+				}
+				return to_public_recording_status(*result);
+			},
+			.stop = [zed_backend, &map_recording_error, &to_public_recording_status]()
+				-> cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError> {
+				auto result = zed_backend->StopRecording();
+				if (!result) {
+					return cvmmap::unexpected(
+						map_recording_error(result.error(), zed_backend->GetLastRecordingError()));
+				}
+				return to_public_recording_status(*result);
+			},
+			.status = [zed_backend, &map_recording_error, &to_public_recording_status]()
+				-> cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError> {
+				auto result = zed_backend->GetRecordingStatus();
+				if (!result) {
+					return cvmmap::unexpected(
+						map_recording_error(result.error(), zed_backend->GetLastRecordingError()));
+				}
+				return to_public_recording_status(*result);
+			},
+		});
+	}
 #endif
-		return std::string("recording is not supported by the active backend");
+
+	const auto find_recorder_provider = [&recorder_providers](const cvmmap::RecordingFormat format)
+		-> RecorderProvider * {
+		for (auto &provider : recorder_providers) {
+			if (provider.format == format) {
+				return &provider;
+			}
+		}
+		return nullptr;
 	};
 
 	backend.Init();
@@ -834,35 +893,66 @@ int main(int argc, char **argv) {
 			std::lock_guard lock(backend_control_mutex);
 			return backend.ResetFrameCount();
 		};
-		nats_handlers.on_get_source_info = [&backend, &backend_control_mutex]() {
+		nats_handlers.on_get_source_info = [&backend, &backend_control_mutex, &recorder_providers]() {
 			std::lock_guard lock(backend_control_mutex);
-			return backend.GetSourceInfo();
+			auto info = backend.GetSourceInfo();
+			info.flags &= ~cvmmap::SOURCE_INFO_FLAG_CAN_RECORD;
+			for (const auto &provider : recorder_providers) {
+				if (provider.is_available && provider.is_available()) {
+					info.flags |= cvmmap::SOURCE_INFO_FLAG_CAN_RECORD;
+					break;
+				}
+			}
+			return info;
 		};
 		nats_handlers.on_seek_timestamp = [&backend_control_mutex, &seek_timestamp](uint64_t ts) {
 			std::lock_guard lock(backend_control_mutex);
 			return seek_timestamp(ts);
 		};
-		nats_handlers.on_svo_recording_available = [&can_record_svo]() {
-			return can_record_svo();
-		};
-		nats_handlers.on_start_svo_recording =
-			[&backend_control_mutex, &start_svo_recording](const backends::svo_recording_request_t &request) {
+		nats_handlers.on_recording_available =
+			[&backend_control_mutex, &find_recorder_provider](const cvmmap::RecordingFormat format) {
 			std::lock_guard lock(backend_control_mutex);
-			return start_svo_recording(request);
+			auto *provider = find_recorder_provider(format);
+			return provider && provider->is_available && provider->is_available();
 		};
-		nats_handlers.on_stop_svo_recording = [&backend_control_mutex, &stop_svo_recording]() {
+		nats_handlers.on_start_recording =
+			[&backend_control_mutex, &find_recorder_provider](const cvmmap::RecordingRequest &request)
+				-> cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError> {
 			std::lock_guard lock(backend_control_mutex);
-			return stop_svo_recording();
+			auto *provider = find_recorder_provider(request.format);
+			if (!provider || !provider->start) {
+				return cvmmap::unexpected(cvmmap::ControlError{
+					.code = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
+					.message = "recording format is not supported by the active producer",
+				});
+			}
+			return provider->start(request);
 		};
-		nats_handlers.on_get_svo_recording_status =
-			[&backend_control_mutex, &get_svo_recording_status]() {
+		nats_handlers.on_stop_recording =
+			[&backend_control_mutex, &find_recorder_provider](const cvmmap::RecordingFormat format)
+				-> cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError> {
 			std::lock_guard lock(backend_control_mutex);
-			return get_svo_recording_status();
+			auto *provider = find_recorder_provider(format);
+			if (!provider || !provider->stop) {
+				return cvmmap::unexpected(cvmmap::ControlError{
+					.code = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
+					.message = "recording format is not supported by the active producer",
+				});
+			}
+			return provider->stop();
 		};
-		nats_handlers.on_get_svo_last_recording_error =
-			[&backend_control_mutex, &get_svo_recording_error]() {
+		nats_handlers.on_get_recording_status =
+			[&backend_control_mutex, &find_recorder_provider](const cvmmap::RecordingFormat format)
+				-> cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError> {
 			std::lock_guard lock(backend_control_mutex);
-			return get_svo_recording_error();
+			auto *provider = find_recorder_provider(format);
+			if (!provider || !provider->status) {
+				return cvmmap::unexpected(cvmmap::ControlError{
+					.code = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
+					.message = "recording format is not supported by the active producer",
+				});
+			}
+			return provider->status();
 		};
 		nats_service->SetHandlers(std::move(nats_handlers));
 		if (!nats_service->Start()) {

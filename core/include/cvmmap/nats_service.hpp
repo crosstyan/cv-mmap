@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 
+#include <cvmmap/client.hpp>
 #include <cvmmap/ipc.hpp>
 #include <cvmmap/backend_types.hpp>
 
@@ -17,11 +18,10 @@ struct NatsControlHandlers {
 	std::function<int()> on_reset_frame_count;
 	std::function<app::backends::source_info_t()> on_get_source_info;
 	std::function<cvmmap::expected<app::backends::seek_result_t, int>(uint64_t)> on_seek_timestamp;
-	std::function<bool()> on_svo_recording_available;
-	std::function<cvmmap::expected<app::backends::recording_status_t, int>(const app::backends::svo_recording_request_t &)> on_start_svo_recording;
-	std::function<cvmmap::expected<app::backends::recording_status_t, int>()> on_stop_svo_recording;
-	std::function<cvmmap::expected<app::backends::recording_status_t, int>()> on_get_svo_recording_status;
-	std::function<std::string()> on_get_svo_last_recording_error;
+	std::function<bool(RecordingFormat)> on_recording_available;
+	std::function<cvmmap::expected<RecordingStatus, ControlError>(const RecordingRequest &)> on_start_recording;
+	std::function<cvmmap::expected<RecordingStatus, ControlError>(RecordingFormat)> on_stop_recording;
+	std::function<cvmmap::expected<RecordingStatus, ControlError>(RecordingFormat)> on_get_recording_status;
 };
 
 class NatsControlService {

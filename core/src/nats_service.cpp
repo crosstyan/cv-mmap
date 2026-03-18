@@ -5,6 +5,7 @@
 #include <spdlog/spdlog.h>
 
 #include <cassert>
+#include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <exception>
@@ -36,11 +37,25 @@ pb::ErrorCode map_posix_error(const int error_code) {
 	}
 }
 
-pb::ErrorCode map_svo_recording_start_error(const int error_code) {
-	if (error_code == -EINVAL) {
+pb::ErrorCode map_control_error_code(const int error_code) {
+	switch (error_code) {
+	case CONTROL_RESPONSE_OK:
+		return pb::ERROR_CODE_OK;
+	case CONTROL_RESPONSE_UNKNOWN_CMD:
+	case CONTROL_RESPONSE_UNSUPPORTED:
+	case -EOPNOTSUPP:
+		return pb::ERROR_CODE_UNSUPPORTED;
+	case CONTROL_RESPONSE_INVALID_PAYLOAD:
 		return pb::ERROR_CODE_INVALID_PAYLOAD;
+	case CONTROL_RESPONSE_OUT_OF_RANGE:
+	case -ERANGE:
+	case -EINVAL:
+		return pb::ERROR_CODE_OUT_OF_RANGE;
+	case CONTROL_RESPONSE_TIMEOUT:
+		return pb::ERROR_CODE_TIMEOUT;
+	default:
+		return pb::ERROR_CODE_ERROR;
 	}
-	return map_posix_error(error_code);
 }
 
 pb::SourceKind to_proto_source_kind(const cvmmap::SourceKind source_kind) {
@@ -93,7 +108,7 @@ pb::ModuleStatusCode to_proto_module_status(const int32_t status_code) {
 
 void fill_recording_status_response(
 	pb::RecordingStatusResponse &response,
-	const app::backends::recording_status_t &status) {
+	const RecordingStatus &status) {
 	response.set_error(pb::ERROR_CODE_OK);
 	response.set_format(to_proto_recording_format(status.format));
 	response.set_can_record(status.can_record);
@@ -115,6 +130,88 @@ void fill_capabilities_response(
 		response.add_available_recording_formats(
 			to_proto_recording_format(format));
 	}
+}
+
+cvmmap::expected<RecordingRequest, ControlError> parse_recording_request(
+	const pb::RecordingStartRequest &request,
+	const RecordingFormat format) {
+	if (request.output_path().empty()) {
+		return cvmmap::unexpected(ControlError{
+			.code = CONTROL_RESPONSE_INVALID_PAYLOAD,
+			.message = "recording path is empty",
+		});
+	}
+
+	RecordingRequest parsed{
+		.format = format,
+		.output_path = request.output_path(),
+	};
+
+	switch (format) {
+	case RecordingFormat::Svo: {
+		if (request.has_mcap_options()) {
+			return cvmmap::unexpected(ControlError{
+				.code = CONTROL_RESPONSE_INVALID_PAYLOAD,
+				.message = "MCAP options are invalid for SVO recording",
+			});
+		}
+		if (request.has_svo_options()) {
+			SvoRecordingOptions options{};
+			const auto &wire_options = request.svo_options();
+			if (wire_options.has_compression_mode()) {
+				options.compression_mode = wire_options.compression_mode();
+			}
+			if (wire_options.has_bitrate()) {
+				options.bitrate = wire_options.bitrate();
+			}
+			if (wire_options.has_target_framerate()) {
+				options.target_framerate = wire_options.target_framerate();
+			}
+			if (wire_options.has_transcode_streaming_input()) {
+				options.transcode_streaming_input =
+					wire_options.transcode_streaming_input();
+			}
+			parsed.svo_options = std::move(options);
+		}
+		break;
+	}
+	case RecordingFormat::Mcap: {
+		if (request.has_svo_options()) {
+			return cvmmap::unexpected(ControlError{
+				.code = CONTROL_RESPONSE_INVALID_PAYLOAD,
+				.message = "SVO options are invalid for MCAP recording",
+			});
+		}
+		if (request.has_mcap_options()) {
+			McapRecordingOptions options{};
+			const auto &wire_options = request.mcap_options();
+			if (wire_options.has_compression()) {
+				options.compression = wire_options.compression();
+			}
+			if (wire_options.has_topic()) {
+				options.topic = wire_options.topic();
+			}
+			if (wire_options.has_depth_topic()) {
+				options.depth_topic = wire_options.depth_topic();
+			}
+			if (wire_options.has_body_topic()) {
+				options.body_topic = wire_options.body_topic();
+			}
+			if (wire_options.has_frame_id()) {
+				options.frame_id = wire_options.frame_id();
+			}
+			parsed.mcap_options = std::move(options);
+		}
+		break;
+	}
+	default:
+		return cvmmap::unexpected(ControlError{
+			.code = CONTROL_RESPONSE_INVALID_PAYLOAD,
+			.message = "recording format is required",
+		});
+	}
+
+	return parsed;
 }
 
 uint64_t now_ns() {
@@ -141,6 +238,10 @@ struct NatsControlService::impl {
 	natsSubscription *sub_svo_start{nullptr};
 	natsSubscription *sub_svo_stop{nullptr};
 	natsSubscription *sub_svo_status{nullptr};
+	natsSubscription *sub_mcap_capabilities{nullptr};
+	natsSubscription *sub_mcap_start{nullptr};
+	natsSubscription *sub_mcap_stop{nullptr};
+	natsSubscription *sub_mcap_status{nullptr};
 
 	void publish(const std::string &subject, const void *data, const int size) {
 		if (!conn) {
@@ -280,33 +381,35 @@ static void on_source_capabilities_msg(
 	} else {
 		response.set_error(pb::ERROR_CODE_UNSUPPORTED);
 	}
-		self->reply(message, response);
+	self->reply(message, response);
 	}
 
-	static void on_svo_capabilities_msg(
+	static void on_recording_capabilities_msg(
 		natsConnection *,
 		natsSubscription *,
 		natsMsg *message,
-		void *closure) {
+		void *closure,
+		const RecordingFormat format) {
 		auto *self = static_cast<impl *>(closure);
 		pb::CapabilitiesResponse response;
-		if (self->handlers.on_svo_recording_available &&
-			self->handlers.on_svo_recording_available()) {
-			fill_capabilities_response(response, false, {RecordingFormat::Svo});
+		if (self->handlers.on_recording_available &&
+			self->handlers.on_recording_available(format)) {
+			fill_capabilities_response(response, false, {format});
 		} else {
 			fill_capabilities_response(response, false, {});
 		}
 		self->reply(message, response);
 	}
 
-	static void on_svo_start_msg(
+	static void on_recording_start_msg(
 		natsConnection *,
 		natsSubscription *,
 		natsMsg *message,
-		void *closure) {
+		void *closure,
+		const RecordingFormat format) {
 		auto *self = static_cast<impl *>(closure);
 		pb::RecordingStatusResponse response;
-		if (!self->handlers.on_start_svo_recording) {
+		if (!self->handlers.on_start_recording) {
 			response.set_error(pb::ERROR_CODE_UNSUPPORTED);
 			self->reply(message, response);
 			return;
@@ -320,49 +423,20 @@ static void on_source_capabilities_msg(
 			self->reply(message, response);
 			return;
 		}
-		if (request.output_path().empty()) {
-			response.set_error(pb::ERROR_CODE_INVALID_PAYLOAD);
-			response.set_error_message("recording path is empty");
-			self->reply(message, response);
-			return;
-		}
-		if (request.has_mcap_options()) {
-			response.set_error(pb::ERROR_CODE_INVALID_PAYLOAD);
-			response.set_error_message("MCAP options are invalid for SVO recording");
-			self->reply(message, response);
-			return;
-		}
 
-		app::backends::svo_recording_request_t backend_request{
-			.output_path = request.output_path(),
-		};
-		if (request.has_svo_options()) {
-			const auto &wire_options = request.svo_options();
-			if (wire_options.has_compression_mode()) {
-				backend_request.options.compression_mode =
-					wire_options.compression_mode();
-			}
-			if (wire_options.has_bitrate()) {
-				backend_request.options.bitrate = wire_options.bitrate();
-			}
-			if (wire_options.has_target_framerate()) {
-				backend_request.options.target_framerate =
-					wire_options.target_framerate();
-			}
-			if (wire_options.has_transcode_streaming_input()) {
-				backend_request.options.transcode_streaming_input =
-					wire_options.transcode_streaming_input();
-			}
+		auto parsed_request = parse_recording_request(request, format);
+		if (!parsed_request) {
+			response.set_error(map_control_error_code(parsed_request.error().code));
+			response.set_error_message(parsed_request.error().message);
+			self->reply(message, response);
+			return;
 		}
 
 		try {
-			auto result = self->handlers.on_start_svo_recording(backend_request);
+			auto result = self->handlers.on_start_recording(*parsed_request);
 			if (!result) {
-				response.set_error(map_svo_recording_start_error(result.error()));
-				if (self->handlers.on_get_svo_last_recording_error) {
-					response.set_error_message(
-						self->handlers.on_get_svo_last_recording_error());
-				}
+				response.set_error(map_control_error_code(result.error().code));
+				response.set_error_message(result.error().message);
 				self->reply(message, response);
 				return;
 			}
@@ -371,26 +445,27 @@ static void on_source_capabilities_msg(
 		} catch (const std::exception &e) {
 			response.set_error(pb::ERROR_CODE_ERROR);
 			response.set_error_message(
-				cvmmap::format("unexpected SVO recording start failure: {}", e.what()));
+				cvmmap::format("unexpected recording start failure: {}", e.what()));
 			self->reply(message, response);
 			return;
 		} catch (...) {
 			response.set_error(pb::ERROR_CODE_ERROR);
-			response.set_error_message("unexpected SVO recording start failure");
+			response.set_error_message("unexpected recording start failure");
 			self->reply(message, response);
 			return;
 		}
 		self->reply(message, response);
 	}
 
-	static void on_svo_stop_msg(
+	static void on_recording_stop_msg(
 		natsConnection *,
 		natsSubscription *,
 		natsMsg *message,
-		void *closure) {
+		void *closure,
+		const RecordingFormat format) {
 		auto *self = static_cast<impl *>(closure);
 		pb::RecordingStatusResponse response;
-		if (!self->handlers.on_stop_svo_recording) {
+		if (!self->handlers.on_stop_recording) {
 			response.set_error(pb::ERROR_CODE_UNSUPPORTED);
 			self->reply(message, response);
 			return;
@@ -405,13 +480,10 @@ static void on_source_capabilities_msg(
 			return;
 		}
 
-		auto result = self->handlers.on_stop_svo_recording();
+		auto result = self->handlers.on_stop_recording(format);
 		if (!result) {
-			response.set_error(map_posix_error(result.error()));
-			if (self->handlers.on_get_svo_last_recording_error) {
-				response.set_error_message(
-					self->handlers.on_get_svo_last_recording_error());
-			}
+			response.set_error(map_control_error_code(result.error().code));
+			response.set_error_message(result.error().message);
 			self->reply(message, response);
 			return;
 		}
@@ -420,14 +492,15 @@ static void on_source_capabilities_msg(
 		self->reply(message, response);
 	}
 
-	static void on_svo_status_msg(
+	static void on_recording_status_msg(
 		natsConnection *,
 		natsSubscription *,
 		natsMsg *message,
-		void *closure) {
+		void *closure,
+		const RecordingFormat format) {
 		auto *self = static_cast<impl *>(closure);
 		pb::RecordingStatusResponse response;
-		if (!self->handlers.on_get_svo_recording_status) {
+		if (!self->handlers.on_get_recording_status) {
 			response.set_error(pb::ERROR_CODE_UNSUPPORTED);
 			self->reply(message, response);
 			return;
@@ -442,19 +515,120 @@ static void on_source_capabilities_msg(
 			return;
 		}
 
-		auto result = self->handlers.on_get_svo_recording_status();
+		auto result = self->handlers.on_get_recording_status(format);
 		if (!result) {
-			response.set_error(map_posix_error(result.error()));
-			if (self->handlers.on_get_svo_last_recording_error) {
-				response.set_error_message(
-					self->handlers.on_get_svo_last_recording_error());
-			}
+			response.set_error(map_control_error_code(result.error().code));
+			response.set_error_message(result.error().message);
 			self->reply(message, response);
 			return;
 		}
 
 		fill_recording_status_response(response, *result);
 		self->reply(message, response);
+	}
+
+	static void on_svo_capabilities_msg(
+		natsConnection *conn,
+		natsSubscription *sub,
+		natsMsg *message,
+		void *closure) {
+		on_recording_capabilities_msg(
+			conn,
+			sub,
+			message,
+			closure,
+			RecordingFormat::Svo);
+	}
+
+	static void on_mcap_capabilities_msg(
+		natsConnection *conn,
+		natsSubscription *sub,
+		natsMsg *message,
+		void *closure) {
+		on_recording_capabilities_msg(
+			conn,
+			sub,
+			message,
+			closure,
+			RecordingFormat::Mcap);
+	}
+
+	static void on_svo_start_msg(
+		natsConnection *conn,
+		natsSubscription *sub,
+		natsMsg *message,
+		void *closure) {
+		on_recording_start_msg(
+			conn,
+			sub,
+			message,
+			closure,
+			RecordingFormat::Svo);
+	}
+
+	static void on_mcap_start_msg(
+		natsConnection *conn,
+		natsSubscription *sub,
+		natsMsg *message,
+		void *closure) {
+		on_recording_start_msg(
+			conn,
+			sub,
+			message,
+			closure,
+			RecordingFormat::Mcap);
+	}
+
+	static void on_svo_stop_msg(
+		natsConnection *conn,
+		natsSubscription *sub,
+		natsMsg *message,
+		void *closure) {
+		on_recording_stop_msg(
+			conn,
+			sub,
+			message,
+			closure,
+			RecordingFormat::Svo);
+	}
+
+	static void on_mcap_stop_msg(
+		natsConnection *conn,
+		natsSubscription *sub,
+		natsMsg *message,
+		void *closure) {
+		on_recording_stop_msg(
+			conn,
+			sub,
+			message,
+			closure,
+			RecordingFormat::Mcap);
+	}
+
+	static void on_svo_status_msg(
+		natsConnection *conn,
+		natsSubscription *sub,
+		natsMsg *message,
+		void *closure) {
+		on_recording_status_msg(
+			conn,
+			sub,
+			message,
+			closure,
+			RecordingFormat::Svo);
+	}
+
+	static void on_mcap_status_msg(
+		natsConnection *conn,
+		natsSubscription *sub,
+		natsMsg *message,
+		void *closure) {
+		on_recording_status_msg(
+			conn,
+			sub,
+			message,
+			closure,
+			RecordingFormat::Mcap);
 	}
 };
 
@@ -499,54 +673,130 @@ bool NatsControlService::Start() {
 	pimpl_->started = true;
 	const auto &target_key = pimpl_->target_key;
 
-	natsConnection_Subscribe(
-		&pimpl_->sub_source_reset,
-		pimpl_->conn,
-		nats::subject_control_source_reset(target_key).c_str(),
-		impl::on_source_reset_msg,
-		pimpl_.get());
-	natsConnection_Subscribe(
-		&pimpl_->sub_source_info,
-		pimpl_->conn,
-		nats::subject_control_source_info(target_key).c_str(),
-		impl::on_source_info_msg,
-		pimpl_.get());
-	natsConnection_Subscribe(
-		&pimpl_->sub_source_seek,
-		pimpl_->conn,
-		nats::subject_control_source_seek(target_key).c_str(),
-		impl::on_source_seek_msg,
-		pimpl_.get());
-	natsConnection_Subscribe(
-		&pimpl_->sub_source_capabilities,
-		pimpl_->conn,
-		nats::subject_control_source_capabilities(target_key).c_str(),
-		impl::on_source_capabilities_msg,
-		pimpl_.get());
-	natsConnection_Subscribe(
+	if (pimpl_->handlers.on_reset_frame_count) {
+		natsConnection_Subscribe(
+			&pimpl_->sub_source_reset,
+			pimpl_->conn,
+			nats::subject_control_source_reset(target_key).c_str(),
+			impl::on_source_reset_msg,
+			pimpl_.get());
+	}
+	if (pimpl_->handlers.on_get_source_info) {
+		natsConnection_Subscribe(
+			&pimpl_->sub_source_info,
+			pimpl_->conn,
+			nats::subject_control_source_info(target_key).c_str(),
+			impl::on_source_info_msg,
+			pimpl_.get());
+		natsConnection_Subscribe(
+			&pimpl_->sub_source_capabilities,
+			pimpl_->conn,
+			nats::subject_control_source_capabilities(target_key).c_str(),
+			impl::on_source_capabilities_msg,
+			pimpl_.get());
+	}
+	if (pimpl_->handlers.on_seek_timestamp) {
+		natsConnection_Subscribe(
+			&pimpl_->sub_source_seek,
+			pimpl_->conn,
+			nats::subject_control_source_seek(target_key).c_str(),
+			impl::on_source_seek_msg,
+			pimpl_.get());
+	}
+
+	auto *service_impl = pimpl_.get();
+	const auto subscribe_recorder_subjects =
+		[service_impl, &target_key](RecordingFormat format,
+								 natsSubscription **capability_sub,
+								 natsMsgHandler capability_handler,
+								 natsSubscription **start_sub,
+								 natsMsgHandler start_handler,
+								 natsSubscription **stop_sub,
+								 natsMsgHandler stop_handler,
+								 natsSubscription **status_sub,
+								 natsMsgHandler status_handler) {
+			auto capability_subject = std::string{};
+			auto start_subject = std::string{};
+			auto stop_subject = std::string{};
+			auto status_subject = std::string{};
+			switch (format) {
+			case RecordingFormat::Svo:
+				capability_subject = nats::subject_control_recorder_svo_capabilities(target_key);
+				start_subject = nats::subject_control_recorder_svo_start(target_key);
+				stop_subject = nats::subject_control_recorder_svo_stop(target_key);
+				status_subject = nats::subject_control_recorder_svo_status(target_key);
+				break;
+			case RecordingFormat::Mcap:
+				capability_subject = nats::subject_control_recorder_mcap_capabilities(target_key);
+				start_subject = nats::subject_control_recorder_mcap_start(target_key);
+				stop_subject = nats::subject_control_recorder_mcap_stop(target_key);
+				status_subject = nats::subject_control_recorder_mcap_status(target_key);
+				break;
+			default:
+				return;
+			}
+
+			const bool owns_format =
+				service_impl->handlers.on_recording_available &&
+				service_impl->handlers.on_recording_available(format);
+			if (!owns_format) {
+				return;
+			}
+
+			if (service_impl->handlers.on_recording_available) {
+				natsConnection_Subscribe(
+					capability_sub,
+					service_impl->conn,
+					capability_subject.c_str(),
+					capability_handler,
+					service_impl);
+			}
+			if (service_impl->handlers.on_start_recording) {
+				natsConnection_Subscribe(
+					start_sub,
+					service_impl->conn,
+					start_subject.c_str(),
+					start_handler,
+					service_impl);
+			}
+			if (service_impl->handlers.on_stop_recording) {
+				natsConnection_Subscribe(
+					stop_sub,
+					service_impl->conn,
+					stop_subject.c_str(),
+					stop_handler,
+					service_impl);
+			}
+			if (service_impl->handlers.on_get_recording_status) {
+				natsConnection_Subscribe(
+					status_sub,
+					service_impl->conn,
+					status_subject.c_str(),
+					status_handler,
+					service_impl);
+			}
+		};
+
+	subscribe_recorder_subjects(
+		RecordingFormat::Svo,
 		&pimpl_->sub_svo_capabilities,
-		pimpl_->conn,
-		nats::subject_control_recorder_svo_capabilities(target_key).c_str(),
 		impl::on_svo_capabilities_msg,
-		pimpl_.get());
-	natsConnection_Subscribe(
 		&pimpl_->sub_svo_start,
-		pimpl_->conn,
-		nats::subject_control_recorder_svo_start(target_key).c_str(),
 		impl::on_svo_start_msg,
-		pimpl_.get());
-	natsConnection_Subscribe(
 		&pimpl_->sub_svo_stop,
-		pimpl_->conn,
-		nats::subject_control_recorder_svo_stop(target_key).c_str(),
 		impl::on_svo_stop_msg,
-		pimpl_.get());
-	natsConnection_Subscribe(
 		&pimpl_->sub_svo_status,
-		pimpl_->conn,
-		nats::subject_control_recorder_svo_status(target_key).c_str(),
-		impl::on_svo_status_msg,
-		pimpl_.get());
+		impl::on_svo_status_msg);
+	subscribe_recorder_subjects(
+		RecordingFormat::Mcap,
+		&pimpl_->sub_mcap_capabilities,
+		impl::on_mcap_capabilities_msg,
+		&pimpl_->sub_mcap_start,
+		impl::on_mcap_start_msg,
+		&pimpl_->sub_mcap_stop,
+		impl::on_mcap_stop_msg,
+		&pimpl_->sub_mcap_status,
+		impl::on_mcap_status_msg);
 
 	spdlog::info("nats control service started for target '{}'", target_key);
 	return true;
@@ -570,6 +820,10 @@ void NatsControlService::Stop() {
 	destroy_subscription(pimpl_->sub_svo_start);
 	destroy_subscription(pimpl_->sub_svo_stop);
 	destroy_subscription(pimpl_->sub_svo_status);
+	destroy_subscription(pimpl_->sub_mcap_capabilities);
+	destroy_subscription(pimpl_->sub_mcap_start);
+	destroy_subscription(pimpl_->sub_mcap_stop);
+	destroy_subscription(pimpl_->sub_mcap_status);
 
 	if (pimpl_->conn) {
 		natsConnection_Close(pimpl_->conn);
