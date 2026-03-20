@@ -319,12 +319,10 @@ struct McapBackendImpl {
 		source_info_t info{};
 		info.source_kind = cvmmap::SourceKind::Finite;
 		info.timestamp_domain = mcap_config.timestamp_domain;
-		if (!video_config.use_finite_as_infinite_stream) {
+		if (video_config.finite_source_can_seek()) {
 			info.flags |= cvmmap::SOURCE_INFO_FLAG_CAN_SEEK;
 		}
-		if (video_config.use_finite_as_infinite_stream ||
-			video_config.finite_stream_ending_behavior ==
-				app::FiniteStreamEndingBehavior::Loop) {
+		if (video_config.finite_source_auto_loops()) {
 			info.flags |= cvmmap::SOURCE_INFO_FLAG_AUTO_LOOP;
 		}
 		if (!depth_by_timestamp.empty()) {
@@ -880,7 +878,7 @@ struct McapBackendImpl {
 			{
 				std::unique_lock lock(state_mutex);
 				if (next_video_index >= video_samples.size()) {
-					if (video_config.use_finite_as_infinite_stream) {
+					if (video_config.finite_source_loops_silently()) {
 						auto looped = seek_to_index_locked(0, 0);
 						if (!looped) {
 							lock.unlock();

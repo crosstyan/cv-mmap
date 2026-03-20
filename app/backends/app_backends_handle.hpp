@@ -96,6 +96,11 @@ public:
 		return visit_active_result<source_info_t>([](auto &backend) { return backend.GetSourceInfo(); });
 	}
 
+	cvmmap::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns) {
+		return visit_active_result<cvmmap::expected<seek_result_t, error_t>>(
+			[&](auto &backend) { return backend.SeekTimestampNs(timestamp_ns); });
+	}
+
 	error_t ResetFrameCount() {
 		return visit_active_result<error_t>([](auto &backend) { return backend.ResetFrameCount(); });
 	}

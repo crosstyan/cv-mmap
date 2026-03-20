@@ -89,6 +89,12 @@ struct OpenCVBackendImpl {
 	}
 
 	[[nodiscard]]
+	bool effective_can_seek() const {
+		return finite_source_info.has_value() &&
+			options.video_config.finite_source_can_seek();
+	}
+
+	[[nodiscard]]
 	source_info_t GetSourceInfo() {
 		std::lock_guard lock(state_mutex);
 		source_info_t info{};
@@ -102,12 +108,10 @@ struct OpenCVBackendImpl {
 			info.duration_ns =
 				static_cast<uint64_t>(finite_source_info->frame_count) *
 				finite_frame_interval_ns();
-			if (!options.video_config.use_finite_as_infinite_stream) {
+			if (options.video_config.finite_source_can_seek()) {
 				info.flags |= cvmmap::SOURCE_INFO_FLAG_CAN_SEEK;
 			}
-			if (options.video_config.finite_stream_ending_behavior ==
-					app::FiniteStreamEndingBehavior::Loop ||
-				options.video_config.use_finite_as_infinite_stream) {
+			if (options.video_config.finite_source_auto_loops()) {
 				info.flags |= cvmmap::SOURCE_INFO_FLAG_AUTO_LOOP;
 			}
 		} else {
@@ -175,11 +179,12 @@ struct OpenCVBackendImpl {
 		// Check for finite source
 		finite_source_info = check_finite_source();
 		if (finite_source_info) {
-			spdlog::info("detected finite source; fps={} ({}ms), frame_count={}, is_loop={}",
+			spdlog::info("detected finite source; fps={} ({}ms), frame_count={}, auto_loops={}, can_seek={}",
 						 finite_source_info->fps,
 						 finite_source_info->frame_interval().count(),
 						 finite_source_info->frame_count,
-						 options.video_config.use_finite_as_infinite_stream);
+						 options.video_config.finite_source_auto_loops(),
+						 options.video_config.finite_source_can_seek());
 		} else {
 			spdlog::info("infinite source detected (live stream)");
 		}
@@ -250,7 +255,7 @@ struct OpenCVBackendImpl {
 			if (frame.empty()) {
 				if (finite_source_info) {
 					spdlog::info("reached end of finite video source");
-					if (options.video_config.use_finite_as_infinite_stream) {
+					if (options.video_config.finite_source_loops_silently()) {
 						reset_video_position();
 						consecutive_empty_frames = 0;
 						continue;
@@ -364,7 +369,7 @@ struct OpenCVBackendImpl {
 
 	error_t ResetFrameCount() {
 		std::lock_guard lock(state_mutex);
-		if (finite_source_info && !options.video_config.use_finite_as_infinite_stream) {
+		if (finite_source_info && options.video_config.finite_source_can_seek()) {
 			// Finite source: seek to beginning
 			bool success = cap.set(cv::CAP_PROP_POS_FRAMES, 0);
 			if (!success) {

@@ -151,6 +151,12 @@ struct GStreamerBackendImpl {
 	}
 
 	[[nodiscard]]
+	bool effective_can_seek() const {
+		return finite_source_info.has_value() &&
+			options.video_config.finite_source_can_seek();
+	}
+
+	[[nodiscard]]
 	source_info_t GetSourceInfo() {
 		std::lock_guard lock(state_mutex);
 		source_info_t info{};
@@ -162,12 +168,10 @@ struct GStreamerBackendImpl {
 				finite_source_info->duration_ns - static_cast<int64_t>(finite_frame_interval_ns()),
 				0));
 			info.duration_ns = static_cast<uint64_t>(finite_source_info->duration_ns);
-			if (!options.video_config.use_finite_as_infinite_stream) {
+			if (options.video_config.finite_source_can_seek()) {
 				info.flags |= cvmmap::SOURCE_INFO_FLAG_CAN_SEEK;
 			}
-			if (options.video_config.finite_stream_ending_behavior ==
-					app::FiniteStreamEndingBehavior::Loop ||
-				options.video_config.use_finite_as_infinite_stream) {
+			if (options.video_config.finite_source_auto_loops()) {
 				info.flags |= cvmmap::SOURCE_INFO_FLAG_AUTO_LOOP;
 			}
 		} else {
@@ -429,12 +433,13 @@ struct GStreamerBackendImpl {
 		// Check for finite source
 		finite_source_info = check_finite_source();
 		if (finite_source_info) {
-			spdlog::info("detected finite source; fps={} ({}ms), duration={}s, estimated_frames={}, use_finite_as_infinite_stream={}",
+			spdlog::info("detected finite source; fps={} ({}ms), duration={}s, estimated_frames={}, auto_loops={}, can_seek={}",
 						 finite_source_info->fps,
 						 finite_source_info->frame_interval().count(),
 						 finite_source_info->duration_ns / 1e9,
 						 finite_source_info->estimated_frame_count(),
-						 options.video_config.use_finite_as_infinite_stream);
+						 options.video_config.finite_source_auto_loops(),
+						 options.video_config.finite_source_can_seek());
 		} else {
 			spdlog::info("infinite source detected (live stream)");
 		}
@@ -477,7 +482,8 @@ struct GStreamerBackendImpl {
 				}
 				case GST_MESSAGE_EOS: {
 					spdlog::info("GStreamer end-of-stream");
-					if (finite_source_info && options.video_config.use_finite_as_infinite_stream) {
+					if (finite_source_info &&
+						options.video_config.finite_source_loops_silently()) {
 						spdlog::info("looping finite source");
 						if (!seek_to_start()) {
 							spdlog::error("seeking to start for looping");
@@ -517,7 +523,8 @@ struct GStreamerBackendImpl {
 				// Check if appsink is EOS
 				if (gst_app_sink_is_eos(GST_APP_SINK(appsink))) {
 					spdlog::info("appsink reached EOS");
-					if (finite_source_info && options.video_config.use_finite_as_infinite_stream) {
+					if (finite_source_info &&
+						options.video_config.finite_source_loops_silently()) {
 						if (!seek_to_start()) {
 							spdlog::error("seeking to start for looping");
 							on_error(-EIO, "bad loop video");
@@ -616,7 +623,7 @@ struct GStreamerBackendImpl {
 
 	error_t ResetFrameCount() {
 		std::lock_guard lock(state_mutex);
-		if (finite_source_info && !options.video_config.use_finite_as_infinite_stream) {
+		if (finite_source_info && options.video_config.finite_source_can_seek()) {
 			// Finite source: seek to beginning
 			if (!pipeline) {
 				return -ENODEV;

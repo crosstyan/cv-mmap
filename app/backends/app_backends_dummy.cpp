@@ -131,12 +131,10 @@ struct DummyBackendImpl {
 			info.duration_ns =
 				static_cast<uint64_t>(options.dummy_config.frames) *
 				frame_interval_ns_for(options.dummy_config);
-			if (!options.video_config.use_finite_as_infinite_stream) {
+			if (options.video_config.finite_source_can_seek()) {
 				info.flags |= cvmmap::SOURCE_INFO_FLAG_CAN_SEEK;
 			}
-			if (options.video_config.finite_stream_ending_behavior ==
-				app::FiniteStreamEndingBehavior::Loop ||
-				options.video_config.use_finite_as_infinite_stream) {
+			if (options.video_config.finite_source_auto_loops()) {
 				info.flags |= cvmmap::SOURCE_INFO_FLAG_AUTO_LOOP;
 			}
 		}
