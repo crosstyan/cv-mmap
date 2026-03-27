@@ -348,12 +348,12 @@ int main(int argc, char **argv) {
 		return static_cast<uint64_t>(
 			std::chrono::duration_cast<std::chrono::nanoseconds>(
 				std::chrono::system_clock::now().time_since_epoch())
-			.count());
+				.count());
 	};
 
 	const auto serialize_body_tracking_frame = [&config](const cvmmap::body_tracking_frame_t &frame) -> std::vector<uint8_t> {
-		auto header = frame.header;
-		header._magic = cvmmap::BODY_TRACKING_MAGIC;
+		auto header           = frame.header;
+		header._magic         = cvmmap::BODY_TRACKING_MAGIC;
 		header.versions_major = VERSION_MAJOR;
 		header.versions_minor = VERSION_MINOR;
 		std::memset(header._label, 0, sizeof(header._label));
@@ -361,8 +361,8 @@ int main(int argc, char **argv) {
 			header._label,
 			config.name.data(),
 			std::min(sizeof(header._label), config.name.size()));
-		header.body_count = static_cast<uint16_t>(frame.bodies.size());
-		header.body_record_size = sizeof(cvmmap::body_tracking_body_t);
+		header.body_count         = static_cast<uint16_t>(frame.bodies.size());
+		header.body_record_size   = sizeof(cvmmap::body_tracking_body_t);
 		header.payload_size_bytes = static_cast<uint32_t>(
 			frame.bodies.size() * sizeof(cvmmap::body_tracking_body_t));
 
@@ -399,15 +399,15 @@ int main(int argc, char **argv) {
 	};
 
 	const auto build_v2_metadata = [&to_u32, &determine_depth_unit](
-		const frame_metadata_t &source_metadata,
-		size_t raw_payload_size,
-		const std::optional<encoded_plane_view_t> &encoded_plane = std::nullopt) -> std::optional<frame_metadata_v2_t> {
+									   const frame_metadata_t &source_metadata,
+									   size_t raw_payload_size,
+									   const std::optional<encoded_plane_view_t> &encoded_plane = std::nullopt) -> std::optional<frame_metadata_v2_t> {
 		if (raw_payload_size == 0 || source_metadata.info.width == 0 || source_metadata.info.height == 0 || source_metadata.info.channels == 0) {
 			return std::nullopt;
 		}
 
 		const size_t encoded_payload_size = encoded_plane ? encoded_plane->bytes.size() : 0;
-		auto payload_size_u32 = to_u32(raw_payload_size + encoded_payload_size);
+		auto payload_size_u32             = to_u32(raw_payload_size + encoded_payload_size);
 		if (!payload_size_u32) {
 			return std::nullopt;
 		}
@@ -533,7 +533,7 @@ int main(int argc, char **argv) {
 		}
 
 		if (confidence_plane_active) {
-			auto confidence_size_u32 = to_u32(confidence_size);
+			auto confidence_size_u32   = to_u32(confidence_size);
 			auto confidence_offset_u32 = to_u32(left_size + depth_size);
 			if (!confidence_size_u32 || !confidence_offset_u32) {
 				return std::nullopt;
@@ -561,7 +561,7 @@ int main(int argc, char **argv) {
 
 		if (encoded_plane && !encoded_plane->bytes.empty()) {
 			auto encoded_offset_u32 = to_u32(left_size + depth_size + confidence_size);
-			auto encoded_size_u32 = to_u32(encoded_plane->bytes.size());
+			auto encoded_size_u32   = to_u32(encoded_plane->bytes.size());
 			if (!encoded_offset_u32 || !encoded_size_u32) {
 				return std::nullopt;
 			}
@@ -606,10 +606,10 @@ int main(int argc, char **argv) {
 				encoded_extension.encoded_bitstream_format = EncodedBitstreamFormat::UNKNOWN;
 				break;
 			}
-			encoded_extension.encoded_flags = encoded_plane->flags;
+			encoded_extension.encoded_flags          = encoded_plane->flags;
 			encoded_extension.encoded_frame_rate_num = encoded_plane->frame_rate_num;
 			encoded_extension.encoded_frame_rate_den = encoded_plane->frame_rate_den;
-			encoded_extension.encoded_stream_pts_ns = encoded_plane->stream_pts_ns;
+			encoded_extension.encoded_stream_pts_ns  = encoded_plane->stream_pts_ns;
 			std::memcpy(metadata_v2.header.reserved_0, &encoded_extension, sizeof(encoded_extension));
 		}
 
@@ -795,15 +795,15 @@ int main(int argc, char **argv) {
 			auto it = pending_encoded_by_timestamp.find(metadata.timestamp_ns);
 			if (it != pending_encoded_by_timestamp.end()) {
 				encoded_plane_view_t plane{};
-				plane.codec = it->second.codec;
+				plane.codec            = it->second.codec;
 				plane.bitstream_format = it->second.bitstream_format;
-				plane.flags = it->second.flags;
-				plane.frame_rate_num = it->second.frame_rate_num;
-				plane.frame_rate_den = it->second.frame_rate_den;
-				plane.stream_pts_ns = it->second.stream_pts_ns;
-				encoded_plane_storage = std::move(it->second.bytes);
-				plane.bytes = std::span<const uint8_t>(encoded_plane_storage.data(), encoded_plane_storage.size());
-				encoded_plane = plane;
+				plane.flags            = it->second.flags;
+				plane.frame_rate_num   = it->second.frame_rate_num;
+				plane.frame_rate_den   = it->second.frame_rate_den;
+				plane.stream_pts_ns    = it->second.stream_pts_ns;
+				encoded_plane_storage  = std::move(it->second.bytes);
+				plane.bytes            = std::span<const uint8_t>(encoded_plane_storage.data(), encoded_plane_storage.size());
+				encoded_plane          = plane;
 				pending_encoded_by_timestamp.erase(it);
 			}
 		}
@@ -859,14 +859,14 @@ int main(int argc, char **argv) {
 		}
 	});
 
-	backend.SetOnBodyTracking([&serialize_body_tracking_frame, &nats_service, nats_enabled](const cvmmap::body_tracking_frame_t &frame) {
-			if (!nats_enabled || !nats_service) {
-				return;
-			}
-			auto bytes = serialize_body_tracking_frame(frame);
-			nats_service->PublishBodyTracking(
-				std::span<const uint8_t>(bytes.data(), bytes.size()));
-		});
+	backend.TrySetOnBodyTracking([&serialize_body_tracking_frame, &nats_service, nats_enabled](const cvmmap::body_tracking_frame_t &frame) {
+		if (!nats_enabled || !nats_service) {
+			return;
+		}
+		auto bytes = serialize_body_tracking_frame(frame);
+		nats_service->PublishBodyTracking(
+			std::span<const uint8_t>(bytes.data(), bytes.size()));
+	});
 
 	const auto send_status = [&nats_service, nats_enabled](int32_t status) {
 		if (!nats_enabled || !nats_service) {
@@ -906,7 +906,7 @@ int main(int argc, char **argv) {
 	};
 
 	const auto map_recording_error = [](const int error_code,
-									 std::string message = {}) {
+										std::string message = {}) {
 		auto control_code = cvmmap::CONTROL_RESPONSE_ERROR;
 		switch (error_code) {
 		case 0:
@@ -926,21 +926,21 @@ int main(int argc, char **argv) {
 			break;
 		}
 		return cvmmap::ControlError{
-			.code = control_code,
+			.code    = control_code,
 			.message = std::move(message),
 		};
 	};
 
 	const auto to_public_recording_status = [](const backends::recording_status_t &status) {
 		return cvmmap::RecordingStatus{
-			.format = status.format,
-			.can_record = status.can_record,
-			.is_recording = status.is_recording,
-			.is_paused = status.is_paused,
-			.last_frame_ok = status.last_frame_ok,
+			.format          = status.format,
+			.can_record      = status.can_record,
+			.is_recording    = status.is_recording,
+			.is_paused       = status.is_paused,
+			.last_frame_ok   = status.last_frame_ok,
 			.frames_ingested = status.frames_ingested,
-			.frames_encoded = status.frames_encoded,
-			.active_path = status.active_path,
+			.frames_encoded  = status.frames_encoded,
+			.active_path     = status.active_path,
 		};
 	};
 
@@ -954,55 +954,53 @@ int main(int argc, char **argv) {
 
 	std::vector<RecorderProvider> recorder_providers{};
 
-#ifdef WITH_BACKEND_ZED
-	if (auto *zed_backend = backend.get_if<app::backends::ZedBackend>()) {
+	backend.TryVisitSvoRecordable([&](auto &recordable_backend) {
+		auto *recordable_backend_ptr = &recordable_backend;
 		recorder_providers.push_back(RecorderProvider{
-			.format = cvmmap::RecordingFormat::Svo,
-			.is_available = [zed_backend]() {
-				auto status = zed_backend->GetRecordingStatus();
-				return status && status->can_record;
-			},
-			.start = [zed_backend, &map_recording_error, &to_public_recording_status](
-						const cvmmap::RecordingRequest &request)
+			.format       = cvmmap::RecordingFormat::Svo,
+			.is_available = [recordable_backend_ptr]() {
+				auto status = recordable_backend_ptr->GetRecordingStatus();
+				return status && status->can_record; },
+			.start        = [recordable_backend_ptr, &map_recording_error, &to_public_recording_status](
+								const cvmmap::RecordingRequest &request)
 				-> cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError> {
 				backends::svo_recording_request_t backend_request{
 					.output_path = request.output_path,
 				};
 				if (request.svo_options) {
 					backend_request.options.compression_mode = request.svo_options->compression_mode;
-					backend_request.options.bitrate = request.svo_options->bitrate;
+					backend_request.options.bitrate          = request.svo_options->bitrate;
 					backend_request.options.target_framerate = request.svo_options->target_framerate;
 					backend_request.options.transcode_streaming_input =
 						request.svo_options->transcode_streaming_input;
 				}
-				auto result = zed_backend->StartRecording(backend_request);
+				auto result = recordable_backend_ptr->StartRecording(backend_request);
 				if (!result) {
 					return cvmmap::unexpected(
-						map_recording_error(result.error(), zed_backend->GetLastRecordingError()));
+						map_recording_error(result.error(), recordable_backend_ptr->GetLastRecordingError()));
 				}
 				return to_public_recording_status(*result);
 			},
-			.stop = [zed_backend, &map_recording_error, &to_public_recording_status]()
+			.stop = [recordable_backend_ptr, &map_recording_error, &to_public_recording_status]()
 				-> cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError> {
-				auto result = zed_backend->StopRecording();
+				auto result = recordable_backend_ptr->StopRecording();
 				if (!result) {
 					return cvmmap::unexpected(
-						map_recording_error(result.error(), zed_backend->GetLastRecordingError()));
+						map_recording_error(result.error(), recordable_backend_ptr->GetLastRecordingError()));
 				}
 				return to_public_recording_status(*result);
 			},
-			.status = [zed_backend, &map_recording_error, &to_public_recording_status]()
+			.status = [recordable_backend_ptr, &map_recording_error, &to_public_recording_status]()
 				-> cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError> {
-				auto result = zed_backend->GetRecordingStatus();
+				auto result = recordable_backend_ptr->GetRecordingStatus();
 				if (!result) {
 					return cvmmap::unexpected(
-						map_recording_error(result.error(), zed_backend->GetLastRecordingError()));
+						map_recording_error(result.error(), recordable_backend_ptr->GetLastRecordingError()));
 				}
 				return to_public_recording_status(*result);
 			},
 		});
-	}
-#endif
+	});
 
 	const auto find_recorder_provider = [&recorder_providers](const cvmmap::RecordingFormat format)
 		-> RecorderProvider * {
@@ -1041,18 +1039,18 @@ int main(int argc, char **argv) {
 		};
 		nats_handlers.on_recording_available =
 			[&backend_control_mutex, &find_recorder_provider](const cvmmap::RecordingFormat format) {
-			std::lock_guard lock(backend_control_mutex);
-			auto *provider = find_recorder_provider(format);
-			return provider && provider->is_available && provider->is_available();
-		};
+				std::lock_guard lock(backend_control_mutex);
+				auto *provider = find_recorder_provider(format);
+				return provider && provider->is_available && provider->is_available();
+			};
 		nats_handlers.on_start_recording =
 			[&backend_control_mutex, &find_recorder_provider](const cvmmap::RecordingRequest &request)
-				-> cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError> {
+			-> cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError> {
 			std::lock_guard lock(backend_control_mutex);
 			auto *provider = find_recorder_provider(request.format);
 			if (!provider || !provider->start) {
 				return cvmmap::unexpected(cvmmap::ControlError{
-					.code = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
+					.code    = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
 					.message = "recording format is not supported by the active producer",
 				});
 			}
@@ -1060,12 +1058,12 @@ int main(int argc, char **argv) {
 		};
 		nats_handlers.on_stop_recording =
 			[&backend_control_mutex, &find_recorder_provider](const cvmmap::RecordingFormat format)
-				-> cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError> {
+			-> cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError> {
 			std::lock_guard lock(backend_control_mutex);
 			auto *provider = find_recorder_provider(format);
 			if (!provider || !provider->stop) {
 				return cvmmap::unexpected(cvmmap::ControlError{
-					.code = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
+					.code    = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
 					.message = "recording format is not supported by the active producer",
 				});
 			}
@@ -1073,12 +1071,12 @@ int main(int argc, char **argv) {
 		};
 		nats_handlers.on_get_recording_status =
 			[&backend_control_mutex, &find_recorder_provider](const cvmmap::RecordingFormat format)
-				-> cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError> {
+			-> cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError> {
 			std::lock_guard lock(backend_control_mutex);
 			auto *provider = find_recorder_provider(format);
 			if (!provider || !provider->status) {
 				return cvmmap::unexpected(cvmmap::ControlError{
-					.code = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
+					.code    = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
 					.message = "recording format is not supported by the active producer",
 				});
 			}

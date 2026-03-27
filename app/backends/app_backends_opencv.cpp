@@ -91,7 +91,7 @@ struct OpenCVBackendImpl {
 	[[nodiscard]]
 	bool effective_can_seek() const {
 		return finite_source_info.has_value() &&
-			options.video_config.finite_source_can_seek();
+			   options.video_config.finite_source_can_seek();
 	}
 
 	[[nodiscard]]
@@ -99,8 +99,8 @@ struct OpenCVBackendImpl {
 		std::lock_guard lock(state_mutex);
 		source_info_t info{};
 		if (finite_source_info) {
-			info.source_kind = cvmmap::SourceKind::Finite;
-			info.timestamp_domain = cvmmap::TimestampDomain::MediaTimeNs;
+			info.source_kind       = cvmmap::SourceKind::Finite;
+			info.timestamp_domain  = cvmmap::TimestampDomain::MediaTimeNs;
 			info.timeline_start_ns = 0;
 			info.timeline_end_ns =
 				static_cast<uint64_t>(finite_source_info->frame_count - 1) *
@@ -115,11 +115,11 @@ struct OpenCVBackendImpl {
 				info.flags |= cvmmap::SOURCE_INFO_FLAG_AUTO_LOOP;
 			}
 		} else {
-			info.source_kind = cvmmap::SourceKind::Live;
+			info.source_kind      = cvmmap::SourceKind::Live;
 			info.timestamp_domain = cvmmap::TimestampDomain::UnixEpochNs;
 		}
 		info.current_timestamp_ns = metadata.timestamp_ns;
-		info.current_frame_count = metadata.frame_count;
+		info.current_frame_count  = metadata.frame_count;
 		return info;
 	}
 
@@ -202,13 +202,13 @@ struct OpenCVBackendImpl {
 		const auto pixel_format = app::guess_pixel_format(frame.channels());
 		metadata.frame_count    = 0;
 		metadata.info           = frame_info_t{
-					  .width        = static_cast<uint16_t>(frame.cols),
-					  .height       = static_cast<uint16_t>(frame.rows),
-					  .channels     = static_cast<uint8_t>(frame.channels()),
-					  .depth        = static_cast<Depth>(frame.depth()),
-					  .pixel_format = pixel_format,
-					  .buffer_size  = static_cast<uint32_t>(frame.total() * frame.elemSize()),
-        };
+			.width        = static_cast<uint16_t>(frame.cols),
+			.height       = static_cast<uint16_t>(frame.rows),
+			.channels     = static_cast<uint8_t>(frame.channels()),
+			.depth        = static_cast<Depth>(frame.depth()),
+			.pixel_format = pixel_format,
+			.buffer_size  = static_cast<uint32_t>(frame.total() * frame.elemSize()),
+		};
 
 		spdlog::info("initial frame info: {}x{}x{}; "
 					 "depth={}({}); "
@@ -234,9 +234,9 @@ struct OpenCVBackendImpl {
 		on_metadata(metadata);
 
 		// Invoke frame callback for first frame
-		source_frame_index = 0;
+		source_frame_index    = 0;
 		metadata.timestamp_ns = timestamp_for_source_frame(source_frame_index);
-		auto frame_buffer = std::span<uint8_t>(frame.data, frame.total() * frame.elemSize());
+		auto frame_buffer     = std::span<uint8_t>(frame.data, frame.total() * frame.elemSize());
 		on_frame(frame_buffer, metadata);
 
 		// Start worker thread
@@ -291,7 +291,7 @@ struct OpenCVBackendImpl {
 				source_frame_index += 1;
 				metadata.frame_count += 1;
 				metadata.timestamp_ns = timestamp_for_source_frame(source_frame_index);
-				metadata_snapshot = metadata;
+				metadata_snapshot     = metadata;
 			}
 
 			// Invoke frame callback
@@ -327,8 +327,6 @@ struct OpenCVBackendImpl {
 		_on_frame = std::move(on_frame_);
 	}
 
-	void SetOnBodyTracking(on_body_tracking_fn_t) {}
-
 	void SetOnError(on_error_fn_t on_error_) {
 		_on_error = std::move(on_error_);
 	}
@@ -356,14 +354,14 @@ struct OpenCVBackendImpl {
 		if (!success) {
 			return cvmmap::unexpected(-EIO);
 		}
-		source_frame_index = frame_index;
-		metadata.frame_count = 0;
+		source_frame_index    = frame_index;
+		metadata.frame_count  = 0;
 		metadata.timestamp_ns = timestamp_for_source_frame(source_frame_index);
 		return seek_result_t{
 			.requested_timestamp_ns = timestamp_ns,
-			.landed_timestamp_ns = metadata.timestamp_ns,
-			.landed_frame_count = metadata.frame_count,
-			.exact_match = (metadata.timestamp_ns == timestamp_ns),
+			.landed_timestamp_ns    = metadata.timestamp_ns,
+			.landed_frame_count     = metadata.frame_count,
+			.exact_match            = (metadata.timestamp_ns == timestamp_ns),
 		};
 	}
 
@@ -377,8 +375,8 @@ struct OpenCVBackendImpl {
 			}
 		}
 		// Reset internal frame count for both finite and stream sources
-		metadata.frame_count = 0;
-		source_frame_index = 0;
+		metadata.frame_count  = 0;
+		source_frame_index    = 0;
 		metadata.timestamp_ns = timestamp_for_source_frame(source_frame_index);
 		return 0;
 	}
@@ -410,10 +408,6 @@ void OpenCVBackend::SetOnFrame(on_frame_fn_t on_frame) {
 	impl->SetOnFrame(std::move(on_frame));
 }
 
-void OpenCVBackend::SetOnBodyTracking(on_body_tracking_fn_t on_body_tracking) {
-	impl->SetOnBodyTracking(std::move(on_body_tracking));
-}
-
 void OpenCVBackend::SetOnError(on_error_fn_t on_error) {
 	impl->SetOnError(std::move(on_error));
 }
@@ -428,21 +422,5 @@ cvmmap::expected<seek_result_t, error_t> OpenCVBackend::SeekTimestampNs(uint64_t
 
 error_t OpenCVBackend::ResetFrameCount() {
 	return impl->ResetFrameCount();
-}
-
-cvmmap::expected<recording_status_t, error_t> OpenCVBackend::StartRecording(std::string_view) {
-	return cvmmap::unexpected(-EOPNOTSUPP);
-}
-
-cvmmap::expected<recording_status_t, error_t> OpenCVBackend::StopRecording() {
-	return cvmmap::unexpected(-EOPNOTSUPP);
-}
-
-cvmmap::expected<recording_status_t, error_t> OpenCVBackend::GetRecordingStatus() {
-	return cvmmap::unexpected(-EOPNOTSUPP);
-}
-
-std::string OpenCVBackend::GetLastRecordingError() {
-	return "recording is not supported by the OpenCV backend";
 }
 }

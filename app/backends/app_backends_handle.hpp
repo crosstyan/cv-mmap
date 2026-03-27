@@ -25,42 +25,41 @@
 namespace app::backends {
 namespace detail {
 
-template <typename T>
-using backend_ptr = std::unique_ptr<T>;
+	template <typename T>
+	using backend_ptr = std::unique_ptr<T>;
 
-using backend_storage_t = std::variant<
-	std::monostate,
-	backend_ptr<DummyBackend>
+	using backend_storage_t = std::variant<
+		std::monostate,
+		backend_ptr<DummyBackend>
 #ifdef WITH_BACKEND_OPENCV
-	,
-	backend_ptr<OpenCVBackend>
+		,
+		backend_ptr<OpenCVBackend>
 #endif
 #ifdef WITH_BACKEND_GSTREAMER
-	,
-	backend_ptr<GStreamerBackend>
-	,
-	backend_ptr<UdpRtpBackend>
+		,
+		backend_ptr<GStreamerBackend>,
+		backend_ptr<UdpRtpBackend>
 #endif
 #ifdef WITH_BACKEND_MCAP
-	,
-	backend_ptr<McapBackend>
+		,
+		backend_ptr<McapBackend>
 #endif
 #ifdef WITH_BACKEND_ZED
-	,
-	backend_ptr<ZedBackend>
+		,
+		backend_ptr<ZedBackend>
 #endif
-	>;
+		>;
 
 } // namespace detail
 
 class BackendHandle {
 public:
-	BackendHandle() = default;
-	BackendHandle(const BackendHandle &) = delete;
-	BackendHandle &operator=(const BackendHandle &) = delete;
-	BackendHandle(BackendHandle &&) noexcept = default;
+	BackendHandle()                                     = default;
+	BackendHandle(const BackendHandle &)                = delete;
+	BackendHandle &operator=(const BackendHandle &)     = delete;
+	BackendHandle(BackendHandle &&) noexcept            = default;
 	BackendHandle &operator=(BackendHandle &&) noexcept = default;
-	~BackendHandle() = default;
+	~BackendHandle()                                    = default;
 
 	template <typename Backend, typename... Args>
 	void emplace(Args &&...args) {
@@ -87,8 +86,52 @@ public:
 		visit_active_void([&](auto &backend) { backend.SetOnFrame(std::move(on_frame)); });
 	}
 
-	void SetOnBodyTracking(on_body_tracking_fn_t on_body_tracking) {
-		visit_active_void([&](auto &backend) { backend.SetOnBodyTracking(std::move(on_body_tracking)); });
+	bool TrySetOnBodyTracking(on_body_tracking_fn_t on_body_tracking) {
+		ensure_active();
+		return std::visit(
+			[&](auto &backend_ptr) -> bool {
+				using storage_type = std::decay_t<decltype(backend_ptr)>;
+				if constexpr (std::is_same_v<storage_type, std::monostate>) {
+					throw std::logic_error("backend handle used without an active backend");
+				} else {
+					auto &backend = *backend_ptr;
+					if constexpr (requires(decltype(backend) candidate, on_body_tracking_fn_t callback) {
+									  candidate.SetOnBodyTracking(std::move(callback));
+								  }) {
+						backend.SetOnBodyTracking(std::move(on_body_tracking));
+						return true;
+					} else {
+						return false;
+					}
+				}
+			},
+			storage_);
+	}
+
+	template <typename Fn>
+	bool TryVisitSvoRecordable(Fn &&fn) {
+		ensure_active();
+		return std::visit(
+			[&](auto &backend_ptr) -> bool {
+				using storage_type = std::decay_t<decltype(backend_ptr)>;
+				if constexpr (std::is_same_v<storage_type, std::monostate>) {
+					throw std::logic_error("backend handle used without an active backend");
+				} else {
+					auto &backend = *backend_ptr;
+					if constexpr (requires(decltype(backend) candidate, const svo_recording_request_t &request) {
+									  candidate.StartRecording(request);
+									  candidate.StopRecording();
+									  candidate.GetRecordingStatus();
+									  candidate.GetLastRecordingError();
+								  }) {
+						fn(backend);
+						return true;
+					} else {
+						return false;
+					}
+				}
+			},
+			storage_);
 	}
 
 	void SetOnError(on_error_fn_t on_error) {

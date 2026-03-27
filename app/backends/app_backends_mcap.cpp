@@ -45,183 +45,183 @@ namespace app::backends {
 
 namespace {
 
-using clock_t = std::chrono::steady_clock;
+	using clock_t = std::chrono::steady_clock;
 
-constexpr auto kBodyEncoding = "cvmmap.body_tracking.v1";
+	constexpr auto kBodyEncoding = "cvmmap.body_tracking.v1";
 
-struct VideoSample {
-	uint64_t timestamp_ns{0};
-	std::string format{};
-	std::vector<uint8_t> bytes{};
-	bool keyframe{false};
-};
+	struct VideoSample {
+		uint64_t timestamp_ns{0};
+		std::string format{};
+		std::vector<uint8_t> bytes{};
+		bool keyframe{false};
+	};
 
-struct DepthSample {
-	uint64_t timestamp_ns{0};
-	uint32_t width{0};
-	uint32_t height{0};
-	cvmmap_streamer::DepthMap::DepthUnit source_unit{
-		cvmmap_streamer::DepthMap::DEPTH_UNIT_UNKNOWN};
-	cvmmap_streamer::DepthMap::StorageUnit storage_unit{
-		cvmmap_streamer::DepthMap::STORAGE_UNIT_UNKNOWN};
-	cvmmap_streamer::DepthMap::Encoding encoding{
-		cvmmap_streamer::DepthMap::ENCODING_UNKNOWN};
-	std::vector<uint8_t> bytes{};
-};
+	struct DepthSample {
+		uint64_t timestamp_ns{0};
+		uint32_t width{0};
+		uint32_t height{0};
+		cvmmap_streamer::DepthMap::DepthUnit source_unit{
+			cvmmap_streamer::DepthMap::DEPTH_UNIT_UNKNOWN};
+		cvmmap_streamer::DepthMap::StorageUnit storage_unit{
+			cvmmap_streamer::DepthMap::STORAGE_UNIT_UNKNOWN};
+		cvmmap_streamer::DepthMap::Encoding encoding{
+			cvmmap_streamer::DepthMap::ENCODING_UNKNOWN};
+		std::vector<uint8_t> bytes{};
+	};
 
-struct BodySample {
-	uint64_t timestamp_ns{0};
-	cvmmap::body_tracking_frame_t frame{};
-};
+	struct BodySample {
+		uint64_t timestamp_ns{0};
+		cvmmap::body_tracking_frame_t frame{};
+	};
 
-struct PublishPacket {
-	frame_metadata_t metadata{};
-	std::vector<uint8_t> payload{};
-	std::vector<cvmmap::body_tracking_frame_t> body_frames{};
-};
+	struct PublishPacket {
+		frame_metadata_t metadata{};
+		std::vector<uint8_t> payload{};
+		std::vector<cvmmap::body_tracking_frame_t> body_frames{};
+	};
 
-std::string ffmpeg_error_string(const int errnum) {
-	std::array<char, AV_ERROR_MAX_STRING_SIZE> buffer{};
-	av_strerror(errnum, buffer.data(), buffer.size());
-	return std::string(buffer.data());
-}
+	std::string ffmpeg_error_string(const int errnum) {
+		std::array<char, AV_ERROR_MAX_STRING_SIZE> buffer{};
+		av_strerror(errnum, buffer.data(), buffer.size());
+		return std::string(buffer.data());
+	}
 
-uint64_t proto_timestamp_to_ns(const google::protobuf::Timestamp &timestamp) {
-	if (timestamp.seconds() < 0 || timestamp.nanos() < 0) {
+	uint64_t proto_timestamp_to_ns(const google::protobuf::Timestamp &timestamp) {
+		if (timestamp.seconds() < 0 || timestamp.nanos() < 0) {
+			return 0;
+		}
+		return static_cast<uint64_t>(timestamp.seconds()) * 1000000000ull +
+			   static_cast<uint64_t>(timestamp.nanos());
+	}
+
+	AVCodecID codec_id_from_format(const std::string_view format) {
+		if (format == "h264") {
+			return AV_CODEC_ID_H264;
+		}
+		if (format == "h265" || format == "hevc") {
+			return AV_CODEC_ID_HEVC;
+		}
+		if (format == "vp9") {
+			return AV_CODEC_ID_VP9;
+		}
+		if (format == "av1") {
+			return AV_CODEC_ID_AV1;
+		}
+		return AV_CODEC_ID_NONE;
+	}
+
+	size_t find_start_code(std::span<const uint8_t> bytes, size_t offset) {
+		for (size_t i = offset; i + 3 < bytes.size(); ++i) {
+			if (bytes[i] == 0x00 && bytes[i + 1] == 0x00) {
+				if (bytes[i + 2] == 0x01) {
+					return i;
+				}
+				if (i + 3 < bytes.size() && bytes[i + 2] == 0x00 &&
+					bytes[i + 3] == 0x01) {
+					return i;
+				}
+			}
+		}
+		return bytes.size();
+	}
+
+	size_t start_code_size(std::span<const uint8_t> bytes, size_t offset) {
+		if (offset + 3 < bytes.size() && bytes[offset] == 0x00 &&
+			bytes[offset + 1] == 0x00 && bytes[offset + 2] == 0x01) {
+			return 3;
+		}
+		if (offset + 4 < bytes.size() && bytes[offset] == 0x00 &&
+			bytes[offset + 1] == 0x00 && bytes[offset + 2] == 0x00 &&
+			bytes[offset + 3] == 0x01) {
+			return 4;
+		}
 		return 0;
 	}
-	return static_cast<uint64_t>(timestamp.seconds()) * 1000000000ull +
-		   static_cast<uint64_t>(timestamp.nanos());
-}
 
-AVCodecID codec_id_from_format(const std::string_view format) {
-	if (format == "h264") {
-		return AV_CODEC_ID_H264;
-	}
-	if (format == "h265" || format == "hevc") {
-		return AV_CODEC_ID_HEVC;
-	}
-	if (format == "vp9") {
-		return AV_CODEC_ID_VP9;
-	}
-	if (format == "av1") {
-		return AV_CODEC_ID_AV1;
-	}
-	return AV_CODEC_ID_NONE;
-}
-
-size_t find_start_code(std::span<const uint8_t> bytes, size_t offset) {
-	for (size_t i = offset; i + 3 < bytes.size(); ++i) {
-		if (bytes[i] == 0x00 && bytes[i + 1] == 0x00) {
-			if (bytes[i + 2] == 0x01) {
-				return i;
+	bool looks_like_keyframe_h264(std::span<const uint8_t> bytes) {
+		for (size_t offset = find_start_code(bytes, 0); offset < bytes.size();
+			 offset        = find_start_code(bytes, offset + 1)) {
+			const auto prefix_size = start_code_size(bytes, offset);
+			if (prefix_size == 0) {
+				break;
 			}
-			if (i + 3 < bytes.size() && bytes[i + 2] == 0x00 &&
-				bytes[i + 3] == 0x01) {
-				return i;
+			const auto nal_offset = offset + prefix_size;
+			if (nal_offset >= bytes.size()) {
+				break;
+			}
+			const auto nal_type = static_cast<uint8_t>(bytes[nal_offset] & 0x1F);
+			if (nal_type == 5) {
+				return true;
 			}
 		}
+		return false;
 	}
-	return bytes.size();
-}
 
-size_t start_code_size(std::span<const uint8_t> bytes, size_t offset) {
-	if (offset + 3 < bytes.size() && bytes[offset] == 0x00 &&
-		bytes[offset + 1] == 0x00 && bytes[offset + 2] == 0x01) {
-		return 3;
+	bool looks_like_keyframe_h265(std::span<const uint8_t> bytes) {
+		for (size_t offset = find_start_code(bytes, 0); offset < bytes.size();
+			 offset        = find_start_code(bytes, offset + 1)) {
+			const auto prefix_size = start_code_size(bytes, offset);
+			if (prefix_size == 0) {
+				break;
+			}
+			const auto nal_offset = offset + prefix_size;
+			if (nal_offset >= bytes.size()) {
+				break;
+			}
+			const auto nal_type =
+				static_cast<uint8_t>((bytes[nal_offset] >> 1) & 0x3F);
+			if (nal_type >= 16 && nal_type <= 23) {
+				return true;
+			}
+		}
+		return false;
 	}
-	if (offset + 4 < bytes.size() && bytes[offset] == 0x00 &&
-		bytes[offset + 1] == 0x00 && bytes[offset + 2] == 0x00 &&
-		bytes[offset + 3] == 0x01) {
-		return 4;
-	}
-	return 0;
-}
 
-bool looks_like_keyframe_h264(std::span<const uint8_t> bytes) {
-	for (size_t offset = find_start_code(bytes, 0); offset < bytes.size();
-		 offset = find_start_code(bytes, offset + 1)) {
-		const auto prefix_size = start_code_size(bytes, offset);
-		if (prefix_size == 0) {
-			break;
-		}
-		const auto nal_offset = offset + prefix_size;
-		if (nal_offset >= bytes.size()) {
-			break;
-		}
-		const auto nal_type = static_cast<uint8_t>(bytes[nal_offset] & 0x1F);
-		if (nal_type == 5) {
+	bool detect_keyframe(const std::string_view format,
+						 std::span<const uint8_t> bytes,
+						 size_t index) {
+		if (index == 0) {
 			return true;
 		}
-	}
-	return false;
-}
-
-bool looks_like_keyframe_h265(std::span<const uint8_t> bytes) {
-	for (size_t offset = find_start_code(bytes, 0); offset < bytes.size();
-		 offset = find_start_code(bytes, offset + 1)) {
-		const auto prefix_size = start_code_size(bytes, offset);
-		if (prefix_size == 0) {
-			break;
+		if (format == "h264") {
+			return looks_like_keyframe_h264(bytes);
 		}
-		const auto nal_offset = offset + prefix_size;
-		if (nal_offset >= bytes.size()) {
-			break;
+		if (format == "h265" || format == "hevc") {
+			return looks_like_keyframe_h265(bytes);
 		}
-		const auto nal_type =
-			static_cast<uint8_t>((bytes[nal_offset] >> 1) & 0x3F);
-		if (nal_type >= 16 && nal_type <= 23) {
-			return true;
+		return false;
+	}
+
+	cvmmap::DepthUnit depth_unit_from_proto(
+		const cvmmap_streamer::DepthMap::DepthUnit unit) {
+		switch (unit) {
+		case cvmmap_streamer::DepthMap::DEPTH_UNIT_MILLIMETER:
+			return cvmmap::DepthUnit::Millimeter;
+		case cvmmap_streamer::DepthMap::DEPTH_UNIT_METER:
+			return cvmmap::DepthUnit::Meter;
+		case cvmmap_streamer::DepthMap::DEPTH_UNIT_UNKNOWN:
+		default:
+			return cvmmap::DepthUnit::Unknown;
 		}
 	}
-	return false;
-}
 
-bool detect_keyframe(const std::string_view format,
-					 std::span<const uint8_t> bytes,
-					 size_t index) {
-	if (index == 0) {
-		return true;
-	}
-	if (format == "h264") {
-		return looks_like_keyframe_h264(bytes);
-	}
-	if (format == "h265" || format == "hevc") {
-		return looks_like_keyframe_h265(bytes);
-	}
-	return false;
-}
+	float convert_depth_sample(float value,
+							   cvmmap_streamer::DepthMap::StorageUnit storage_unit,
+							   cvmmap_streamer::DepthMap::DepthUnit source_unit) {
+		if (!std::isfinite(value) || value <= 0.0f) {
+			return std::numeric_limits<float>::quiet_NaN();
+		}
 
-cvmmap::DepthUnit depth_unit_from_proto(
-	const cvmmap_streamer::DepthMap::DepthUnit unit) {
-	switch (unit) {
-	case cvmmap_streamer::DepthMap::DEPTH_UNIT_MILLIMETER:
-		return cvmmap::DepthUnit::Millimeter;
-	case cvmmap_streamer::DepthMap::DEPTH_UNIT_METER:
-		return cvmmap::DepthUnit::Meter;
-	case cvmmap_streamer::DepthMap::DEPTH_UNIT_UNKNOWN:
-	default:
-		return cvmmap::DepthUnit::Unknown;
+		if (storage_unit == cvmmap_streamer::DepthMap::STORAGE_UNIT_MILLIMETER &&
+			source_unit == cvmmap_streamer::DepthMap::DEPTH_UNIT_METER) {
+			return value / 1000.0f;
+		}
+		if (storage_unit == cvmmap_streamer::DepthMap::STORAGE_UNIT_METER &&
+			source_unit == cvmmap_streamer::DepthMap::DEPTH_UNIT_MILLIMETER) {
+			return value * 1000.0f;
+		}
+		return value;
 	}
-}
-
-float convert_depth_sample(float value,
-						   cvmmap_streamer::DepthMap::StorageUnit storage_unit,
-						   cvmmap_streamer::DepthMap::DepthUnit source_unit) {
-	if (!std::isfinite(value) || value <= 0.0f) {
-		return std::numeric_limits<float>::quiet_NaN();
-	}
-
-	if (storage_unit == cvmmap_streamer::DepthMap::STORAGE_UNIT_MILLIMETER &&
-		source_unit == cvmmap_streamer::DepthMap::DEPTH_UNIT_METER) {
-		return value / 1000.0f;
-	}
-	if (storage_unit == cvmmap_streamer::DepthMap::STORAGE_UNIT_METER &&
-		source_unit == cvmmap_streamer::DepthMap::DEPTH_UNIT_MILLIMETER) {
-		return value * 1000.0f;
-	}
-	return value;
-}
 
 } // namespace
 
@@ -252,9 +252,9 @@ struct McapBackendImpl {
 				sws_freeContext(scaler);
 				scaler = nullptr;
 			}
-			codec = nullptr;
-			codec_id = AV_CODEC_ID_NONE;
-			source_width = 0;
+			codec         = nullptr;
+			codec_id      = AV_CODEC_ID_NONE;
+			source_width  = 0;
 			source_height = 0;
 			source_format = AV_PIX_FMT_NONE;
 			bgr_buffer.clear();
@@ -330,7 +330,7 @@ struct McapBackendImpl {
 	source_info_t GetSourceInfo() {
 		std::lock_guard lock(state_mutex);
 		source_info_t info{};
-		info.source_kind = cvmmap::SourceKind::Finite;
+		info.source_kind      = cvmmap::SourceKind::Finite;
 		info.timestamp_domain = mcap_config.timestamp_domain;
 		if (video_config.finite_source_can_seek()) {
 			info.flags |= cvmmap::SOURCE_INFO_FLAG_CAN_SEEK;
@@ -346,13 +346,13 @@ struct McapBackendImpl {
 		}
 		if (!video_samples.empty()) {
 			info.timeline_start_ns = video_samples.front().timestamp_ns;
-			info.timeline_end_ns = video_samples.back().timestamp_ns;
-			info.duration_ns = info.timeline_end_ns >= info.timeline_start_ns
-								   ? info.timeline_end_ns - info.timeline_start_ns
-								   : 0;
+			info.timeline_end_ns   = video_samples.back().timestamp_ns;
+			info.duration_ns       = info.timeline_end_ns >= info.timeline_start_ns
+										 ? info.timeline_end_ns - info.timeline_start_ns
+										 : 0;
 		}
 		info.current_timestamp_ns = metadata.timestamp_ns;
-		info.current_frame_count = metadata.frame_count;
+		info.current_frame_count  = metadata.frame_count;
 		return info;
 	}
 
@@ -364,7 +364,7 @@ struct McapBackendImpl {
 		}
 
 		mcap::ReadMessageOptions options{};
-		options.readOrder = mcap::ReadMessageOptions::ReadOrder::LogTimeOrder;
+		options.readOrder   = mcap::ReadMessageOptions::ReadOrder::LogTimeOrder;
 		options.topicFilter = [this](const std::string_view topic) {
 			return topic == mcap_config.video_topic ||
 				   topic == mcap_config.depth_topic ||
@@ -396,7 +396,7 @@ struct McapBackendImpl {
 				}
 				VideoSample sample{};
 				sample.timestamp_ns = timestamp_ns;
-				sample.format = video.format();
+				sample.format       = video.format();
 				sample.bytes.assign(
 					reinterpret_cast<const uint8_t *>(video.data().data()),
 					reinterpret_cast<const uint8_t *>(video.data().data()) + video.data().size());
@@ -419,11 +419,11 @@ struct McapBackendImpl {
 				}
 				DepthSample sample{};
 				sample.timestamp_ns = timestamp_ns;
-				sample.width = depth.width();
-				sample.height = depth.height();
-				sample.source_unit = depth.source_unit();
+				sample.width        = depth.width();
+				sample.height       = depth.height();
+				sample.source_unit  = depth.source_unit();
 				sample.storage_unit = depth.storage_unit();
-				sample.encoding = depth.encoding();
+				sample.encoding     = depth.encoding();
 				sample.bytes.assign(
 					reinterpret_cast<const uint8_t *>(depth.data().data()),
 					reinterpret_cast<const uint8_t *>(depth.data().data()) + depth.data().size());
@@ -450,7 +450,7 @@ struct McapBackendImpl {
 				sample.timestamp_ns = parsed->header.timestamp_ns != 0
 										  ? parsed->header.timestamp_ns
 										  : parsed->header.sdk_timestamp_ns;
-				sample.frame = std::move(*parsed);
+				sample.frame        = std::move(*parsed);
 				body_samples.push_back(std::move(sample));
 			}
 		}
@@ -467,7 +467,7 @@ struct McapBackendImpl {
 
 		if (video_samples.empty()) {
 			return cvmmap::unexpected("MCAP file does not contain any video messages on topic '" +
-								   mcap_config.video_topic + "'");
+									  mcap_config.video_topic + "'");
 		}
 
 		for (size_t index = 0; index < video_samples.size(); ++index) {
@@ -499,13 +499,13 @@ struct McapBackendImpl {
 		decoder.codec_id = codec_id_from_format(format);
 		if (decoder.codec_id == AV_CODEC_ID_NONE) {
 			return cvmmap::unexpected("unsupported compressed video format '" +
-								   std::string(format) + "'");
+									  std::string(format) + "'");
 		}
 
 		decoder.codec = avcodec_find_decoder(decoder.codec_id);
 		if (decoder.codec == nullptr) {
 			return cvmmap::unexpected("ffmpeg decoder unavailable for format '" +
-								   std::string(format) + "'");
+									  std::string(format) + "'");
 		}
 
 		decoder.context = avcodec_alloc_context3(decoder.codec);
@@ -517,7 +517,7 @@ struct McapBackendImpl {
 		}
 
 		decoder.packet = av_packet_alloc();
-		decoder.frame = av_frame_alloc();
+		decoder.frame  = av_frame_alloc();
 		if (decoder.packet == nullptr || decoder.frame == nullptr) {
 			return cvmmap::unexpected("failed to allocate ffmpeg frame/packet");
 		}
@@ -538,14 +538,14 @@ struct McapBackendImpl {
 			av_new_packet(decoder.packet, static_cast<int>(sample.bytes.size()));
 		if (packet_alloc < 0) {
 			return cvmmap::unexpected("av_new_packet failed: " +
-								   ffmpeg_error_string(packet_alloc));
+									  ffmpeg_error_string(packet_alloc));
 		}
 		std::memcpy(decoder.packet->data, sample.bytes.data(), sample.bytes.size());
 
 		const auto send_result = avcodec_send_packet(decoder.context, decoder.packet);
 		if (send_result < 0) {
 			return cvmmap::unexpected("avcodec_send_packet failed: " +
-								   ffmpeg_error_string(send_result));
+									  ffmpeg_error_string(send_result));
 		}
 
 		std::vector<uint8_t> decoded{};
@@ -558,10 +558,10 @@ struct McapBackendImpl {
 			}
 			if (receive_result < 0) {
 				return cvmmap::unexpected("avcodec_receive_frame failed: " +
-									   ffmpeg_error_string(receive_result));
+										  ffmpeg_error_string(receive_result));
 			}
 
-			const auto width = decoder.frame->width;
+			const auto width  = decoder.frame->width;
 			const auto height = decoder.frame->height;
 			const auto format = static_cast<AVPixelFormat>(decoder.frame->format);
 			if (width <= 0 || height <= 0) {
@@ -587,7 +587,7 @@ struct McapBackendImpl {
 				if (decoder.scaler == nullptr) {
 					return cvmmap::unexpected("failed to create ffmpeg scaler");
 				}
-				decoder.source_width = width;
+				decoder.source_width  = width;
 				decoder.source_height = height;
 				decoder.source_format = format;
 			}
@@ -597,7 +597,7 @@ struct McapBackendImpl {
 			decoder.bgr_buffer.resize(buffer_size);
 
 			uint8_t *dst_data[4] = {decoder.bgr_buffer.data(), nullptr, nullptr, nullptr};
-			int dst_linesize[4] = {width * 3, 0, 0, 0};
+			int dst_linesize[4]  = {width * 3, 0, 0, 0};
 			sws_scale(
 				decoder.scaler,
 				decoder.frame->data,
@@ -681,7 +681,7 @@ struct McapBackendImpl {
 		if (it == body_samples.begin()) {
 			return out;
 		}
-		auto frame = std::prev(it)->frame;
+		auto frame               = std::prev(it)->frame;
 		frame.header.frame_count = frame_count;
 		out.push_back(std::move(frame));
 		return out;
@@ -693,7 +693,7 @@ struct McapBackendImpl {
 		std::vector<cvmmap::body_tracking_frame_t> out{};
 		while (next_body_index < body_samples.size() &&
 			   body_samples[next_body_index].timestamp_ns <= timestamp_ns) {
-			auto frame = body_samples[next_body_index].frame;
+			auto frame               = body_samples[next_body_index].frame;
 			frame.header.frame_count = frame_count;
 			out.push_back(std::move(frame));
 			++next_body_index;
@@ -716,15 +716,15 @@ struct McapBackendImpl {
 
 		PublishPacket packet{};
 		packet.metadata.ensure_magic();
-		packet.metadata.frame_count = local_frame_count;
+		packet.metadata.frame_count  = local_frame_count;
 		packet.metadata.timestamp_ns = video_samples[video_index].timestamp_ns;
-		packet.metadata.info = frame_info_t{
-			.width = static_cast<uint16_t>(decoder.source_width),
-			.height = static_cast<uint16_t>(decoder.source_height),
-			.channels = 3,
-			.depth = Depth::U8,
+		packet.metadata.info         = frame_info_t{
+			.width        = static_cast<uint16_t>(decoder.source_width),
+			.height       = static_cast<uint16_t>(decoder.source_height),
+			.channels     = 3,
+			.depth        = Depth::U8,
 			.pixel_format = PixelFormat::BGR,
-			.buffer_size = static_cast<uint32_t>(decoded_frame->size()),
+			.buffer_size  = static_cast<uint32_t>(decoded_frame->size()),
 		};
 		packet.payload = std::move(*decoded_frame);
 
@@ -769,9 +769,9 @@ struct McapBackendImpl {
 				local_frame_count);
 		}
 
-		metadata = packet.metadata;
+		metadata            = packet.metadata;
 		current_video_index = video_index;
-		next_video_index = video_index + 1;
+		next_video_index    = video_index + 1;
 		return packet;
 	}
 
@@ -779,7 +779,7 @@ struct McapBackendImpl {
 		const size_t target_index,
 		const uint32_t local_frame_count) {
 		const auto start_index = seek_decode_start_index(target_index);
-		auto reopen = open_decoder_for_format(video_samples[target_index].format);
+		auto reopen            = open_decoder_for_format(video_samples[target_index].format);
 		if (!reopen) {
 			return cvmmap::unexpected(reopen.error());
 		}
@@ -842,9 +842,9 @@ struct McapBackendImpl {
 		}
 		return seek_result_t{
 			.requested_timestamp_ns = timestamp_ns,
-			.landed_timestamp_ns = packet->metadata.timestamp_ns,
-			.landed_frame_count = packet->metadata.frame_count,
-			.exact_match = (packet->metadata.timestamp_ns == timestamp_ns),
+			.landed_timestamp_ns    = packet->metadata.timestamp_ns,
+			.landed_frame_count     = packet->metadata.frame_count,
+			.exact_match            = (packet->metadata.timestamp_ns == timestamp_ns),
 		};
 	}
 
@@ -857,7 +857,7 @@ struct McapBackendImpl {
 		}
 
 		metadata.ensure_magic();
-		metadata.frame_count = 0;
+		metadata.frame_count  = 0;
 		metadata.timestamp_ns = video_samples.front().timestamp_ns;
 
 		PublishPacket initial_packet{};
@@ -914,8 +914,8 @@ struct McapBackendImpl {
 				const auto next_timestamp =
 					video_samples[next_video_index].timestamp_ns;
 				const auto sleep_ns = next_timestamp > previous_timestamp
-										 ? (next_timestamp - previous_timestamp)
-										 : 0;
+										  ? (next_timestamp - previous_timestamp)
+										  : 0;
 				if (sleep_ns > 0) {
 					const auto interrupted = state_cv.wait_for(
 						lock,
@@ -999,7 +999,7 @@ struct McapBackendImpl {
 				spdlog::error("reset MCAP replay failed: {}", result.error());
 				return -EIO;
 			}
-			packet = std::move(*result);
+			packet           = std::move(*result);
 			position_changed = true;
 		}
 		publish_packet(packet);
@@ -1050,22 +1050,6 @@ cvmmap::expected<seek_result_t, error_t> McapBackend::SeekTimestampNs(
 
 error_t McapBackend::ResetFrameCount() {
 	return impl->ResetFrameCount();
-}
-
-cvmmap::expected<recording_status_t, error_t> McapBackend::StartRecording(std::string_view) {
-	return cvmmap::unexpected(-EOPNOTSUPP);
-}
-
-cvmmap::expected<recording_status_t, error_t> McapBackend::StopRecording() {
-	return cvmmap::unexpected(-EOPNOTSUPP);
-}
-
-cvmmap::expected<recording_status_t, error_t> McapBackend::GetRecordingStatus() {
-	return cvmmap::unexpected(-EOPNOTSUPP);
-}
-
-std::string McapBackend::GetLastRecordingError() {
-	return "recording is not supported by the MCAP backend";
 }
 
 } // namespace app::backends

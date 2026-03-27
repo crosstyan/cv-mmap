@@ -153,7 +153,7 @@ struct GStreamerBackendImpl {
 	[[nodiscard]]
 	bool effective_can_seek() const {
 		return finite_source_info.has_value() &&
-			options.video_config.finite_source_can_seek();
+			   options.video_config.finite_source_can_seek();
 	}
 
 	[[nodiscard]]
@@ -161,13 +161,13 @@ struct GStreamerBackendImpl {
 		std::lock_guard lock(state_mutex);
 		source_info_t info{};
 		if (finite_source_info) {
-			info.source_kind = cvmmap::SourceKind::Finite;
-			info.timestamp_domain = cvmmap::TimestampDomain::MediaTimeNs;
+			info.source_kind       = cvmmap::SourceKind::Finite;
+			info.timestamp_domain  = cvmmap::TimestampDomain::MediaTimeNs;
 			info.timeline_start_ns = 0;
-			info.timeline_end_ns = static_cast<uint64_t>(std::max<int64_t>(
+			info.timeline_end_ns   = static_cast<uint64_t>(std::max<int64_t>(
 				finite_source_info->duration_ns - static_cast<int64_t>(finite_frame_interval_ns()),
 				0));
-			info.duration_ns = static_cast<uint64_t>(finite_source_info->duration_ns);
+			info.duration_ns       = static_cast<uint64_t>(finite_source_info->duration_ns);
 			if (options.video_config.finite_source_can_seek()) {
 				info.flags |= cvmmap::SOURCE_INFO_FLAG_CAN_SEEK;
 			}
@@ -175,11 +175,11 @@ struct GStreamerBackendImpl {
 				info.flags |= cvmmap::SOURCE_INFO_FLAG_AUTO_LOOP;
 			}
 		} else {
-			info.source_kind = cvmmap::SourceKind::Live;
+			info.source_kind      = cvmmap::SourceKind::Live;
 			info.timestamp_domain = cvmmap::TimestampDomain::UnixEpochNs;
 		}
 		info.current_timestamp_ns = metadata.timestamp_ns;
-		info.current_frame_count = metadata.frame_count;
+		info.current_frame_count  = metadata.frame_count;
 		return info;
 	}
 
@@ -251,7 +251,7 @@ struct GStreamerBackendImpl {
 			source_frame_index += 1;
 			metadata.frame_count += 1;
 			metadata.timestamp_ns = timestamp_for_source_frame(source_frame_index);
-			metadata_snapshot = metadata;
+			metadata_snapshot     = metadata;
 		}
 
 		// Invoke frame callback
@@ -401,13 +401,13 @@ struct GStreamerBackendImpl {
 
 			metadata.frame_count = 0;
 			metadata.info        = frame_info_t{
-					   .width        = static_cast<uint16_t>(width),
-					   .height       = static_cast<uint16_t>(height),
-					   .channels     = channels,
-					   .depth        = Depth::U8, // GStreamer video/x-raw uses 8-bit per channel
-					   .pixel_format = *pixel_format,
-					   .buffer_size  = buf_size,
-            };
+				.width        = static_cast<uint16_t>(width),
+				.height       = static_cast<uint16_t>(height),
+				.channels     = channels,
+				.depth        = Depth::U8, // GStreamer video/x-raw uses 8-bit per channel
+				.pixel_format = *pixel_format,
+				.buffer_size  = buf_size,
+			};
 
 			spdlog::info("GStreamer frame info: {}x{}x{}; format={}; bufferSize={}; pixelFormat={}",
 						 width, height, channels,
@@ -448,7 +448,7 @@ struct GStreamerBackendImpl {
 		on_metadata(metadata);
 
 		// Process first sample
-		source_frame_index = 0;
+		source_frame_index    = 0;
 		metadata.timestamp_ns = timestamp_for_source_frame(source_frame_index);
 		process_sample(sample);
 
@@ -575,8 +575,6 @@ struct GStreamerBackendImpl {
 		_on_frame = std::move(on_frame_);
 	}
 
-	void SetOnBodyTracking(on_body_tracking_fn_t) {}
-
 	void SetOnError(on_error_fn_t on_error_) {
 		_on_error = std::move(on_error_);
 	}
@@ -597,8 +595,8 @@ struct GStreamerBackendImpl {
 			return cvmmap::unexpected(-ERANGE);
 		}
 
-		const auto interval_ns = finite_frame_interval_ns();
-		const auto frame_index = interval_ns == 0 ? 0u : static_cast<uint32_t>((timestamp_ns + interval_ns - 1) / interval_ns);
+		const auto interval_ns         = finite_frame_interval_ns();
+		const auto frame_index         = interval_ns == 0 ? 0u : static_cast<uint32_t>((timestamp_ns + interval_ns - 1) / interval_ns);
 		const auto landed_timestamp_ns = interval_ns == 0 ? timestamp_ns : static_cast<uint64_t>(frame_index) * interval_ns;
 
 		std::lock_guard lock(state_mutex);
@@ -610,14 +608,14 @@ struct GStreamerBackendImpl {
 			return cvmmap::unexpected(-EIO);
 		}
 
-		source_frame_index = frame_index;
-		metadata.frame_count = 0;
+		source_frame_index    = frame_index;
+		metadata.frame_count  = 0;
 		metadata.timestamp_ns = landed_timestamp_ns;
 		return seek_result_t{
 			.requested_timestamp_ns = timestamp_ns,
-			.landed_timestamp_ns = landed_timestamp_ns,
-			.landed_frame_count = metadata.frame_count,
-			.exact_match = landed_timestamp_ns == timestamp_ns,
+			.landed_timestamp_ns    = landed_timestamp_ns,
+			.landed_frame_count     = metadata.frame_count,
+			.exact_match            = landed_timestamp_ns == timestamp_ns,
 		};
 	}
 
@@ -633,8 +631,8 @@ struct GStreamerBackendImpl {
 			}
 		}
 		// Reset internal frame count for both finite and stream sources
-		metadata.frame_count = 0;
-		source_frame_index = 0;
+		metadata.frame_count  = 0;
+		source_frame_index    = 0;
 		metadata.timestamp_ns = timestamp_for_source_frame(source_frame_index);
 		return 0;
 	}
@@ -669,10 +667,6 @@ void GStreamerBackend::SetOnFrame(on_frame_fn_t on_frame) {
 	impl->SetOnFrame(std::move(on_frame));
 }
 
-void GStreamerBackend::SetOnBodyTracking(on_body_tracking_fn_t on_body_tracking) {
-	impl->SetOnBodyTracking(std::move(on_body_tracking));
-}
-
 void GStreamerBackend::SetOnError(on_error_fn_t on_error) {
 	impl->SetOnError(std::move(on_error));
 }
@@ -687,22 +681,6 @@ cvmmap::expected<seek_result_t, error_t> GStreamerBackend::SeekTimestampNs(uint6
 
 error_t GStreamerBackend::ResetFrameCount() {
 	return impl->ResetFrameCount();
-}
-
-cvmmap::expected<recording_status_t, error_t> GStreamerBackend::StartRecording(std::string_view) {
-	return cvmmap::unexpected(-EOPNOTSUPP);
-}
-
-cvmmap::expected<recording_status_t, error_t> GStreamerBackend::StopRecording() {
-	return cvmmap::unexpected(-EOPNOTSUPP);
-}
-
-cvmmap::expected<recording_status_t, error_t> GStreamerBackend::GetRecordingStatus() {
-	return cvmmap::unexpected(-EOPNOTSUPP);
-}
-
-std::string GStreamerBackend::GetLastRecordingError() {
-	return "recording is not supported by the GStreamer backend";
 }
 
 } // namespace app::backends

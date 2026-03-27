@@ -24,15 +24,10 @@ struct DummyBackend {
 	void Shutdown();
 	void SetOnMetadata(on_metadata_fn_t on_metadata);
 	void SetOnFrame(on_frame_fn_t on_frame);
-	void SetOnBodyTracking(on_body_tracking_fn_t on_body_tracking);
 	void SetOnError(on_error_fn_t on_error);
 	source_info_t GetSourceInfo();
 	cvmmap::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns);
 	error_t ResetFrameCount();
-	cvmmap::expected<recording_status_t, error_t> StartRecording(std::string_view output_path);
-	cvmmap::expected<recording_status_t, error_t> StopRecording();
-	cvmmap::expected<recording_status_t, error_t> GetRecordingStatus();
-	std::string GetLastRecordingError();
 };
 
 } // namespace app::backends

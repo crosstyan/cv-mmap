@@ -16,7 +16,7 @@ namespace app::backends {
 /// @brief Callback invoked once when metadata is available (first frame captured)
 using on_metadata_fn_t = cvmmap::move_only_function<void(const frame_metadata_t &metadata)>;
 /// @brief Callback invoked for each captured frame with frame buffer and current metadata
-using on_frame_fn_t = cvmmap::move_only_function<void(std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata)>;
+using on_frame_fn_t         = cvmmap::move_only_function<void(std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata)>;
 using on_body_tracking_fn_t = cvmmap::move_only_function<void(const cvmmap::body_tracking_frame_t &frame)>;
 /// @brief Callback invoked on backend errors (e.g., capture failure, device disconnection)
 using on_error_fn_t = cvmmap::move_only_function<void(error_t error_code, std::string_view message)>;
@@ -30,10 +30,25 @@ PRO_DEF_MEM_DISPATCH(MemSetOnError, SetOnError);
 PRO_DEF_MEM_DISPATCH(MemGetSourceInfo, GetSourceInfo);
 PRO_DEF_MEM_DISPATCH(MemSeekTimestamp, SeekTimestampNs);
 PRO_DEF_MEM_DISPATCH(MemResetFrameCount, ResetFrameCount);
+PRO_DEF_MEM_DISPATCH(MemStartSvoRecording, StartRecording);
+PRO_DEF_MEM_DISPATCH(MemStopRecording, StopRecording);
+PRO_DEF_MEM_DISPATCH(MemGetRecordingStatus, GetRecordingStatus);
+PRO_DEF_MEM_DISPATCH(MemGetLastRecordingError, GetLastRecordingError);
 
 // clang-format off
 struct ISeekableBackend : pro::facade_builder
 	::add_convention<MemSeekTimestamp, cvmmap::expected<seek_result_t, error_t>(uint64_t)>
+	::build {};
+
+struct IBodyTrackingBackend : pro::facade_builder
+	::add_convention<MemSetOnBodyTracking, void(on_body_tracking_fn_t)>
+	::build {};
+
+struct ISvoRecordableBackend : pro::facade_builder
+	::add_convention<MemStartSvoRecording, cvmmap::expected<recording_status_t, error_t>(const svo_recording_request_t &)>
+	::add_convention<MemStopRecording, cvmmap::expected<recording_status_t, error_t>()>
+	::add_convention<MemGetRecordingStatus, cvmmap::expected<recording_status_t, error_t>()>
+	::add_convention<MemGetLastRecordingError, std::string()>
 	::build {};
 
 struct IBackend : pro::facade_builder
@@ -42,7 +57,6 @@ struct IBackend : pro::facade_builder
 	::add_convention<MemShutdown, void()>
 	::add_convention<MemSetOnMetadata, void(on_metadata_fn_t)>
 	::add_convention<MemSetOnFrame, void(on_frame_fn_t)>
-	::add_convention<MemSetOnBodyTracking, void(on_body_tracking_fn_t)>
 	::add_convention<MemSetOnError, void(on_error_fn_t)>
 	::add_convention<MemGetSourceInfo, source_info_t()>
 	::add_convention<MemResetFrameCount, error_t()>

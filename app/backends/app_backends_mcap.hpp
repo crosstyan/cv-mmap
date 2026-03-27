@@ -29,10 +29,6 @@ struct McapBackend {
 	source_info_t GetSourceInfo();
 	cvmmap::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns);
 	error_t ResetFrameCount();
-	cvmmap::expected<recording_status_t, error_t> StartRecording(std::string_view output_path);
-	cvmmap::expected<recording_status_t, error_t> StopRecording();
-	cvmmap::expected<recording_status_t, error_t> GetRecordingStatus();
-	std::string GetLastRecordingError();
 };
 
 } // namespace app::backends
