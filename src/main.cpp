@@ -14,6 +14,7 @@
 #include <functional>
 #include <string_view>
 #include <string>
+#include <unordered_map>
 #include <cvmmap/compat/expected.hpp>
 #include <mutex>
 #include <thread>
@@ -329,6 +330,8 @@ int main(int argc, char **argv) {
 	// Frame state will be initialized by on_metadata callback
 	std::optional<frame_state_t> frame_state;
 	std::optional<sync_message_t> sync_msg;
+	std::mutex pending_encoded_mutex{};
+	std::unordered_map<uint64_t, app::backends::encoded_access_unit_t> pending_encoded_by_timestamp{};
 	auto undistort_pass = app::preprocess::make_undistort_pass(config.preprocess);
 	if (undistort_pass) {
 		spdlog::info("undistort preprocess pass is enabled");
@@ -385,12 +388,26 @@ int main(int argc, char **argv) {
 		return body_tracking_uses_meters ? DepthUnit::Meter : DepthUnit::Millimeter;
 	};
 
-	const auto build_v2_metadata = [&to_u32, &determine_depth_unit](const frame_metadata_t &source_metadata, size_t payload_size) -> std::optional<frame_metadata_v2_t> {
-		if (payload_size == 0 || source_metadata.info.width == 0 || source_metadata.info.height == 0 || source_metadata.info.channels == 0) {
+	struct encoded_plane_view_t {
+		cvmmap::EncodedCodec codec{cvmmap::EncodedCodec::Unknown};
+		cvmmap::EncodedBitstreamFormat bitstream_format{cvmmap::EncodedBitstreamFormat::Unknown};
+		uint16_t flags{0};
+		uint16_t frame_rate_num{0};
+		uint16_t frame_rate_den{0};
+		uint64_t stream_pts_ns{0};
+		std::span<const uint8_t> bytes{};
+	};
+
+	const auto build_v2_metadata = [&to_u32, &determine_depth_unit](
+		const frame_metadata_t &source_metadata,
+		size_t raw_payload_size,
+		const std::optional<encoded_plane_view_t> &encoded_plane = std::nullopt) -> std::optional<frame_metadata_v2_t> {
+		if (raw_payload_size == 0 || source_metadata.info.width == 0 || source_metadata.info.height == 0 || source_metadata.info.channels == 0) {
 			return std::nullopt;
 		}
 
-		auto payload_size_u32 = to_u32(payload_size);
+		const size_t encoded_payload_size = encoded_plane ? encoded_plane->bytes.size() : 0;
+		auto payload_size_u32 = to_u32(raw_payload_size + encoded_payload_size);
 		if (!payload_size_u32) {
 			return std::nullopt;
 		}
@@ -430,7 +447,7 @@ int main(int argc, char **argv) {
 		const size_t left_compact_size =
 			left_expected_stride * static_cast<size_t>(source_metadata.info.height);
 
-		size_t left_size             = payload_size;
+		size_t left_size             = raw_payload_size;
 		size_t depth_size            = 0;
 		size_t confidence_size       = 0;
 		bool depth_plane_active      = false;
@@ -442,16 +459,16 @@ int main(int argc, char **argv) {
 			depth_expected_stride * static_cast<size_t>(source_metadata.info.height);
 
 		const size_t packed_extra_size =
-			payload_size >= left_compact_size ? (payload_size - left_compact_size) : 0;
+			raw_payload_size >= left_compact_size ? (raw_payload_size - left_compact_size) : 0;
 		const bool has_exact_depth_tail =
 			left_compact_size > 0 &&
 			depth_compact_size > 0 &&
-			payload_size >= left_compact_size &&
+			raw_payload_size >= left_compact_size &&
 			packed_extra_size == depth_compact_size;
 		const bool has_exact_depth_and_confidence_tail =
 			left_compact_size > 0 &&
 			depth_compact_size > 0 &&
-			payload_size >= left_compact_size &&
+			raw_payload_size >= left_compact_size &&
 			packed_extra_size == (depth_compact_size * 2);
 
 		// The ZED backend emits compact payloads as:
@@ -542,6 +559,60 @@ int main(int argc, char **argv) {
 			metadata_v2.header.plane_presence_mask = 0x07;
 		}
 
+		if (encoded_plane && !encoded_plane->bytes.empty()) {
+			auto encoded_offset_u32 = to_u32(left_size + depth_size + confidence_size);
+			auto encoded_size_u32 = to_u32(encoded_plane->bytes.size());
+			if (!encoded_offset_u32 || !encoded_size_u32) {
+				return std::nullopt;
+			}
+
+			auto &encoded_descriptor        = metadata_v2.plane_descriptors[3];
+			encoded_descriptor.plane_type   = FramePlaneType::ENCODED_ACCESS_UNIT;
+			encoded_descriptor.pixel_format = PixelFormat::GRAY;
+			encoded_descriptor.depth        = Depth::U8;
+			encoded_descriptor.width        = *encoded_size_u32;
+			encoded_descriptor.height       = 1;
+			encoded_descriptor.stride_bytes = *encoded_size_u32;
+			encoded_descriptor.offset_bytes = *encoded_offset_u32;
+			encoded_descriptor.size_bytes   = *encoded_size_u32;
+
+			metadata_v2.header.versions_minor = frame_metadata_v2_header_t::VERSION_MINOR_V2_ENCODED_AU;
+			metadata_v2.header.plane_presence_mask |= 0x08;
+			metadata_v2.header.plane_count = static_cast<uint8_t>(
+				((metadata_v2.header.plane_presence_mask & 0x01) ? 1 : 0) +
+				((metadata_v2.header.plane_presence_mask & 0x02) ? 1 : 0) +
+				((metadata_v2.header.plane_presence_mask & 0x04) ? 1 : 0) +
+				1);
+
+			frame_metadata_v2_encoded_extension_t encoded_extension{};
+			switch (encoded_plane->codec) {
+			case cvmmap::EncodedCodec::H264:
+				encoded_extension.encoded_codec = EncodedCodec::H264;
+				break;
+			case cvmmap::EncodedCodec::H265:
+				encoded_extension.encoded_codec = EncodedCodec::H265;
+				break;
+			case cvmmap::EncodedCodec::Unknown:
+			default:
+				encoded_extension.encoded_codec = EncodedCodec::UNKNOWN;
+				break;
+			}
+			switch (encoded_plane->bitstream_format) {
+			case cvmmap::EncodedBitstreamFormat::AnnexB:
+				encoded_extension.encoded_bitstream_format = EncodedBitstreamFormat::ANNEXB;
+				break;
+			case cvmmap::EncodedBitstreamFormat::Unknown:
+			default:
+				encoded_extension.encoded_bitstream_format = EncodedBitstreamFormat::UNKNOWN;
+				break;
+			}
+			encoded_extension.encoded_flags = encoded_plane->flags;
+			encoded_extension.encoded_frame_rate_num = encoded_plane->frame_rate_num;
+			encoded_extension.encoded_frame_rate_den = encoded_plane->frame_rate_den;
+			encoded_extension.encoded_stream_pts_ns = encoded_plane->stream_pts_ns;
+			std::memcpy(metadata_v2.header.reserved_0, &encoded_extension, sizeof(encoded_extension));
+		}
+
 		return metadata_v2;
 	};
 
@@ -590,9 +661,24 @@ int main(int argc, char **argv) {
 		spdlog::info("using GStreamer backend");
 		break;
 	}
+	case app::BackendType::UdpRtp: {
+		if (!config.udp_rtp) {
+			spdlog::error("UdpRtp backend selected but [udp_rtp] config section missing");
+			return 1;
+		}
+		backend.emplace<app::backends::UdpRtpBackend>(
+			*config.udp_rtp,
+			config.video);
+		spdlog::info("using UdpRtp backend");
+		break;
+	}
 #else
 	case app::BackendType::GStreamer: {
 		spdlog::error("GStreamer backend selected but unavailable in this build; reconfigure with -DBUILD_BACKEND_GSTREAMER=ON");
+		return 1;
+	}
+	case app::BackendType::UdpRtp: {
+		spdlog::error("UdpRtp backend selected but unavailable in this build; reconfigure with -DBUILD_BACKEND_GSTREAMER=ON");
 		return 1;
 	}
 #endif
@@ -635,6 +721,16 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 
+#ifdef WITH_BACKEND_GSTREAMER
+	if (auto *udp_rtp_backend = backend.get_if<app::backends::UdpRtpBackend>(); udp_rtp_backend != nullptr) {
+		udp_rtp_backend->SetOnEncodedAccessUnit(
+			[&pending_encoded_mutex, &pending_encoded_by_timestamp](const app::backends::encoded_access_unit_t &access_unit) {
+				std::lock_guard lock(pending_encoded_mutex);
+				pending_encoded_by_timestamp[access_unit.source_timestamp_ns] = access_unit;
+			});
+	}
+#endif
+
 	backend.SetOnMetadata([&shm_state, &frame_state, &sync_msg, &config, &build_v2_metadata, &now_ns](const frame_metadata_t &metadata) {
 		const auto picture_buffer_size = metadata.info.buffer_size;
 		if (picture_buffer_size == 0) {
@@ -662,7 +758,14 @@ int main(int argc, char **argv) {
 		sync_msg.emplace(config.name, 0);
 	});
 
-	backend.SetOnFrame([&frame_state, &sync_msg, &sock, &shm_state, &build_v2_metadata, &undistort_pass](std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata) {
+	backend.SetOnFrame([&frame_state,
+						&sync_msg,
+						&sock,
+						&shm_state,
+						&build_v2_metadata,
+						&undistort_pass,
+						&pending_encoded_mutex,
+						&pending_encoded_by_timestamp](std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata) {
 		if (not frame_state || not sync_msg) {
 			spdlog::error("[BUG] frame callback invoked before metadata callback (should not happen)");
 			return;
@@ -685,8 +788,29 @@ int main(int argc, char **argv) {
 			return;
 		}
 
-		if (picture_buffer_size > frame_state->image_buffer().size()) {
-			const auto total_buffer_size = SHM_PAYLOAD_OFFSET + picture_buffer_size;
+		std::optional<encoded_plane_view_t> encoded_plane{};
+		std::vector<uint8_t> encoded_plane_storage{};
+		{
+			std::lock_guard lock(pending_encoded_mutex);
+			auto it = pending_encoded_by_timestamp.find(metadata.timestamp_ns);
+			if (it != pending_encoded_by_timestamp.end()) {
+				encoded_plane_view_t plane{};
+				plane.codec = it->second.codec;
+				plane.bitstream_format = it->second.bitstream_format;
+				plane.flags = it->second.flags;
+				plane.frame_rate_num = it->second.frame_rate_num;
+				plane.frame_rate_den = it->second.frame_rate_den;
+				plane.stream_pts_ns = it->second.stream_pts_ns;
+				encoded_plane_storage = std::move(it->second.bytes);
+				plane.bytes = std::span<const uint8_t>(encoded_plane_storage.data(), encoded_plane_storage.size());
+				encoded_plane = plane;
+				pending_encoded_by_timestamp.erase(it);
+			}
+		}
+
+		const size_t total_payload_size = picture_buffer_size + (encoded_plane ? encoded_plane->bytes.size() : 0);
+		if (total_payload_size > frame_state->image_buffer().size()) {
+			const auto total_buffer_size = SHM_PAYLOAD_OFFSET + total_payload_size;
 			auto resized_frame_state     = frame_state_t::open(shm_state.fd(), total_buffer_size);
 			if (!resized_frame_state) {
 				spdlog::error("resize shared memory for frame payload failed; {}", resized_frame_state.error());
@@ -695,7 +819,7 @@ int main(int argc, char **argv) {
 			frame_state = std::move(*resized_frame_state);
 		}
 
-		auto metadata_v2 = build_v2_metadata(metadata, picture_buffer_size);
+		auto metadata_v2 = build_v2_metadata(metadata, picture_buffer_size, encoded_plane);
 		if (!metadata_v2) {
 			spdlog::error("build ABI v2 metadata failed for frame@{}", metadata.frame_count);
 			return;
@@ -708,7 +832,13 @@ int main(int argc, char **argv) {
 						  fs.image_buffer().size());
 			return;
 		}
-		std::copy_n(output_buffer.begin(), metadata_v2->header.payload_size_bytes, fs.image_buffer().begin());
+		std::copy_n(output_buffer.begin(), output_buffer.size(), fs.image_buffer().begin());
+		if (encoded_plane && !encoded_plane->bytes.empty()) {
+			std::copy(
+				encoded_plane->bytes.begin(),
+				encoded_plane->bytes.end(),
+				fs.image_buffer().begin() + static_cast<std::ptrdiff_t>(output_buffer.size()));
+		}
 		fs.write_metadata(*metadata_v2);
 
 		// Send sync message

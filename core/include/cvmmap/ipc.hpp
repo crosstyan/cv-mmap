@@ -51,6 +51,8 @@ constexpr uint8_t VERSION_MINOR = 0;
 
 constexpr uint8_t FRAME_METADATA_V1_MAJOR = 1;
 constexpr uint8_t FRAME_METADATA_V2_MAJOR = 2;
+constexpr uint8_t FRAME_METADATA_V2_MINOR_BASE = 0;
+constexpr uint8_t FRAME_METADATA_V2_MINOR_ENCODED_AU = 1;
 
 enum class PixelFormat : uint8_t {
 	RGB = 0,
@@ -77,7 +79,21 @@ enum class FramePlaneType : uint8_t {
 	Left = 0,
 	Depth = 1,
 	Confidence = 2,
+	EncodedAccessUnit = 3,
 };
+
+enum class EncodedCodec : uint8_t {
+	Unknown = 0,
+	H264 = 1,
+	H265 = 2,
+};
+
+enum class EncodedBitstreamFormat : uint8_t {
+	Unknown = 0,
+	AnnexB = 1,
+};
+
+constexpr uint16_t FRAME_METADATA_V2_ENCODED_FLAG_KEYFRAME = 0x0001u;
 
 enum class DepthUnit : uint8_t {
 	Unknown = 0,
@@ -269,6 +285,11 @@ struct frame_metadata_v2_header_t {
 	uint32_t payload_size_bytes;
 	DepthUnit depth_unit;
 	uint8_t reserved_0[19];
+
+	[[nodiscard]]
+	bool uses_sparse_plane_mask_semantics() const {
+		return versions_minor >= FRAME_METADATA_V2_MINOR_ENCODED_AU;
+	}
 };
 static_assert(sizeof(frame_metadata_v2_header_t) == 64,
 			  "frame_metadata_v2_header_t must be 64 bytes");
@@ -276,6 +297,20 @@ static_assert(offsetof(frame_metadata_v2_header_t, depth_unit) == 0x2C,
 			  "frame_metadata_v2_header_t::depth_unit must be at offset 0x2C");
 static_assert(offsetof(frame_metadata_v2_header_t, reserved_0) == 0x2D,
 			  "frame_metadata_v2_header_t::reserved_0 must start at offset 0x2D");
+
+#pragma pack(push, 1)
+struct frame_metadata_v2_encoded_extension_t {
+	EncodedCodec encoded_codec{EncodedCodec::Unknown};
+	EncodedBitstreamFormat encoded_bitstream_format{EncodedBitstreamFormat::Unknown};
+	uint16_t encoded_flags{0};
+	uint16_t encoded_frame_rate_num{0};
+	uint16_t encoded_frame_rate_den{0};
+	uint64_t encoded_stream_pts_ns{0};
+	uint8_t reserved_0[3]{};
+};
+#pragma pack(pop)
+static_assert(sizeof(frame_metadata_v2_encoded_extension_t) == 19,
+			  "frame_metadata_v2_encoded_extension_t must fit reserved_0");
 
 struct frame_metadata_v2_t {
 	frame_metadata_v2_header_t header;
@@ -292,6 +327,13 @@ struct frame_planes_view_t {
 	std::span<const uint8_t> depth{};
 	std::optional<frame_info_t> confidence_info{};
 	std::span<const uint8_t> confidence{};
+	EncodedCodec encoded_codec{EncodedCodec::Unknown};
+	EncodedBitstreamFormat encoded_bitstream_format{EncodedBitstreamFormat::Unknown};
+	uint16_t encoded_flags{0};
+	uint16_t encoded_frame_rate_num{0};
+	uint16_t encoded_frame_rate_den{0};
+	uint64_t encoded_stream_pts_ns{0};
+	std::span<const uint8_t> encoded_access_unit{};
 };
 
 struct sync_message_t {

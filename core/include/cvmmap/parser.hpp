@@ -17,6 +17,13 @@ struct parsed_frame_metadata_t {
 	std::span<const uint8_t> depth_plane{};
 	std::optional<frame_info_t> confidence_info{};
 	std::span<const uint8_t> confidence_plane{};
+	EncodedCodec encoded_codec{EncodedCodec::Unknown};
+	EncodedBitstreamFormat encoded_bitstream_format{EncodedBitstreamFormat::Unknown};
+	uint16_t encoded_flags{0};
+	uint16_t encoded_frame_rate_num{0};
+	uint16_t encoded_frame_rate_den{0};
+	uint64_t encoded_stream_pts_ns{0};
+	std::span<const uint8_t> encoded_access_unit{};
 };
 
 cvmmap::expected<parsed_frame_metadata_t, std::string>

@@ -314,6 +314,19 @@ struct McapBackendImpl {
 		}
 	}
 
+	void publish_packet(PublishPacket packet) {
+		if (!metadata_emitted) {
+			on_metadata(packet.metadata);
+			metadata_emitted = true;
+		}
+		on_frame(
+			std::span<uint8_t>(packet.payload.data(), packet.payload.size()),
+			packet.metadata);
+		for (const auto &body_frame : packet.body_frames) {
+			on_body_tracking(body_frame);
+		}
+	}
+
 	source_info_t GetSourceInfo() {
 		std::lock_guard lock(state_mutex);
 		source_info_t info{};

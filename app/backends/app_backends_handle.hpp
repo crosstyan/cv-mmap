@@ -13,6 +13,7 @@
 #endif
 #ifdef WITH_BACKEND_GSTREAMER
 #include "app_backends_gst.hpp"
+#include "app_backends_udp_rtp.hpp"
 #endif
 #ifdef WITH_BACKEND_MCAP
 #include "app_backends_mcap.hpp"
@@ -37,6 +38,8 @@ using backend_storage_t = std::variant<
 #ifdef WITH_BACKEND_GSTREAMER
 	,
 	backend_ptr<GStreamerBackend>
+	,
+	backend_ptr<UdpRtpBackend>
 #endif
 #ifdef WITH_BACKEND_MCAP
 	,

@@ -13,6 +13,7 @@ constexpr uint16_t V2_DESCRIPTORS_OFFSET = 64;
 constexpr uint16_t V2_DESCRIPTOR_SIZE = 24;
 constexpr uint16_t V2_DESCRIPTOR_CAPACITY = 4;
 constexpr uint8_t V2_MAX_PLANE_COUNT = 4;
+constexpr uint8_t V2_VALID_PLANE_MASK = 0x0F;
 constexpr size_t CV_MMAP_MAGIC_LEN = frame_metadata_t::CV_MMAP_MAGIC.size();
 
 constexpr uint8_t channels_from_pixel_format(PixelFormat pixel_format) {
@@ -55,6 +56,43 @@ constexpr bool is_supported_depth_unit(const DepthUnit unit) {
   default:
     return false;
   }
+}
+
+constexpr bool is_supported_encoded_codec(const EncodedCodec codec) {
+  switch (codec) {
+  case EncodedCodec::Unknown:
+  case EncodedCodec::H264:
+  case EncodedCodec::H265:
+    return true;
+  default:
+    return false;
+  }
+}
+
+constexpr bool is_supported_encoded_bitstream_format(
+    const EncodedBitstreamFormat format) {
+  switch (format) {
+  case EncodedBitstreamFormat::Unknown:
+  case EncodedBitstreamFormat::AnnexB:
+    return true;
+  default:
+    return false;
+  }
+}
+
+uint8_t popcount_u8(const uint8_t value) {
+  uint8_t count = 0;
+  for (uint8_t bits = value; bits != 0; bits >>= 1) {
+    count += static_cast<uint8_t>(bits & 0x01u);
+  }
+  return count;
+}
+
+frame_metadata_v2_encoded_extension_t encoded_extension_from_header(
+    const frame_metadata_v2_header_t &header) {
+  frame_metadata_v2_encoded_extension_t ext{};
+  std::memcpy(&ext, header.reserved_0, sizeof(ext));
+  return ext;
 }
 
 constexpr bool is_supported_body_coordinate_system(
@@ -182,18 +220,31 @@ parse_frame_metadata_regions(std::span<const uint8_t> metadata_region,
         cvmmap::format("v2 plane_count={} out of bounds [1, {}]",
                     header.plane_count, V2_MAX_PLANE_COUNT));
   }
-  if ((header.plane_presence_mask & 0xF0) != 0) {
+  if ((header.plane_presence_mask & ~V2_VALID_PLANE_MASK) != 0) {
     return cvmmap::unexpected(
         cvmmap::format("v2 plane_presence_mask=0x{:02x} has invalid upper bits",
                     header.plane_presence_mask));
   }
-  const auto expected_mask =
-      static_cast<uint8_t>((1u << header.plane_count) - 1u);
-  if (header.plane_presence_mask != expected_mask) {
-    return cvmmap::unexpected(
-        cvmmap::format("v2 plane_presence_mask=0x{:02x} does not match expected "
-                    "contiguous mask 0x{:02x}",
-                    header.plane_presence_mask, expected_mask));
+  if (header.versions_minor == FRAME_METADATA_V2_MINOR_BASE) {
+    const auto expected_mask =
+        static_cast<uint8_t>((1u << header.plane_count) - 1u);
+    if (header.plane_presence_mask != expected_mask) {
+      return cvmmap::unexpected(
+          cvmmap::format("v2 plane_presence_mask=0x{:02x} does not match expected "
+                      "contiguous mask 0x{:02x}",
+                      header.plane_presence_mask, expected_mask));
+    }
+  } else {
+    if ((header.plane_presence_mask & 0x01u) == 0) {
+      return cvmmap::unexpected(
+          "v2.1 plane_presence_mask must include slot 0 LEFT plane");
+    }
+    const auto expected_plane_count = popcount_u8(header.plane_presence_mask);
+    if (header.plane_count != expected_plane_count) {
+      return cvmmap::unexpected(
+          cvmmap::format("v2.1 plane_count={} does not match popcount(mask)={}",
+                      header.plane_count, expected_plane_count));
+    }
   }
   if (header.plane_descriptors_offset != V2_DESCRIPTORS_OFFSET) {
     return cvmmap::unexpected(
@@ -224,10 +275,28 @@ parse_frame_metadata_regions(std::span<const uint8_t> metadata_region,
         header.payload_size_bytes, payload_region.size()));
   }
 
+  const auto encoded_ext = encoded_extension_from_header(header);
+  if (header.versions_minor >= FRAME_METADATA_V2_MINOR_ENCODED_AU) {
+    if (!is_supported_encoded_codec(encoded_ext.encoded_codec)) {
+      return cvmmap::unexpected(
+          cvmmap::format("v2.1 encoded_codec={} is unsupported",
+                         static_cast<uint8_t>(encoded_ext.encoded_codec)));
+    }
+    if (!is_supported_encoded_bitstream_format(
+            encoded_ext.encoded_bitstream_format)) {
+      return cvmmap::unexpected(cvmmap::format(
+          "v2.1 encoded_bitstream_format={} is unsupported",
+          static_cast<uint8_t>(encoded_ext.encoded_bitstream_format)));
+    }
+  }
+
   uint32_t expected_next_offset = 0;
   for (size_t slot = 0; slot < metadata_v2.descriptors.size(); ++slot) {
     const auto &desc = metadata_v2.descriptors[slot];
-    const bool is_active = slot < header.plane_count;
+    const bool is_active =
+        header.versions_minor == FRAME_METADATA_V2_MINOR_BASE
+            ? slot < header.plane_count
+            : ((header.plane_presence_mask & (1u << slot)) != 0);
     const bool is_empty = is_empty_descriptor(desc);
 
     if (is_active) {
@@ -297,10 +366,15 @@ parse_frame_metadata_regions(std::span<const uint8_t> metadata_region,
         return cvmmap::unexpected(
             "v2 descriptor slot 2 must be CONFIDENCE plane when active");
       }
-      if (slot >= 3) {
+      if (slot == 3 && desc.plane_type != FramePlaneType::EncodedAccessUnit) {
+        return cvmmap::unexpected(
+            "v2 descriptor slot 3 must be ENCODED_ACCESS_UNIT plane when active");
+      }
+      if (slot >= 4) {
         return cvmmap::unexpected(cvmmap::format(
             "v2 descriptor slot {} active but unsupported in current rollout "
-            "(only slots 0:LEFT, 1:DEPTH, 2:CONFIDENCE are allowed)",
+            "(only slots 0:LEFT, 1:DEPTH, 2:CONFIDENCE, 3:ENCODED_ACCESS_UNIT "
+            "are allowed)",
             slot));
       }
       if (slot == 1 && (desc.pixel_format != PixelFormat::GRAY ||
@@ -315,6 +389,14 @@ parse_frame_metadata_regions(std::span<const uint8_t> metadata_region,
                         desc.depth != Depth::F32)) {
         return cvmmap::unexpected(
             cvmmap::format("v2 confidence descriptor must be GRAY/F32, got "
+                        "pixel_format={} depth={}",
+                        static_cast<uint8_t>(desc.pixel_format),
+                        static_cast<uint8_t>(desc.depth)));
+      }
+      if (slot == 3 && (desc.pixel_format != PixelFormat::GRAY ||
+                        desc.depth != Depth::U8)) {
+        return cvmmap::unexpected(
+            cvmmap::format("v2 encoded AU descriptor must be GRAY/U8, got "
                         "pixel_format={} depth={}",
                         static_cast<uint8_t>(desc.pixel_format),
                         static_cast<uint8_t>(desc.depth)));
@@ -359,8 +441,19 @@ parse_frame_metadata_regions(std::span<const uint8_t> metadata_region,
   out.depth_plane = {};
   out.confidence_info.reset();
   out.confidence_plane = {};
+  out.encoded_codec = EncodedCodec::Unknown;
+  out.encoded_bitstream_format = EncodedBitstreamFormat::Unknown;
+  out.encoded_flags = 0;
+  out.encoded_frame_rate_num = 0;
+  out.encoded_frame_rate_den = 0;
+  out.encoded_stream_pts_ns = 0;
+  out.encoded_access_unit = {};
 
-  if (header.plane_count >= 2) {
+  const auto has_depth =
+      header.versions_minor == FRAME_METADATA_V2_MINOR_BASE
+          ? header.plane_count >= 2
+          : ((header.plane_presence_mask & 0x02u) != 0);
+  if (has_depth) {
     const auto &depth_desc = metadata_v2.descriptors[1];
     auto depth_info_res = frame_info_from_v2_descriptor(depth_desc);
     if (!depth_info_res) {
@@ -372,7 +465,11 @@ parse_frame_metadata_regions(std::span<const uint8_t> metadata_region,
         payload_region.data() + depth_desc.offset_bytes, depth_desc.size_bytes);
   }
 
-  if (header.plane_count >= 3) {
+  const auto has_confidence =
+      header.versions_minor == FRAME_METADATA_V2_MINOR_BASE
+          ? header.plane_count >= 3
+          : ((header.plane_presence_mask & 0x04u) != 0);
+  if (has_confidence) {
     const auto &confidence_desc = metadata_v2.descriptors[2];
     auto confidence_info_res = frame_info_from_v2_descriptor(confidence_desc);
     if (!confidence_info_res) {
@@ -383,6 +480,29 @@ parse_frame_metadata_regions(std::span<const uint8_t> metadata_region,
     out.confidence_plane = std::span<const uint8_t>(
         payload_region.data() + confidence_desc.offset_bytes,
         confidence_desc.size_bytes);
+  }
+
+  const auto has_encoded_access_unit =
+      header.versions_minor >= FRAME_METADATA_V2_MINOR_ENCODED_AU &&
+      ((header.plane_presence_mask & 0x08u) != 0);
+  if (has_encoded_access_unit) {
+    const auto &encoded_desc = metadata_v2.descriptors[3];
+    out.encoded_codec = encoded_ext.encoded_codec;
+    out.encoded_bitstream_format = encoded_ext.encoded_bitstream_format;
+    out.encoded_flags = encoded_ext.encoded_flags;
+    out.encoded_frame_rate_num = encoded_ext.encoded_frame_rate_num;
+    out.encoded_frame_rate_den = encoded_ext.encoded_frame_rate_den;
+    out.encoded_stream_pts_ns = encoded_ext.encoded_stream_pts_ns;
+    out.encoded_access_unit = std::span<const uint8_t>(
+        payload_region.data() + encoded_desc.offset_bytes, encoded_desc.size_bytes);
+    if (out.encoded_codec == EncodedCodec::Unknown) {
+      return cvmmap::unexpected(
+          "v2.1 encoded plane requires a non-unknown encoded_codec");
+    }
+    if (out.encoded_bitstream_format == EncodedBitstreamFormat::Unknown) {
+      return cvmmap::unexpected(
+          "v2.1 encoded plane requires a non-unknown encoded_bitstream_format");
+    }
   }
 
   return out;

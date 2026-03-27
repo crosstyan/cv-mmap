@@ -526,6 +526,8 @@ std::string_view to_string(BackendType backend) {
 		return "opencv";
 	case BackendType::GStreamer:
 		return "gstreamer";
+	case BackendType::UdpRtp:
+		return "udp_rtp";
 	case BackendType::MCAP:
 		return "mcap";
 	case BackendType::ZED:
@@ -542,6 +544,8 @@ BackendType backend_from_string(std::string_view s) {
 		return BackendType::OpenCV;
 	} else if (s == "gstreamer" || s == "GStreamer" || s == "gst") {
 		return BackendType::GStreamer;
+	} else if (s == "udp_rtp" || s == "UdpRtp" || s == "udprtp") {
+		return BackendType::UdpRtp;
 	} else if (s == "mcap" || s == "MCAP") {
 		return BackendType::MCAP;
 	} else if (s == "zed" || s == "ZED") {
@@ -602,6 +606,7 @@ Config Config::Default() {
 		},
 		.opencv = std::nullopt,
 		.gstreamer = std::nullopt,
+		.udp_rtp = std::nullopt,
 		.dummy = DummyConfig{
 			.width            = 1280,
 			.height           = 720,
@@ -706,6 +711,42 @@ Config Config::from_toml(const std::filesystem::path &path) {
 		}
 
 		config.gstreamer = gst_cfg;
+	}
+
+	if (auto udp_rtp = tbl["udp_rtp"].as_table(); udp_rtp) {
+		UdpRtpConfig udp_rtp_cfg{};
+		if (auto val = (*udp_rtp)["multicast_group"].value<std::string>(); val) {
+			udp_rtp_cfg.multicast_group = trim_ascii_spaces(*val);
+		} else {
+			throw invalid_argument("udp_rtp.multicast_group is required when [udp_rtp] section exists");
+		}
+		if (udp_rtp_cfg.multicast_group.empty()) {
+			throw invalid_argument("udp_rtp.multicast_group must not be empty");
+		}
+		if (auto val = (*udp_rtp)["port"].value<int64_t>(); val) {
+			if (*val <= 0 || *val > std::numeric_limits<uint16_t>::max()) {
+				throw invalid_argument("udp_rtp.port must be in range [1, 65535]");
+			}
+			udp_rtp_cfg.port = static_cast<uint16_t>(*val);
+		}
+		if (auto val = (*udp_rtp)["payload_type"].value<int64_t>(); val) {
+			if (*val < 0 || *val > std::numeric_limits<uint8_t>::max()) {
+				throw invalid_argument("udp_rtp.payload_type must be in range [0, 255]");
+			}
+			udp_rtp_cfg.payload_type = static_cast<uint8_t>(*val);
+		}
+		if (auto val = (*udp_rtp)["auto_multicast"].value<bool>(); val) {
+			udp_rtp_cfg.auto_multicast = *val;
+		}
+		if (auto val = (*udp_rtp)["decoder"].value<std::string>(); val) {
+			udp_rtp_cfg.decoder = normalize_ascii_lower(trim_ascii_spaces(*val));
+		}
+		if (udp_rtp_cfg.decoder != "auto" &&
+			udp_rtp_cfg.decoder != "nvh265dec" &&
+			udp_rtp_cfg.decoder != "avdec_h265") {
+			throw invalid_argument("udp_rtp.decoder must be one of: auto, nvh265dec, avdec_h265");
+		}
+		config.udp_rtp = udp_rtp_cfg;
 	}
 
 		if (auto dummy = tbl["dummy"].as_table(); dummy) {
@@ -1099,6 +1140,9 @@ Config Config::from_toml(const std::filesystem::path &path) {
 	if (config.video.backend == BackendType::GStreamer && !config.gstreamer) {
 		throw invalid_argument("[gstreamer] section is required when backend is 'gstreamer'");
 	}
+	if (config.video.backend == BackendType::UdpRtp && !config.udp_rtp) {
+		throw invalid_argument("[udp_rtp] section is required when backend is 'udp_rtp'");
+	}
 	if (config.video.backend == BackendType::MCAP && !config.mcap) {
 		throw invalid_argument("[mcap] section is required when backend is 'mcap'");
 	}
@@ -1137,6 +1181,15 @@ std::string Config::to_toml() const {
 	if (gstreamer) {
 		ss << "[gstreamer]\n";
 		ss << "pipeline = \"" << gstreamer->pipeline << "\"\n";
+	}
+
+	if (udp_rtp) {
+		ss << "\n[udp_rtp]\n";
+		ss << "multicast_group = \"" << udp_rtp->multicast_group << "\"\n";
+		ss << "port = " << udp_rtp->port << "\n";
+		ss << "payload_type = " << static_cast<unsigned>(udp_rtp->payload_type) << "\n";
+		ss << "auto_multicast = " << (udp_rtp->auto_multicast ? "true" : "false") << "\n";
+		ss << "decoder = \"" << udp_rtp->decoder << "\"\n";
 	}
 
 		if (dummy) {

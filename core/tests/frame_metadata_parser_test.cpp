@@ -34,6 +34,31 @@ std::vector<uint8_t> make_payload(const bool include_confidence) {
 	return payload;
 }
 
+std::vector<uint8_t> make_payload_with_encoded(const bool include_depth, const bool include_confidence) {
+	std::vector<uint8_t> payload;
+	payload.reserve(
+		kLeftSizeBytes +
+		(include_depth ? kAuxSizeBytes : 0) +
+		(include_confidence ? kAuxSizeBytes : 0) +
+		6);
+
+	for (uint8_t i = 0; i < kLeftSizeBytes; ++i) {
+		payload.push_back(static_cast<uint8_t>(0x10 + i));
+	}
+	if (include_depth) {
+		for (uint8_t i = 0; i < kAuxSizeBytes; ++i) {
+			payload.push_back(static_cast<uint8_t>(0x40 + i));
+		}
+	}
+	if (include_confidence) {
+		for (uint8_t i = 0; i < kAuxSizeBytes; ++i) {
+			payload.push_back(static_cast<uint8_t>(0x70 + i));
+		}
+	}
+	payload.insert(payload.end(), {0x00, 0x00, 0x00, 0x01, 0x26, 0x01});
+	return payload;
+}
+
 cvmmap::frame_metadata_v2_t make_metadata_v2(
 	const bool include_confidence,
 	const cvmmap::DepthUnit depth_unit = cvmmap::DepthUnit::Unknown) {
@@ -86,6 +111,54 @@ cvmmap::frame_metadata_v2_t make_metadata_v2(
 		confidence.stride_bytes = kAuxStrideBytes;
 		confidence.offset_bytes = kLeftSizeBytes + kAuxSizeBytes;
 		confidence.size_bytes = kAuxSizeBytes;
+	}
+
+	return metadata;
+}
+
+cvmmap::frame_metadata_v2_t make_metadata_v2_with_encoded(
+	const bool include_depth,
+	const bool include_confidence) {
+	auto metadata = make_metadata_v2(include_confidence, cvmmap::DepthUnit::Millimeter);
+	metadata.header.versions_minor = cvmmap::FRAME_METADATA_V2_MINOR_ENCODED_AU;
+	metadata.header.plane_presence_mask = static_cast<uint8_t>(
+		0x01 |
+		(include_depth ? 0x02 : 0x00) |
+		(include_confidence ? 0x04 : 0x00) |
+		0x08);
+	metadata.header.plane_count = static_cast<uint8_t>(
+		1 + (include_depth ? 1 : 0) + (include_confidence ? 1 : 0) + 1);
+
+	const auto encoded_offset = static_cast<uint32_t>(
+		kLeftSizeBytes +
+		(include_depth ? kAuxSizeBytes : 0) +
+		(include_confidence ? kAuxSizeBytes : 0));
+	metadata.header.payload_size_bytes = encoded_offset + 6;
+
+	cvmmap::frame_metadata_v2_encoded_extension_t encoded_ext{};
+	encoded_ext.encoded_codec = cvmmap::EncodedCodec::H265;
+	encoded_ext.encoded_bitstream_format = cvmmap::EncodedBitstreamFormat::AnnexB;
+	encoded_ext.encoded_flags = cvmmap::FRAME_METADATA_V2_ENCODED_FLAG_KEYFRAME;
+	encoded_ext.encoded_frame_rate_num = 30;
+	encoded_ext.encoded_frame_rate_den = 1;
+	encoded_ext.encoded_stream_pts_ns = 987654321u;
+	std::memcpy(metadata.header.reserved_0, &encoded_ext, sizeof(encoded_ext));
+
+	auto &encoded = metadata.descriptors[3];
+	encoded.plane_type = cvmmap::FramePlaneType::EncodedAccessUnit;
+	encoded.pixel_format = cvmmap::PixelFormat::GRAY;
+	encoded.depth = cvmmap::Depth::U8;
+	encoded.width = 6;
+	encoded.height = 1;
+	encoded.stride_bytes = 6;
+	encoded.offset_bytes = encoded_offset;
+	encoded.size_bytes = 6;
+
+	if (!include_depth) {
+		metadata.descriptors[1] = {};
+	}
+	if (!include_confidence) {
+		metadata.descriptors[2] = {};
 	}
 
 	return metadata;
@@ -152,6 +225,29 @@ bool test_v2_depth_unit_meter_parse() {
 	return parsed->depth_unit == cvmmap::DepthUnit::Meter && parsed->depth_info.has_value();
 }
 
+bool test_v2_1_left_and_encoded_parse() {
+	const auto metadata = make_metadata_v2_with_encoded(false, false);
+	const auto payload = make_payload_with_encoded(false, false);
+	std::array<uint8_t, cvmmap::SHM_PAYLOAD_OFFSET> metadata_region{};
+	std::memcpy(metadata_region.data(), &metadata, sizeof(metadata));
+
+	const auto parsed = cvmmap::parse_frame_metadata_regions(metadata_region, payload);
+	if (!parsed) {
+		std::cerr << "expected valid left+encoded packet, got error: " << parsed.error() << '\n';
+		return false;
+	}
+
+	return parsed->normalized_metadata.versions_minor == cvmmap::FRAME_METADATA_V2_MINOR_ENCODED_AU &&
+		parsed->depth_plane.empty() &&
+		parsed->confidence_plane.empty() &&
+		parsed->encoded_codec == cvmmap::EncodedCodec::H265 &&
+		parsed->encoded_bitstream_format == cvmmap::EncodedBitstreamFormat::AnnexB &&
+		parsed->encoded_flags == cvmmap::FRAME_METADATA_V2_ENCODED_FLAG_KEYFRAME &&
+		parsed->encoded_stream_pts_ns == 987654321u &&
+		parsed->encoded_access_unit.size() == 6 &&
+		parsed->encoded_access_unit[4] == 0x26;
+}
+
 } // namespace
 
 int main() {
@@ -165,6 +261,10 @@ int main() {
 	}
 	if (!test_v2_depth_unit_meter_parse()) {
 		std::cerr << "v2 meter depth unit parse test failed\n";
+		return 1;
+	}
+	if (!test_v2_1_left_and_encoded_parse()) {
+		std::cerr << "v2.1 left+encoded parse test failed\n";
 		return 1;
 	}
 	return 0;

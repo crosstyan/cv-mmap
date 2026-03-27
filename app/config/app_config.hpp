@@ -18,6 +18,7 @@ enum class BackendType {
 	Dummy,
 	OpenCV,
 	GStreamer,
+	UdpRtp,
 	MCAP,
 	ZED,
 };
@@ -40,6 +41,14 @@ struct OpenCVConfig {
 struct GStreamerConfig {
 	/// GStreamer pipeline string
 	std::string pipeline;
+};
+
+struct UdpRtpConfig {
+	std::string multicast_group{};
+	uint16_t port{5602};
+	uint8_t payload_type{96};
+	bool auto_multicast{true};
+	std::string decoder{"auto"};
 };
 
 struct DummyConfig {
@@ -170,6 +179,7 @@ struct Config {
 	std::optional<OpenCVConfig> opencv;
 	/// GStreamer-specific config (used when backend == GStreamer)
 	std::optional<GStreamerConfig> gstreamer;
+	std::optional<UdpRtpConfig> udp_rtp;
 	std::optional<DummyConfig> dummy;
 	std::optional<McapConfig> mcap;
 	std::optional<PreprocessConfig> preprocess;

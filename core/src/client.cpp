@@ -143,6 +143,13 @@ struct SharedBuffer {
     depth_plane_ = parsed->depth_plane;
     confidence_info_ = parsed->confidence_info;
     confidence_plane_ = parsed->confidence_plane;
+    encoded_codec_ = parsed->encoded_codec;
+    encoded_bitstream_format_ = parsed->encoded_bitstream_format;
+    encoded_flags_ = parsed->encoded_flags;
+    encoded_frame_rate_num_ = parsed->encoded_frame_rate_num;
+    encoded_frame_rate_den_ = parsed->encoded_frame_rate_den;
+    encoded_stream_pts_ns_ = parsed->encoded_stream_pts_ns;
+    encoded_access_unit_ = parsed->encoded_access_unit;
     return {std::monostate{}};
   }
 
@@ -158,6 +165,13 @@ struct SharedBuffer {
         .depth = depth_plane_,
         .confidence_info = confidence_info_,
         .confidence = confidence_plane_,
+        .encoded_codec = encoded_codec_,
+        .encoded_bitstream_format = encoded_bitstream_format_,
+        .encoded_flags = encoded_flags_,
+        .encoded_frame_rate_num = encoded_frame_rate_num_,
+        .encoded_frame_rate_den = encoded_frame_rate_den_,
+        .encoded_stream_pts_ns = encoded_stream_pts_ns_,
+        .encoded_access_unit = encoded_access_unit_,
     };
   }
 
@@ -174,6 +188,14 @@ private:
   std::span<const uint8_t> depth_plane_{};
   std::optional<frame_info_t> confidence_info_{};
   std::span<const uint8_t> confidence_plane_{};
+  EncodedCodec encoded_codec_{EncodedCodec::Unknown};
+  EncodedBitstreamFormat encoded_bitstream_format_{
+      EncodedBitstreamFormat::Unknown};
+  uint16_t encoded_flags_{0};
+  uint16_t encoded_frame_rate_num_{0};
+  uint16_t encoded_frame_rate_den_{0};
+  uint64_t encoded_stream_pts_ns_{0};
+  std::span<const uint8_t> encoded_access_unit_{};
 };
 
 struct CvMmapClient::impl {

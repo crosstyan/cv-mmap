@@ -214,7 +214,21 @@ enum class FramePlaneType : uint8_t {
 	LEFT  = 0,
 	DEPTH = 1,
 	CONFIDENCE = 2,
+	ENCODED_ACCESS_UNIT = 3,
 };
+
+enum class EncodedCodec : uint8_t {
+	UNKNOWN = 0,
+	H264 = 1,
+	H265 = 2,
+};
+
+enum class EncodedBitstreamFormat : uint8_t {
+	UNKNOWN = 0,
+	ANNEXB = 1,
+};
+
+constexpr uint16_t FRAME_METADATA_V2_ENCODED_FLAG_KEYFRAME = 0x0001u;
 
 enum class DepthUnit : uint8_t {
 	Unknown = 0,
@@ -243,6 +257,8 @@ struct frame_plane_descriptor_v2_t {
 struct frame_metadata_v2_header_t {
 	static constexpr std::array<uint8_t, 8> CV_MMAP_MAGIC = {'C', 'V', '-', 'M', 'M', 'A', 'P', '\0'};
 	static constexpr uint8_t VERSION_MAJOR_V2 = 2;
+	static constexpr uint8_t VERSION_MINOR_V2_BASE = 0;
+	static constexpr uint8_t VERSION_MINOR_V2_ENCODED_AU = 1;
 	static constexpr uint16_t PLANE_DESCRIPTORS_OFFSET = 64;
 	static constexpr uint16_t PLANE_DESCRIPTOR_SIZE = 24;
 	static constexpr uint16_t PLANE_DESCRIPTOR_CAPACITY = 4;
@@ -261,6 +277,11 @@ struct frame_metadata_v2_header_t {
 		return plane_presence_mask == contiguous_mask_expected();
 	}
 
+	[[nodiscard]]
+	bool uses_sparse_plane_mask_semantics() const {
+		return versions_minor >= VERSION_MINOR_V2_ENCODED_AU;
+	}
+
 	uint8_t magic[CV_MMAP_MAGIC.size()];
 	uint8_t versions_major{VERSION_MAJOR_V2};
 	uint8_t versions_minor{VERSION_MINOR};
@@ -276,6 +297,16 @@ struct frame_metadata_v2_header_t {
 	uint32_t payload_size_bytes{0};
 	DepthUnit depth_unit{DepthUnit::Unknown};
 	uint8_t reserved_0[19]{};
+};
+
+struct frame_metadata_v2_encoded_extension_t {
+	EncodedCodec encoded_codec{EncodedCodec::UNKNOWN};
+	EncodedBitstreamFormat encoded_bitstream_format{EncodedBitstreamFormat::UNKNOWN};
+	uint16_t encoded_flags{0};
+	uint16_t encoded_frame_rate_num{0};
+	uint16_t encoded_frame_rate_den{0};
+	uint64_t encoded_stream_pts_ns{0};
+	uint8_t reserved_0[3]{};
 };
 
 struct frame_metadata_v2_t {
@@ -317,6 +348,7 @@ static_assert(alignof(frame_metadata_v2_header_t) == 1, "frame_metadata_v2_heade
 static_assert(frame_metadata_v2_header_t::PLANE_DESCRIPTORS_OFFSET == 64, "v2 plane descriptors offset must be 64");
 static_assert(frame_metadata_v2_header_t::PLANE_DESCRIPTOR_SIZE == 24, "v2 plane descriptor size must be 24");
 static_assert(frame_metadata_v2_header_t::PLANE_DESCRIPTOR_CAPACITY == 4, "v2 plane descriptor capacity must be 4");
+static_assert(sizeof(frame_metadata_v2_encoded_extension_t) == 19, "v2 encoded extension must fit reserved_0");
 
 static_assert(sizeof(frame_metadata_v2_t) == SHM_PAYLOAD_OFFSET, "frame_metadata_v2_t must fully occupy metadata region");
 static_assert(offsetof(frame_metadata_v2_t, header) == 0, "v2 header must start at offset 0");
