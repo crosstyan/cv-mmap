@@ -82,7 +82,6 @@ url = "nats://localhost:4222"
 
 [video]
 backend = "zed"
-use_finite_as_infinite_stream = false
 finite_stream_ending_behavior = "loop"
 
 [zed]
@@ -269,6 +268,84 @@ void test_bad_extends_type_fails() {
 		"has non-string `extends`");
 }
 
+std::string udp_rtp_config_toml(std::string_view udp_rtp_body) {
+	return
+		"name = \"udp\"\n"
+		"\n"
+		"[ipc]\n"
+		"namespace = \"cvmmap\"\n"
+		"prefix = \"/tmp\"\n"
+		"\n"
+		"[video]\n"
+		"backend = \"udp_rtp\"\n"
+		"finite_stream_ending_behavior = \"stop\"\n"
+		"\n"
+		"[udp_rtp]\n" + std::string(udp_rtp_body);
+}
+
+void test_udp_rtp_defaults_to_h265_codec() {
+	TempDir dir;
+	const auto path = dir.path() / "udp-default.toml";
+	write_file(
+		path,
+		udp_rtp_config_toml(
+			"multicast_group = \"224.0.0.123\"\n"
+			"port = 5602\n"
+			"payload_type = 96\n"
+			"auto_multicast = true\n"
+			"decoder = \"auto\"\n"));
+
+	const auto config = app::Config::from_toml(path);
+	expect(config.udp_rtp.has_value(), "udp_rtp config should populate udp_rtp section");
+	expect(config.udp_rtp->codec == "h265", "udp_rtp codec should default to h265");
+	expect(config.udp_rtp->decoder == "auto", "udp_rtp decoder should parse");
+}
+
+void test_udp_rtp_accepts_h264_codec_and_decoder() {
+	TempDir dir;
+	const auto path = dir.path() / "udp-h264.toml";
+	write_file(
+		path,
+		udp_rtp_config_toml(
+			"multicast_group = \"224.0.0.123\"\n"
+			"codec = \"h264\"\n"
+			"decoder = \"avdec_h264\"\n"));
+
+	const auto config = app::Config::from_toml(path);
+	expect(config.udp_rtp.has_value(), "udp_rtp config should populate udp_rtp section");
+	expect(config.udp_rtp->codec == "h264", "udp_rtp codec should parse h264");
+	expect(config.udp_rtp->decoder == "avdec_h264", "udp_rtp decoder should parse avdec_h264");
+}
+
+void test_udp_rtp_rejects_unknown_codec() {
+	TempDir dir;
+	const auto path = dir.path() / "udp-bad-codec.toml";
+	write_file(
+		path,
+		udp_rtp_config_toml(
+			"multicast_group = \"224.0.0.123\"\n"
+			"codec = \"vp9\"\n"));
+
+	expect_throws_contains(
+		[&] { (void)app::Config::from_toml(path); },
+		"udp_rtp.codec must be one of: h264, h265");
+}
+
+void test_udp_rtp_rejects_decoder_that_does_not_match_codec() {
+	TempDir dir;
+	const auto path = dir.path() / "udp-mismatched-decoder.toml";
+	write_file(
+		path,
+		udp_rtp_config_toml(
+			"multicast_group = \"224.0.0.123\"\n"
+			"codec = \"h264\"\n"
+			"decoder = \"nvh265dec\"\n"));
+
+	expect_throws_contains(
+		[&] { (void)app::Config::from_toml(path); },
+		"udp_rtp.decoder must be one of: auto, nvh264dec, avdec_h264 when udp_rtp.codec=h264");
+}
+
 bool run_test(const std::string_view name, const std::function<void()> &fn) {
 	try {
 		fn();
@@ -293,5 +370,9 @@ int main() {
 	ok &= run_test("missing_parent_file_fails_with_readable_error", test_missing_parent_file_fails_with_readable_error);
 	ok &= run_test("inheritance_cycle_fails_with_readable_error", test_inheritance_cycle_fails_with_readable_error);
 	ok &= run_test("bad_extends_type_fails", test_bad_extends_type_fails);
+	ok &= run_test("udp_rtp_defaults_to_h265_codec", test_udp_rtp_defaults_to_h265_codec);
+	ok &= run_test("udp_rtp_accepts_h264_codec_and_decoder", test_udp_rtp_accepts_h264_codec_and_decoder);
+	ok &= run_test("udp_rtp_rejects_unknown_codec", test_udp_rtp_rejects_unknown_codec);
+	ok &= run_test("udp_rtp_rejects_decoder_that_does_not_match_codec", test_udp_rtp_rejects_decoder_that_does_not_match_codec);
 	return ok ? 0 : 1;
 }

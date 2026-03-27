@@ -48,6 +48,7 @@ struct UdpRtpConfig {
 	uint16_t port{5602};
 	uint8_t payload_type{96};
 	bool auto_multicast{true};
+	std::string codec{"h265"};
 	std::string decoder{"auto"};
 };
 

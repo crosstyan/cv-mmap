@@ -29,6 +29,21 @@ constexpr const char *RAW_SINK_NAME = "raw_sink";
 constexpr const char *ENCODED_SINK_NAME = "encoded_sink";
 constexpr std::size_t MAX_PENDING_MATCHES = 16;
 
+enum class UdpRtpCodec {
+	H264,
+	H265,
+};
+
+struct UdpRtpCodecTraits {
+	const char *encoding_name;
+	const char *depay_factory;
+	const char *parser_factory;
+	const char *encoded_caps;
+	const char *preferred_hw_decoder;
+	const char *preferred_sw_decoder;
+	cvmmap::EncodedCodec encoded_codec;
+};
+
 struct RawSample {
 	frame_metadata_t metadata{};
 	std::vector<uint8_t> bytes{};
@@ -99,13 +114,50 @@ bool is_element_available(const char *factory_name) {
 	return true;
 }
 
-std::string resolve_decoder_name(const std::string &configured) {
+std::optional<UdpRtpCodec> codec_from_config(std::string_view configured) {
+	if (configured == "h264") {
+		return UdpRtpCodec::H264;
+	}
+	if (configured == "h265") {
+		return UdpRtpCodec::H265;
+	}
+	return std::nullopt;
+}
+
+UdpRtpCodecTraits codec_traits(const UdpRtpCodec codec) {
+	switch (codec) {
+	case UdpRtpCodec::H264:
+		return UdpRtpCodecTraits{
+			.encoding_name = "H264",
+			.depay_factory = "rtph264depay",
+			.parser_factory = "h264parse",
+			.encoded_caps = "video/x-h264,stream-format=byte-stream,alignment=au",
+			.preferred_hw_decoder = "nvh264dec",
+			.preferred_sw_decoder = "avdec_h264",
+			.encoded_codec = cvmmap::EncodedCodec::H264,
+		};
+	case UdpRtpCodec::H265:
+	default:
+		return UdpRtpCodecTraits{
+			.encoding_name = "H265",
+			.depay_factory = "rtph265depay",
+			.parser_factory = "h265parse",
+			.encoded_caps = "video/x-h265,stream-format=byte-stream,alignment=au",
+			.preferred_hw_decoder = "nvh265dec",
+			.preferred_sw_decoder = "avdec_h265",
+			.encoded_codec = cvmmap::EncodedCodec::H265,
+		};
+	}
+}
+
+std::string resolve_decoder_name(const UdpRtpCodec codec, const std::string &configured) {
+	const auto traits = codec_traits(codec);
 	if (configured == "auto") {
-		if (is_element_available("nvh265dec")) {
-			return "nvh265dec";
+		if (is_element_available(traits.preferred_hw_decoder)) {
+			return traits.preferred_hw_decoder;
 		}
-		if (is_element_available("avdec_h265")) {
-			return "avdec_h265";
+		if (is_element_available(traits.preferred_sw_decoder)) {
+			return traits.preferred_sw_decoder;
 		}
 		return {};
 	}
@@ -113,16 +165,22 @@ std::string resolve_decoder_name(const std::string &configured) {
 }
 
 std::string make_pipeline_string(const app::UdpRtpConfig &config,
+								 const UdpRtpCodec codec,
 								 const std::string &decoder_name) {
+	const auto traits = codec_traits(codec);
 	return cvmmap::format(
-		"udpsrc auto-multicast={} multicast-group={} port={} caps=\"application/x-rtp,media=video,clock-rate=90000,encoding-name=H265,payload={}\" ! "
-		"rtph265depay ! h265parse config-interval=-1 disable-passthrough=true ! tee name=parsed_tee "
-		"parsed_tee. ! queue ! video/x-h265,stream-format=byte-stream,alignment=au ! appsink name={} emit-signals=true sync=false max-buffers=8 drop=true "
+		"udpsrc auto-multicast={} multicast-group={} port={} caps=\"application/x-rtp,media=video,clock-rate=90000,encoding-name={},payload={}\" ! "
+		"{} ! {} config-interval=-1 disable-passthrough=true ! tee name=parsed_tee "
+		"parsed_tee. ! queue ! {} ! appsink name={} emit-signals=true sync=false max-buffers=8 drop=true "
 		"parsed_tee. ! queue ! {} ! videoconvert ! video/x-raw,format=BGR ! appsink name={} emit-signals=true sync=false max-buffers=2 drop=true",
 		config.auto_multicast ? "true" : "false",
 		config.multicast_group,
 		config.port,
+		traits.encoding_name,
 		static_cast<unsigned>(config.payload_type),
+		traits.depay_factory,
+		traits.parser_factory,
+		traits.encoded_caps,
 		ENCODED_SINK_NAME,
 		decoder_name,
 		RAW_SINK_NAME);
@@ -151,6 +209,7 @@ struct UdpRtpBackendImpl {
 	uint32_t source_frame_index{0};
 	uint16_t frame_rate_num{0};
 	uint16_t frame_rate_den{0};
+	UdpRtpCodec codec{UdpRtpCodec::H265};
 	std::mutex mutex{};
 	std::map<uint64_t, RawSample> pending_raw{};
 	std::map<uint64_t, EncodedSample> pending_encoded{};
@@ -326,7 +385,7 @@ struct UdpRtpBackendImpl {
 		}
 
 		EncodedSample encoded{};
-		encoded.access_unit.codec = cvmmap::EncodedCodec::H265;
+		encoded.access_unit.codec = codec_traits(codec).encoded_codec;
 		encoded.access_unit.bitstream_format = cvmmap::EncodedBitstreamFormat::AnnexB;
 		encoded.access_unit.flags =
 			(GST_BUFFER_FLAG_IS_SET(buffer, GST_BUFFER_FLAG_DELTA_UNIT) ? 0
@@ -413,13 +472,20 @@ void UdpRtpBackend::Init() {
 		spdlog::info("GStreamer initialized: {}", gst_version_string());
 	});
 
-	const auto decoder_name = resolve_decoder_name(impl->config.decoder);
+	const auto parsed_codec = codec_from_config(impl->config.codec);
+	if (!parsed_codec) {
+		impl->emit_error(-EINVAL, "udp_rtp codec must be h264 or h265");
+		return;
+	}
+	impl->codec = *parsed_codec;
+
+	const auto decoder_name = resolve_decoder_name(impl->codec, impl->config.decoder);
 	if (decoder_name.empty()) {
 		impl->emit_error(-ENOENT, "udp_rtp decoder auto resolution failed");
 		return;
 	}
 
-	const auto pipeline_string = make_pipeline_string(impl->config, decoder_name);
+	const auto pipeline_string = make_pipeline_string(impl->config, impl->codec, decoder_name);
 	spdlog::info("udp_rtp pipeline: {}", pipeline_string);
 
 	GError *error = nullptr;

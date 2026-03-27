@@ -132,6 +132,14 @@ skeleton_smoothing = 0.0
 [gstreamer]
 pipeline = "filesrc location=example.mkv ! decodebin ! videoconvert ! appsink name=sink"
 
+[udp_rtp]
+multicast_group = "224.0.0.123"
+port = 5602
+payload_type = 96
+auto_multicast = true
+codec = "h265" # h264 | h265
+decoder = "auto"
+
 [preprocess.undistort]
 enabled = false
 model = "pinhole"

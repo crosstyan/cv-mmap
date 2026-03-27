@@ -738,13 +738,27 @@ Config Config::from_toml(const std::filesystem::path &path) {
 		if (auto val = (*udp_rtp)["auto_multicast"].value<bool>(); val) {
 			udp_rtp_cfg.auto_multicast = *val;
 		}
+		if (auto val = (*udp_rtp)["codec"].value<std::string>(); val) {
+			udp_rtp_cfg.codec = normalize_ascii_lower(trim_ascii_spaces(*val));
+		}
+		if (udp_rtp_cfg.codec != "h264" && udp_rtp_cfg.codec != "h265") {
+			throw invalid_argument("udp_rtp.codec must be one of: h264, h265");
+		}
 		if (auto val = (*udp_rtp)["decoder"].value<std::string>(); val) {
 			udp_rtp_cfg.decoder = normalize_ascii_lower(trim_ascii_spaces(*val));
 		}
-		if (udp_rtp_cfg.decoder != "auto" &&
-			udp_rtp_cfg.decoder != "nvh265dec" &&
-			udp_rtp_cfg.decoder != "avdec_h265") {
-			throw invalid_argument("udp_rtp.decoder must be one of: auto, nvh265dec, avdec_h265");
+		if (udp_rtp_cfg.codec == "h264") {
+			if (udp_rtp_cfg.decoder != "auto" &&
+				udp_rtp_cfg.decoder != "nvh264dec" &&
+				udp_rtp_cfg.decoder != "avdec_h264") {
+				throw invalid_argument("udp_rtp.decoder must be one of: auto, nvh264dec, avdec_h264 when udp_rtp.codec=h264");
+			}
+		} else {
+			if (udp_rtp_cfg.decoder != "auto" &&
+				udp_rtp_cfg.decoder != "nvh265dec" &&
+				udp_rtp_cfg.decoder != "avdec_h265") {
+				throw invalid_argument("udp_rtp.decoder must be one of: auto, nvh265dec, avdec_h265 when udp_rtp.codec=h265");
+			}
 		}
 		config.udp_rtp = udp_rtp_cfg;
 	}
@@ -1189,6 +1203,7 @@ std::string Config::to_toml() const {
 		ss << "port = " << udp_rtp->port << "\n";
 		ss << "payload_type = " << static_cast<unsigned>(udp_rtp->payload_type) << "\n";
 		ss << "auto_multicast = " << (udp_rtp->auto_multicast ? "true" : "false") << "\n";
+		ss << "codec = \"" << udp_rtp->codec << "\"\n";
 		ss << "decoder = \"" << udp_rtp->decoder << "\"\n";
 	}
 

@@ -2,7 +2,7 @@
 
 ## Summary
 
-The `udp_rtp` backend ingests an H.265 RTP multicast stream, parses it once, and publishes:
+The `udp_rtp` backend ingests an H.264 or H.265 RTP multicast stream, parses it once, and publishes:
 
 - the decoded left image plane as raw BGR
 - the parsed encoded access unit as an optional ABI v2.1 plane
@@ -11,9 +11,13 @@ Both are written into the same `cvmmap://...` shared-memory snapshot. Consumers 
 
 ## Backend behavior
 
-`udp_rtp` is implemented with GStreamer and builds a pipeline equivalent to:
+`udp_rtp` is implemented with GStreamer and builds a pipeline equivalent to one of these graphs:
 
 ```text
+udpsrc -> rtph264depay -> h264parse -> tee
+  tee -> parsed encoded AU appsink
+  tee -> decoder -> videoconvert -> BGR appsink
+
 udpsrc -> rtph265depay -> h265parse -> tee
   tee -> parsed encoded AU appsink
   tee -> decoder -> videoconvert -> BGR appsink
@@ -22,8 +26,8 @@ udpsrc -> rtph265depay -> h265parse -> tee
 Behavior:
 
 - Input scope is RTP video only.
-- Codec is currently H.265 only.
-- The parser is configured so keyframes carry VPS/SPS/PPS in-band.
+- Codec is selected by config: H.264 or H.265.
+- The parser is configured so keyframes carry codec parameter sets in-band.
 - The backend pairs encoded and raw samples by GStreamer PTS before publishing.
 - Encoded access-unit callbacks are emitted before the matching raw-frame callback.
 - Unmatched raw or encoded samples are dropped instead of publishing mixed snapshots.
@@ -41,14 +45,19 @@ multicast_group = "224.0.0.123"
 port = 5602
 payload_type = 96
 auto_multicast = true
+codec = "h265"
 decoder = "auto"
 ```
 
+`codec` accepts:
+
+- `h264`
+- `h265`
+
 `decoder` accepts:
 
-- `auto`
-- `nvh265dec`
-- `avdec_h265`
+- for `codec = "h264"`: `auto`, `nvh264dec`, `avdec_h264`
+- for `codec = "h265"`: `auto`, `nvh265dec`, `avdec_h265`
 
 ## ABI v2.1 layout
 
@@ -78,7 +87,7 @@ The encoded metadata lives in the v2 header `reserved_0[19]` bytes:
 
 Current encoded-plane semantics:
 
-- codec: `H265`
+- codec: `H264` or `H265`
 - bitstream format: `AnnexB`
 - flags: `KEYFRAME` when the AU is a keyframe
 - plane payload: one access unit, already AU-aligned

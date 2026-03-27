@@ -118,7 +118,8 @@ cvmmap::frame_metadata_v2_t make_metadata_v2(
 
 cvmmap::frame_metadata_v2_t make_metadata_v2_with_encoded(
 	const bool include_depth,
-	const bool include_confidence) {
+	const bool include_confidence,
+	const cvmmap::EncodedCodec encoded_codec = cvmmap::EncodedCodec::H265) {
 	auto metadata = make_metadata_v2(include_confidence, cvmmap::DepthUnit::Millimeter);
 	metadata.header.versions_minor = cvmmap::FRAME_METADATA_V2_MINOR_ENCODED_AU;
 	metadata.header.plane_presence_mask = static_cast<uint8_t>(
@@ -136,7 +137,7 @@ cvmmap::frame_metadata_v2_t make_metadata_v2_with_encoded(
 	metadata.header.payload_size_bytes = encoded_offset + 6;
 
 	cvmmap::frame_metadata_v2_encoded_extension_t encoded_ext{};
-	encoded_ext.encoded_codec = cvmmap::EncodedCodec::H265;
+	encoded_ext.encoded_codec = encoded_codec;
 	encoded_ext.encoded_bitstream_format = cvmmap::EncodedBitstreamFormat::AnnexB;
 	encoded_ext.encoded_flags = cvmmap::FRAME_METADATA_V2_ENCODED_FLAG_KEYFRAME;
 	encoded_ext.encoded_frame_rate_num = 30;
@@ -248,6 +249,24 @@ bool test_v2_1_left_and_encoded_parse() {
 		parsed->encoded_access_unit[4] == 0x26;
 }
 
+bool test_v2_1_left_and_h264_encoded_parse() {
+	const auto metadata = make_metadata_v2_with_encoded(false, false, cvmmap::EncodedCodec::H264);
+	const auto payload = make_payload_with_encoded(false, false);
+	std::array<uint8_t, cvmmap::SHM_PAYLOAD_OFFSET> metadata_region{};
+	std::memcpy(metadata_region.data(), &metadata, sizeof(metadata));
+
+	const auto parsed = cvmmap::parse_frame_metadata_regions(metadata_region, payload);
+	if (!parsed) {
+		std::cerr << "expected valid left+h264-encoded packet, got error: " << parsed.error() << '\n';
+		return false;
+	}
+
+	return parsed->normalized_metadata.versions_minor == cvmmap::FRAME_METADATA_V2_MINOR_ENCODED_AU &&
+		parsed->encoded_codec == cvmmap::EncodedCodec::H264 &&
+		parsed->encoded_bitstream_format == cvmmap::EncodedBitstreamFormat::AnnexB &&
+		parsed->encoded_access_unit.size() == 6;
+}
+
 } // namespace
 
 int main() {
@@ -265,6 +284,10 @@ int main() {
 	}
 	if (!test_v2_1_left_and_encoded_parse()) {
 		std::cerr << "v2.1 left+encoded parse test failed\n";
+		return 1;
+	}
+	if (!test_v2_1_left_and_h264_encoded_parse()) {
+		std::cerr << "v2.1 left+h264-encoded parse test failed\n";
 		return 1;
 	}
 	return 0;
