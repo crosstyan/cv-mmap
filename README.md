@@ -96,6 +96,42 @@ paths = ["/data/part1.mcap", "/data/part2.mcap"]
 sort_by_recording_time = true
 ```
 
+Playlist config helper:
+
+- `tools/generate_playlist_config.py` discovers `.mcap` or `.svo2` files with `pathlib` glob/rglob and writes a playlist TOML file
+- run it with `uv`; the script carries its own `click` dependency metadata
+- mixed `.mcap` and `.svo2` matches fail clearly instead of guessing a backend
+- `sort_by_recording_time` is off by default; pass `--sort-by-recording-time` to emit it
+
+Snippet example:
+
+```bash
+uv run tools/generate_playlist_config.py rglob /mnt/hddl/data/kindergarten "*.mcap" \
+  --output generated/kindergarten_mcap_playlist.toml
+```
+
+Derived config example:
+
+```bash
+uv run tools/generate_playlist_config.py rglob /mnt/hddl/data/kindergarten "*.svo2" \
+  --output generated/kindergarten_zed_overlay.toml \
+  --base-config path/to/neutral_zed_playlist_base.toml \
+  --name kindergarten-zed \
+  --sort-by-recording-time
+```
+
+Notes:
+
+- without `--base-config`, the helper writes a snippet/overlay file intended to be pasted into or merged with an existing config
+- with `--base-config`, it writes a new TOML file using `extends = ...`
+- derived-config mode is intentionally strict and fails if the base config already defines conflicting source-selection keys such as `mcap.path`, `zed.svo_path`, `zed.index`, or an existing playlist
+- the checked-in `config_zed_base.toml` is a live-camera base config, so it is not a valid `--base-config` input for SVO playlist overlays
+- run the helper tests with:
+
+```bash
+uv run --with click python -m unittest discover -s tools -p 'test_*.py'
+```
+
 ## ABI Policy
 
 The current protocol state is intentionally mixed-version:
