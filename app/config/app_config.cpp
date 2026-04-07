@@ -108,6 +108,46 @@ std::string trim_ascii_spaces(std::string value) {
 	return value.substr(first, last - first + 1);
 }
 
+std::vector<std::string> parse_playlist_paths(
+	const toml::node_view<toml::node> &node,
+	const std::string_view field_name) {
+	auto arr = node.as_array();
+	if (!arr) {
+		throw std::invalid_argument(std::string(field_name) + " must be an array of strings");
+	}
+
+	std::vector<std::string> paths{};
+	paths.reserve(arr->size());
+	for (const auto &entry : *arr) {
+		auto path = entry.value<std::string>();
+		if (!path) {
+			throw std::invalid_argument(std::string(field_name) + " must contain only strings");
+		}
+		auto trimmed = trim_ascii_spaces(*path);
+		if (trimmed.empty()) {
+			throw std::invalid_argument(std::string(field_name) + " must not contain empty paths");
+		}
+		paths.push_back(std::move(trimmed));
+	}
+	if (paths.empty()) {
+		throw std::invalid_argument(std::string(field_name) + " must not be empty");
+	}
+	return paths;
+}
+
+bool parse_bool_field(
+	const toml::node_view<toml::node> &node,
+	const std::string_view field_name,
+	const bool default_value) {
+	if (!node) {
+		return default_value;
+	}
+	if (auto value = node.value<bool>(); value) {
+		return *value;
+	}
+	throw std::invalid_argument(std::string(field_name) + " must be boolean");
+}
+
 bool is_valid_ipc_token_char(const char ch) {
 	return std::isalnum(static_cast<unsigned char>(ch)) || ch == '.' || ch == '_' || ch == '-';
 }
@@ -806,11 +846,23 @@ Config Config::from_toml(const std::filesystem::path &path) {
 
 		if (auto val = (*mcap)["path"].value<std::string>(); val) {
 			mcap_cfg.path = trim_ascii_spaces(*val);
-		} else {
-			throw invalid_argument("mcap.path is required when [mcap] section exists");
 		}
-		if (mcap_cfg.path.empty()) {
-			throw invalid_argument("mcap.path must not be empty");
+		if ((*mcap)["playlist"]) {
+			auto playlist = (*mcap)["playlist"].as_table();
+			if (!playlist) {
+				throw invalid_argument("mcap.playlist must be a table");
+			}
+			FilePlaylistConfig playlist_cfg{};
+			if (auto paths = (*playlist)["paths"]; paths) {
+				playlist_cfg.paths = parse_playlist_paths(paths, "mcap.playlist.paths");
+			} else {
+				throw invalid_argument("mcap.playlist.paths is required when [mcap.playlist] exists");
+			}
+			playlist_cfg.sort_by_recording_time = parse_bool_field(
+				(*playlist)["sort_by_recording_time"],
+				"mcap.playlist.sort_by_recording_time",
+				false);
+			mcap_cfg.playlist = std::move(playlist_cfg);
 		}
 
 		if (auto val = (*mcap)["video_topic"].value<std::string>(); val) {
@@ -824,6 +876,12 @@ Config Config::from_toml(const std::filesystem::path &path) {
 		}
 		if (auto val = (*mcap)["timestamp_domain"].value<std::string>(); val) {
 			mcap_cfg.timestamp_domain = timestamp_domain_from_string(trim_ascii_spaces(*val));
+		}
+
+		const auto has_path = !mcap_cfg.path.empty();
+		const auto has_playlist = mcap_cfg.playlist.has_value();
+		if (has_path == has_playlist) {
+			throw invalid_argument("exactly one of mcap.path or mcap.playlist.paths must be configured");
 		}
 
 		config.mcap = std::move(mcap_cfg);
@@ -941,6 +999,23 @@ Config Config::from_toml(const std::filesystem::path &path) {
 			} else {
 				throw invalid_argument("zed.svo_path must be string");
 			}
+		}
+		if ((*zed)["playlist"]) {
+			auto playlist = (*zed)["playlist"].as_table();
+			if (!playlist) {
+				throw invalid_argument("zed.playlist must be a table");
+			}
+			FilePlaylistConfig playlist_cfg{};
+			if (auto paths = (*playlist)["paths"]; paths) {
+				playlist_cfg.paths = parse_playlist_paths(paths, "zed.playlist.paths");
+			} else {
+				throw invalid_argument("zed.playlist.paths is required when [zed.playlist] exists");
+			}
+			playlist_cfg.sort_by_recording_time = parse_bool_field(
+				(*playlist)["sort_by_recording_time"],
+				"zed.playlist.sort_by_recording_time",
+				false);
+			zed_cfg.playlist = std::move(playlist_cfg);
 		}
 
 		if (auto val = (*zed)["resolution"].value<std::string>(); val) {
@@ -1105,8 +1180,10 @@ Config Config::from_toml(const std::filesystem::path &path) {
 		}
 
 		if (is_zed_svo_stream_mode(zed_cfg.stream_mode)) {
-			if (!zed_cfg.svo_path || zed_cfg.svo_path->empty()) {
-				throw invalid_argument("zed.svo_path is required when zed.stream_mode is svo");
+			const auto has_svo_path = zed_cfg.svo_path.has_value();
+			const auto has_playlist = zed_cfg.playlist.has_value();
+			if (has_svo_path == has_playlist) {
+				throw invalid_argument("exactly one of zed.svo_path or zed.playlist.paths must be configured when zed.stream_mode is svo");
 			}
 			if (zed_cfg.serial || zed_cfg.index) {
 				throw invalid_argument("zed.serial and zed.index must not be set when zed.stream_mode is svo");
@@ -1118,6 +1195,9 @@ Config Config::from_toml(const std::filesystem::path &path) {
 				throw invalid_argument("zed.port must not be set when zed.stream_mode is svo");
 			}
 		} else if (is_zed_network_stream_mode(zed_cfg.stream_mode)) {
+			if (zed_cfg.playlist) {
+				throw invalid_argument("zed.playlist is only valid when zed.stream_mode is svo");
+			}
 			if (!zed_cfg.ip_address || zed_cfg.ip_address->empty()) {
 				throw invalid_argument("zed.ip_address is required when zed.stream_mode is network/ethernet/stream");
 			}
@@ -1128,6 +1208,9 @@ Config Config::from_toml(const std::filesystem::path &path) {
 				throw invalid_argument("zed.svo_path is only valid when zed.stream_mode is svo");
 			}
 		} else {
+			if (zed_cfg.playlist) {
+				throw invalid_argument("zed.playlist is only valid when zed.stream_mode is svo");
+			}
 			if (zed_cfg.ip_address) {
 				throw invalid_argument("zed.ip_address is only valid when zed.stream_mode is network/ethernet/stream");
 			}
@@ -1221,11 +1304,25 @@ std::string Config::to_toml() const {
 
 	if (mcap) {
 		ss << "\n[mcap]\n";
-		ss << "path = \"" << mcap->path << "\"\n";
+		if (!mcap->path.empty()) {
+			ss << "path = \"" << mcap->path << "\"\n";
+		}
 		ss << "video_topic = \"" << mcap->video_topic << "\"\n";
 		ss << "depth_topic = \"" << mcap->depth_topic << "\"\n";
 		ss << "body_topic = \"" << mcap->body_topic << "\"\n";
 		ss << "timestamp_domain = \"" << to_string(mcap->timestamp_domain) << "\"\n";
+		if (mcap->playlist) {
+			ss << "\n[mcap.playlist]\n";
+			ss << "paths = [";
+			for (size_t i = 0; i < mcap->playlist->paths.size(); ++i) {
+				if (i != 0) {
+					ss << ", ";
+				}
+				ss << "\"" << mcap->playlist->paths[i] << "\"";
+			}
+			ss << "]\n";
+			ss << "sort_by_recording_time = " << (mcap->playlist->sort_by_recording_time ? "true" : "false") << "\n";
+		}
 	}
 
 	if (preprocess && preprocess->undistort) {
@@ -1287,6 +1384,18 @@ std::string Config::to_toml() const {
 		ss << "reconnect = " << (zed->reconnect ? "true" : "false") << "\n";
 		ss << "left_pixel_format = \"" << zed->left_pixel_format << "\"\n";
 		ss << "coordinate_system = \"" << zed->coordinate_system << "\"\n";
+		if (zed->playlist) {
+			ss << "\n[zed.playlist]\n";
+			ss << "paths = [";
+			for (size_t i = 0; i < zed->playlist->paths.size(); ++i) {
+				if (i != 0) {
+					ss << ", ";
+				}
+				ss << "\"" << zed->playlist->paths[i] << "\"";
+			}
+			ss << "]\n";
+			ss << "sort_by_recording_time = " << (zed->playlist->sort_by_recording_time ? "true" : "false") << "\n";
+		}
 		ss << "\n[zed.recording]\n";
 		ss << "compression_mode = \"" << zed->recording.compression_mode << "\"\n";
 		ss << "bitrate = " << zed->recording.bitrate << "\n";

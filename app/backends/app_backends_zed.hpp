@@ -35,6 +35,8 @@ struct ZedBackend {
 	std::string GetLastRecordingError();
 };
 
+cvmmap::expected<uint64_t, std::string> ProbeZedSvoStartTimestampNs(const app::ZedConfig &zed_config);
+
 }
 
 #endif

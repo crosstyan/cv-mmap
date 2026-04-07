@@ -110,6 +110,51 @@ namespace {
 		return AV_CODEC_ID_NONE;
 	}
 
+	cvmmap::expected<uint64_t, std::string> probe_mcap_start_timestamp_ns(
+		const std::string &path,
+		const std::string &video_topic) {
+		mcap::McapReader reader{};
+		const auto open_status = reader.open(path);
+		if (!open_status.ok()) {
+			return cvmmap::unexpected("open MCAP failed: " + open_status.message);
+		}
+
+		mcap::ReadMessageOptions options{};
+		options.readOrder = mcap::ReadMessageOptions::ReadOrder::FileOrder;
+		options.topicFilter = [&video_topic](const std::string_view topic) {
+			return topic == video_topic;
+		};
+
+		uint64_t min_timestamp_ns = std::numeric_limits<uint64_t>::max();
+		auto messages = reader.readMessages(
+			[](const mcap::Status &) {},
+			options);
+		for (auto it = messages.begin(); it != messages.end(); ++it) {
+			if (it->channel == nullptr || it->channel->topic != video_topic) {
+				continue;
+			}
+			foxglove::CompressedVideo video{};
+			if (!video.ParseFromArray(
+					it->message.data,
+					static_cast<int>(it->message.dataSize))) {
+				reader.close();
+				return cvmmap::unexpected("failed to parse foxglove.CompressedVideo payload");
+			}
+			auto timestamp_ns = proto_timestamp_to_ns(video.timestamp());
+			if (timestamp_ns == 0) {
+				timestamp_ns = it->message.logTime;
+			}
+			min_timestamp_ns = std::min(min_timestamp_ns, timestamp_ns);
+		}
+		reader.close();
+
+		if (min_timestamp_ns == std::numeric_limits<uint64_t>::max()) {
+			return cvmmap::unexpected(
+				"MCAP file does not contain any video messages on topic '" + video_topic + "'");
+		}
+		return min_timestamp_ns;
+	}
+
 	size_t find_start_code(std::span<const uint8_t> bytes, size_t offset) {
 		for (size_t i = offset; i + 3 < bytes.size(); ++i) {
 			if (bytes[i] == 0x00 && bytes[i + 1] == 0x00) {
@@ -337,6 +382,9 @@ struct McapBackendImpl {
 		}
 		if (video_config.finite_source_auto_loops()) {
 			info.flags |= cvmmap::SOURCE_INFO_FLAG_AUTO_LOOP;
+		}
+		if (video_config.finite_source_loop_emits_reset()) {
+			info.flags |= cvmmap::SOURCE_INFO_FLAG_LOOP_EMITS_RESET;
 		}
 		if (!depth_by_timestamp.empty()) {
 			info.flags |= cvmmap::SOURCE_INFO_FLAG_HAS_DEPTH;
@@ -1050,6 +1098,11 @@ cvmmap::expected<seek_result_t, error_t> McapBackend::SeekTimestampNs(
 
 error_t McapBackend::ResetFrameCount() {
 	return impl->ResetFrameCount();
+}
+
+cvmmap::expected<uint64_t, std::string> ProbeMcapStartTimestampNs(
+	const app::McapConfig &mcap_config) {
+	return probe_mcap_start_timestamp_ns(mcap_config.path, mcap_config.video_topic);
 }
 
 } // namespace app::backends

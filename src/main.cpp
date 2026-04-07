@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <cvmmap/compat/format.hpp>
 #include <csignal>
 #include <limits>
@@ -616,295 +617,6 @@ int main(int argc, char **argv) {
 		return metadata_v2;
 	};
 
-	// Create backend based on config
-	app::backends::BackendHandle backend;
-	switch (config.video.backend) {
-	case app::BackendType::Dummy: {
-		if (!config.dummy) {
-			spdlog::error("Dummy backend selected but [dummy] config section missing");
-			return 1;
-		}
-		backend.emplace<app::backends::DummyBackend>(
-			*config.dummy,
-			config.video);
-		spdlog::info("using Dummy backend");
-		break;
-	}
-#ifdef WITH_BACKEND_OPENCV
-	case app::BackendType::OpenCV: {
-		if (!config.opencv) {
-			spdlog::error("OpenCV backend selected but [opencv] config section missing");
-			return 1;
-		}
-		backend.emplace<app::backends::OpenCVBackend>(
-			config.opencv->parameter,
-			config.video,
-			config.opencv->api_preference);
-		spdlog::info("using OpenCV backend");
-		break;
-	}
-#else
-	case app::BackendType::OpenCV: {
-		spdlog::error("OpenCV backend selected but unavailable in this build; reconfigure with -DBUILD_BACKEND_OPENCV=ON");
-		return 1;
-	}
-#endif
-#ifdef WITH_BACKEND_GSTREAMER
-	case app::BackendType::GStreamer: {
-		if (!config.gstreamer) {
-			spdlog::error("GStreamer backend selected but [gstreamer] config section missing");
-			return 1;
-		}
-		backend.emplace<app::backends::GStreamerBackend>(
-			config.gstreamer->pipeline,
-			config.video);
-		spdlog::info("using GStreamer backend");
-		break;
-	}
-	case app::BackendType::UdpRtp: {
-		if (!config.udp_rtp) {
-			spdlog::error("UdpRtp backend selected but [udp_rtp] config section missing");
-			return 1;
-		}
-		backend.emplace<app::backends::UdpRtpBackend>(
-			*config.udp_rtp,
-			config.video);
-		spdlog::info("using UdpRtp backend");
-		break;
-	}
-#else
-	case app::BackendType::GStreamer: {
-		spdlog::error("GStreamer backend selected but unavailable in this build; reconfigure with -DBUILD_BACKEND_GSTREAMER=ON");
-		return 1;
-	}
-	case app::BackendType::UdpRtp: {
-		spdlog::error("UdpRtp backend selected but unavailable in this build; reconfigure with -DBUILD_BACKEND_GSTREAMER=ON");
-		return 1;
-	}
-#endif
-#ifdef WITH_BACKEND_MCAP
-	case app::BackendType::MCAP: {
-		if (!config.mcap) {
-			spdlog::error("MCAP backend selected but [mcap] config section missing");
-			return 1;
-		}
-		backend.emplace<app::backends::McapBackend>(
-			*config.mcap,
-			config.video);
-		spdlog::info("using MCAP backend");
-		break;
-	}
-#else
-	case app::BackendType::MCAP: {
-		spdlog::error("MCAP backend selected but unavailable in this build; reconfigure with -DBUILD_BACKEND_MCAP=ON");
-		return 1;
-	}
-#endif
-	case app::BackendType::ZED: {
-#ifdef WITH_BACKEND_ZED
-		if (!config.zed) {
-			spdlog::error("ZED backend selected but [zed] config section missing");
-			return 1;
-		}
-		backend.emplace<app::backends::ZedBackend>(
-			*config.zed,
-			config.video);
-		spdlog::info("using ZED backend");
-		break;
-#else
-		spdlog::error("ZED backend selected but unavailable in this build; reconfigure with -DBUILD_BACKEND_ZED=ON");
-		return 1;
-#endif
-	}
-	default:
-		spdlog::error("selected backend is not available in this build");
-		return 1;
-	}
-
-#ifdef WITH_BACKEND_GSTREAMER
-	if (auto *udp_rtp_backend = backend.get_if<app::backends::UdpRtpBackend>(); udp_rtp_backend != nullptr) {
-		udp_rtp_backend->SetOnEncodedAccessUnit(
-			[&pending_encoded_mutex, &pending_encoded_by_timestamp](const app::backends::encoded_access_unit_t &access_unit) {
-				std::lock_guard lock(pending_encoded_mutex);
-				pending_encoded_by_timestamp[access_unit.source_timestamp_ns] = access_unit;
-			});
-	}
-#endif
-
-	backend.SetOnMetadata([&shm_state, &frame_state, &sync_msg, &config, &build_v2_metadata, &now_ns](const frame_metadata_t &metadata) {
-		const auto picture_buffer_size = metadata.info.buffer_size;
-		if (picture_buffer_size == 0) {
-			spdlog::error("received zero-sized picture buffer in metadata callback");
-			return;
-		}
-		const auto total_buffer_size = SHM_PAYLOAD_OFFSET + picture_buffer_size;
-
-		auto fs = frame_state_t::open(shm_state.fd(), total_buffer_size);
-		if (not fs) {
-			spdlog::error("open frame state; {}", fs.error());
-			return;
-		}
-
-		auto initial_metadata         = metadata;
-		initial_metadata.frame_count  = 0;
-		initial_metadata.timestamp_ns = now_ns();
-		auto initial_metadata_v2      = build_v2_metadata(initial_metadata, picture_buffer_size);
-		if (!initial_metadata_v2) {
-			spdlog::error("build initial ABI v2 metadata failed");
-			return;
-		}
-		fs->write_metadata(*initial_metadata_v2);
-		frame_state = std::move(*fs);
-		sync_msg.emplace(config.name, 0);
-	});
-
-	backend.SetOnFrame([&frame_state,
-						&sync_msg,
-						&sock,
-						&shm_state,
-						&build_v2_metadata,
-						&undistort_pass,
-						&pending_encoded_mutex,
-						&pending_encoded_by_timestamp](std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata) {
-		if (not frame_state || not sync_msg) {
-			spdlog::error("[BUG] frame callback invoked before metadata callback (should not happen)");
-			return;
-		}
-
-		std::span<const uint8_t> output_buffer(frame_buffer.data(), frame_buffer.size());
-		if (undistort_pass) {
-			try {
-				output_buffer = undistort_pass->apply(output_buffer, metadata.info);
-			} catch (const std::exception &e) {
-				spdlog::error("undistort preprocess failed: {}", e.what());
-				return;
-			}
-		}
-
-		// Copy frame data to shared memory
-		const auto picture_buffer_size = output_buffer.size();
-		if (picture_buffer_size == 0) {
-			spdlog::error("received zero-sized frame buffer");
-			return;
-		}
-
-		std::optional<encoded_plane_view_t> encoded_plane{};
-		std::vector<uint8_t> encoded_plane_storage{};
-		{
-			std::lock_guard lock(pending_encoded_mutex);
-			auto it = pending_encoded_by_timestamp.find(metadata.timestamp_ns);
-			if (it != pending_encoded_by_timestamp.end()) {
-				encoded_plane_view_t plane{};
-				plane.codec            = it->second.codec;
-				plane.bitstream_format = it->second.bitstream_format;
-				plane.flags            = it->second.flags;
-				plane.frame_rate_num   = it->second.frame_rate_num;
-				plane.frame_rate_den   = it->second.frame_rate_den;
-				plane.stream_pts_ns    = it->second.stream_pts_ns;
-				encoded_plane_storage  = std::move(it->second.bytes);
-				plane.bytes            = std::span<const uint8_t>(encoded_plane_storage.data(), encoded_plane_storage.size());
-				encoded_plane          = plane;
-				pending_encoded_by_timestamp.erase(it);
-			}
-		}
-
-		const size_t total_payload_size = picture_buffer_size + (encoded_plane ? encoded_plane->bytes.size() : 0);
-		if (total_payload_size > frame_state->image_buffer().size()) {
-			const auto total_buffer_size = SHM_PAYLOAD_OFFSET + total_payload_size;
-			auto resized_frame_state     = frame_state_t::open(shm_state.fd(), total_buffer_size);
-			if (!resized_frame_state) {
-				spdlog::error("resize shared memory for frame payload failed; {}", resized_frame_state.error());
-				return;
-			}
-			frame_state = std::move(*resized_frame_state);
-		}
-
-		auto metadata_v2 = build_v2_metadata(metadata, picture_buffer_size, encoded_plane);
-		if (!metadata_v2) {
-			spdlog::error("build ABI v2 metadata failed for frame@{}", metadata.frame_count);
-			return;
-		}
-
-		auto &fs = *frame_state;
-		if (metadata_v2->header.payload_size_bytes > fs.image_buffer().size()) {
-			spdlog::error("frame payload ({}) exceeds shared memory payload capacity ({})",
-						  metadata_v2->header.payload_size_bytes,
-						  fs.image_buffer().size());
-			return;
-		}
-		std::copy_n(output_buffer.begin(), output_buffer.size(), fs.image_buffer().begin());
-		if (encoded_plane && !encoded_plane->bytes.empty()) {
-			std::copy(
-				encoded_plane->bytes.begin(),
-				encoded_plane->bytes.end(),
-				fs.image_buffer().begin() + static_cast<std::ptrdiff_t>(output_buffer.size()));
-		}
-		fs.write_metadata(*metadata_v2);
-
-		// Send sync message
-		try {
-			std::array<uint8_t, sync_message_t::size()> buffer;
-			sync_msg->set_frame_count(metadata.frame_count);
-			sync_msg->set_timestamp_ns(metadata.timestamp_ns);
-			std::copy(
-				sync_msg->as_uint8s().begin(),
-				sync_msg->as_uint8s().end(),
-				buffer.begin());
-#ifdef APP_DEBUG_SYNC_MESSAGE_DUMP
-			spdlog::debug("sync_msg hex dump:\n{}", hexdump(buffer));
-#endif
-			sock.send(zmq::buffer(buffer), zmq::send_flags::none);
-		} catch (const zmq::error_t &e) {
-			spdlog::error("send synchronization message for frame@{}; {}", metadata.frame_count, e.what());
-		}
-	});
-
-	backend.TrySetOnBodyTracking([&serialize_body_tracking_frame, &nats_service, nats_enabled](const cvmmap::body_tracking_frame_t &frame) {
-		if (!nats_enabled || !nats_service) {
-			return;
-		}
-		auto bytes = serialize_body_tracking_frame(frame);
-		nats_service->PublishBodyTracking(
-			std::span<const uint8_t>(bytes.data(), bytes.size()));
-	});
-
-	const auto send_status = [&nats_service, nats_enabled](int32_t status) {
-		if (!nats_enabled || !nats_service) {
-			return;
-		}
-		nats_service->PublishModuleStatus(status);
-	};
-
-	backend.SetOnError([&backend, send_status](int error_code, std::string_view message) {
-		if (error_code == backends::ERR_EOS) {
-			spdlog::info("backend EOF: {}", message);
-			const auto source_info = backend.GetSourceInfo();
-			if ((source_info.flags & cvmmap::SOURCE_INFO_FLAG_LOOP_EMITS_RESET) != 0) {
-				spdlog::info("looping finite stream (encore)");
-				auto err = backend.ResetFrameCount();
-				if (err != backends::ERR_OK) {
-					spdlog::error("resetting frame count for loop: {}", err);
-					is_running.store(false, std::memory_order::relaxed);
-				} else {
-					send_status(MODULE_STATUS_STREAM_RESET);
-				}
-				return;
-			}
-		} else {
-			spdlog::error("backend({}): {}", error_code, message);
-		}
-		// stop the looping on any error (or non-loop EOF)
-		is_running.store(false, std::memory_order::relaxed);
-	});
-
-	// Mutex to protect backend calls from concurrent NATS and ZMQ threads
-	std::mutex backend_control_mutex;
-
-	const auto seek_timestamp = [&backend](const uint64_t timestamp_ns)
-		-> cvmmap::expected<backends::seek_result_t, backends::error_t> {
-		return backend.SeekTimestampNs(timestamp_ns);
-	};
-
 	const auto map_recording_error = [](const int error_code,
 										std::string message = {}) {
 		auto control_code = cvmmap::CONTROL_RESPONSE_ERROR;
@@ -953,54 +665,480 @@ int main(int argc, char **argv) {
 	};
 
 	std::vector<RecorderProvider> recorder_providers{};
+	app::backends::BackendHandle backend;
 
-	backend.TryVisitSvoRecordable([&](auto &recordable_backend) {
-		auto *recordable_backend_ptr = &recordable_backend;
-		recorder_providers.push_back(RecorderProvider{
-			.format       = cvmmap::RecordingFormat::Svo,
-			.is_available = [recordable_backend_ptr]() {
-				auto status = recordable_backend_ptr->GetRecordingStatus();
-				return status && status->can_record; },
-			.start        = [recordable_backend_ptr, &map_recording_error, &to_public_recording_status](
-								const cvmmap::RecordingRequest &request)
-				-> cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError> {
-				backends::svo_recording_request_t backend_request{
-					.output_path = request.output_path,
+	const auto send_status = [&nats_service, nats_enabled](int32_t status) {
+		if (!nats_enabled || !nats_service) {
+			return;
+		}
+		nats_service->PublishModuleStatus(status);
+	};
+
+	std::vector<std::string> playlist_paths{};
+	std::atomic<size_t> current_playlist_index{0};
+	const auto playlist_enabled = [&]() {
+		switch (config.video.backend) {
+		case app::BackendType::MCAP:
+			return config.mcap && config.mcap->playlist.has_value();
+		case app::BackendType::ZED:
+			return config.zed && config.zed->playlist.has_value();
+		default:
+			return false;
+		}
+	}();
+
+	if (playlist_enabled) {
+		if (config.video.backend == app::BackendType::MCAP) {
+			playlist_paths = config.mcap->playlist->paths;
+#ifdef WITH_BACKEND_MCAP
+			if (config.mcap->playlist->sort_by_recording_time) {
+				struct PlaylistProbeResult {
+					std::string path;
+					uint64_t start_timestamp_ns{0};
+					size_t original_index{0};
 				};
-				if (request.svo_options) {
-					backend_request.options.compression_mode = request.svo_options->compression_mode;
-					backend_request.options.bitrate          = request.svo_options->bitrate;
-					backend_request.options.target_framerate = request.svo_options->target_framerate;
-					backend_request.options.transcode_streaming_input =
-						request.svo_options->transcode_streaming_input;
+				std::vector<PlaylistProbeResult> probes{};
+				probes.reserve(playlist_paths.size());
+				for (size_t i = 0; i < playlist_paths.size(); ++i) {
+					auto probe_config = *config.mcap;
+					probe_config.path = playlist_paths[i];
+					auto probe = app::backends::ProbeMcapStartTimestampNs(probe_config);
+					if (!probe) {
+						spdlog::error("MCAP playlist probe failed for '{}': {}", playlist_paths[i], probe.error());
+						return 1;
+					}
+					probes.push_back(PlaylistProbeResult{
+						.path = playlist_paths[i],
+						.start_timestamp_ns = *probe,
+						.original_index = i,
+					});
 				}
-				auto result = recordable_backend_ptr->StartRecording(backend_request);
-				if (!result) {
-					return cvmmap::unexpected(
-						map_recording_error(result.error(), recordable_backend_ptr->GetLastRecordingError()));
+				std::stable_sort(probes.begin(), probes.end(), [](const auto &lhs, const auto &rhs) {
+					return lhs.start_timestamp_ns < rhs.start_timestamp_ns;
+				});
+				playlist_paths.clear();
+				for (const auto &probe : probes) {
+					playlist_paths.push_back(probe.path);
 				}
-				return to_public_recording_status(*result);
-			},
-			.stop = [recordable_backend_ptr, &map_recording_error, &to_public_recording_status]()
-				-> cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError> {
-				auto result = recordable_backend_ptr->StopRecording();
-				if (!result) {
-					return cvmmap::unexpected(
-						map_recording_error(result.error(), recordable_backend_ptr->GetLastRecordingError()));
+			}
+#endif
+		} else if (config.video.backend == app::BackendType::ZED) {
+			playlist_paths = config.zed->playlist->paths;
+#ifdef WITH_BACKEND_ZED
+			if (config.zed->playlist->sort_by_recording_time) {
+				struct PlaylistProbeResult {
+					std::string path;
+					uint64_t start_timestamp_ns{0};
+					size_t original_index{0};
+				};
+				std::vector<PlaylistProbeResult> probes{};
+				probes.reserve(playlist_paths.size());
+				for (size_t i = 0; i < playlist_paths.size(); ++i) {
+					auto probe_config = *config.zed;
+					probe_config.svo_path = playlist_paths[i];
+					auto probe = app::backends::ProbeZedSvoStartTimestampNs(probe_config);
+					if (!probe) {
+						spdlog::error("ZED playlist probe failed for '{}': {}", playlist_paths[i], probe.error());
+						return 1;
+					}
+					probes.push_back(PlaylistProbeResult{
+						.path = playlist_paths[i],
+						.start_timestamp_ns = *probe,
+						.original_index = i,
+					});
 				}
-				return to_public_recording_status(*result);
-			},
-			.status = [recordable_backend_ptr, &map_recording_error, &to_public_recording_status]()
-				-> cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError> {
-				auto result = recordable_backend_ptr->GetRecordingStatus();
-				if (!result) {
-					return cvmmap::unexpected(
-						map_recording_error(result.error(), recordable_backend_ptr->GetLastRecordingError()));
+				std::stable_sort(probes.begin(), probes.end(), [](const auto &lhs, const auto &rhs) {
+					return lhs.start_timestamp_ns < rhs.start_timestamp_ns;
+				});
+				playlist_paths.clear();
+				for (const auto &probe : probes) {
+					playlist_paths.push_back(probe.path);
 				}
-				return to_public_recording_status(*result);
-			},
+			}
+#endif
+		}
+		spdlog::info("configured {} playlist items for backend '{}'", playlist_paths.size(), app::to_string(config.video.backend));
+	}
+
+	enum class PlaylistTransitionAction {
+		None,
+		Advance,
+		RewindEmitReset,
+		RewindSilent,
+		ResetActiveEmitReset,
+		ResetActiveSilent,
+	};
+
+	std::atomic<PlaylistTransitionAction> pending_playlist_transition{
+		PlaylistTransitionAction::None};
+
+	const auto request_playlist_transition = [&pending_playlist_transition](PlaylistTransitionAction action) {
+		auto expected = PlaylistTransitionAction::None;
+		(void)pending_playlist_transition.compare_exchange_strong(
+			expected,
+			action,
+			std::memory_order_relaxed);
+	};
+
+	const auto apply_active_playlist_path = [&]() {
+		if (!playlist_enabled || playlist_paths.empty()) {
+			return;
+		}
+		const auto active_index = current_playlist_index.load(std::memory_order_relaxed);
+		if (config.video.backend == app::BackendType::MCAP && config.mcap) {
+			config.mcap->path = playlist_paths[active_index];
+		} else if (config.video.backend == app::BackendType::ZED && config.zed) {
+			config.zed->svo_path = playlist_paths[active_index];
+		}
+	};
+
+	apply_active_playlist_path();
+
+	const auto emplace_active_backend = [&]() -> bool {
+		switch (config.video.backend) {
+		case app::BackendType::Dummy: {
+			if (!config.dummy) {
+				spdlog::error("Dummy backend selected but [dummy] config section missing");
+				return false;
+			}
+			backend.emplace<app::backends::DummyBackend>(*config.dummy, config.video);
+			spdlog::info("using Dummy backend");
+			return true;
+		}
+#ifdef WITH_BACKEND_OPENCV
+		case app::BackendType::OpenCV: {
+			if (!config.opencv) {
+				spdlog::error("OpenCV backend selected but [opencv] config section missing");
+				return false;
+			}
+			backend.emplace<app::backends::OpenCVBackend>(
+				config.opencv->parameter,
+				config.video,
+				config.opencv->api_preference);
+			spdlog::info("using OpenCV backend");
+			return true;
+		}
+#else
+		case app::BackendType::OpenCV:
+			spdlog::error("OpenCV backend selected but unavailable in this build; reconfigure with -DBUILD_BACKEND_OPENCV=ON");
+			return false;
+#endif
+#ifdef WITH_BACKEND_GSTREAMER
+		case app::BackendType::GStreamer: {
+			if (!config.gstreamer) {
+				spdlog::error("GStreamer backend selected but [gstreamer] config section missing");
+				return false;
+			}
+			backend.emplace<app::backends::GStreamerBackend>(
+				config.gstreamer->pipeline,
+				config.video);
+			spdlog::info("using GStreamer backend");
+			return true;
+		}
+		case app::BackendType::UdpRtp: {
+			if (!config.udp_rtp) {
+				spdlog::error("UdpRtp backend selected but [udp_rtp] config section missing");
+				return false;
+			}
+			backend.emplace<app::backends::UdpRtpBackend>(*config.udp_rtp, config.video);
+			spdlog::info("using UdpRtp backend");
+			return true;
+		}
+#else
+		case app::BackendType::GStreamer:
+			spdlog::error("GStreamer backend selected but unavailable in this build; reconfigure with -DBUILD_BACKEND_GSTREAMER=ON");
+			return false;
+		case app::BackendType::UdpRtp:
+			spdlog::error("UdpRtp backend selected but unavailable in this build; reconfigure with -DBUILD_BACKEND_GSTREAMER=ON");
+			return false;
+#endif
+#ifdef WITH_BACKEND_MCAP
+		case app::BackendType::MCAP: {
+			if (!config.mcap) {
+				spdlog::error("MCAP backend selected but [mcap] config section missing");
+				return false;
+			}
+			backend.emplace<app::backends::McapBackend>(*config.mcap, config.video);
+			spdlog::info("using MCAP backend: {}", config.mcap->path);
+			return true;
+		}
+#else
+		case app::BackendType::MCAP:
+			spdlog::error("MCAP backend selected but unavailable in this build; reconfigure with -DBUILD_BACKEND_MCAP=ON");
+			return false;
+#endif
+		case app::BackendType::ZED: {
+#ifdef WITH_BACKEND_ZED
+			if (!config.zed) {
+				spdlog::error("ZED backend selected but [zed] config section missing");
+				return false;
+			}
+			backend.emplace<app::backends::ZedBackend>(*config.zed, config.video);
+			spdlog::info("using ZED backend");
+			return true;
+#else
+			spdlog::error("ZED backend selected but unavailable in this build; reconfigure with -DBUILD_BACKEND_ZED=ON");
+			return false;
+#endif
+		}
+		default:
+			spdlog::error("selected backend is not available in this build");
+			return false;
+		}
+	};
+
+	const auto bind_encoded_callback = [&]() {
+#ifdef WITH_BACKEND_GSTREAMER
+		if (auto *udp_rtp_backend = backend.get_if<app::backends::UdpRtpBackend>(); udp_rtp_backend != nullptr) {
+			udp_rtp_backend->SetOnEncodedAccessUnit(
+				[&pending_encoded_mutex, &pending_encoded_by_timestamp](const app::backends::encoded_access_unit_t &access_unit) {
+					std::lock_guard lock(pending_encoded_mutex);
+					pending_encoded_by_timestamp[access_unit.source_timestamp_ns] = access_unit;
+				});
+		}
+#endif
+	};
+
+	const auto bind_backend_callbacks = [&]() {
+		backend.SetOnMetadata([&shm_state, &frame_state, &sync_msg, &config, &build_v2_metadata, &now_ns](const frame_metadata_t &metadata) {
+			const auto picture_buffer_size = metadata.info.buffer_size;
+			if (picture_buffer_size == 0) {
+				spdlog::error("received zero-sized picture buffer in metadata callback");
+				return;
+			}
+			const auto total_buffer_size = SHM_PAYLOAD_OFFSET + picture_buffer_size;
+
+			auto fs = frame_state_t::open(shm_state.fd(), total_buffer_size);
+			if (not fs) {
+				spdlog::error("open frame state; {}", fs.error());
+				return;
+			}
+
+			auto initial_metadata         = metadata;
+			initial_metadata.frame_count  = 0;
+			initial_metadata.timestamp_ns = now_ns();
+			auto initial_metadata_v2      = build_v2_metadata(initial_metadata, picture_buffer_size);
+			if (!initial_metadata_v2) {
+				spdlog::error("build initial ABI v2 metadata failed");
+				return;
+			}
+			fs->write_metadata(*initial_metadata_v2);
+			frame_state = std::move(*fs);
+			sync_msg.emplace(config.name, 0);
 		});
-	});
+
+		backend.SetOnFrame([&frame_state,
+							&sync_msg,
+							&sock,
+							&shm_state,
+							&build_v2_metadata,
+							&undistort_pass,
+							&pending_encoded_mutex,
+							&pending_encoded_by_timestamp](std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata) {
+			if (not frame_state || not sync_msg) {
+				spdlog::error("[BUG] frame callback invoked before metadata callback (should not happen)");
+				return;
+			}
+
+			std::span<const uint8_t> output_buffer(frame_buffer.data(), frame_buffer.size());
+			if (undistort_pass) {
+				try {
+					output_buffer = undistort_pass->apply(output_buffer, metadata.info);
+				} catch (const std::exception &e) {
+					spdlog::error("undistort preprocess failed: {}", e.what());
+					return;
+				}
+			}
+
+			const auto picture_buffer_size = output_buffer.size();
+			if (picture_buffer_size == 0) {
+				spdlog::error("received zero-sized frame buffer");
+				return;
+			}
+
+			std::optional<encoded_plane_view_t> encoded_plane{};
+			std::vector<uint8_t> encoded_plane_storage{};
+			{
+				std::lock_guard lock(pending_encoded_mutex);
+				auto it = pending_encoded_by_timestamp.find(metadata.timestamp_ns);
+				if (it != pending_encoded_by_timestamp.end()) {
+					encoded_plane_view_t plane{};
+					plane.codec = it->second.codec;
+					plane.bitstream_format = it->second.bitstream_format;
+					plane.flags = it->second.flags;
+					plane.frame_rate_num = it->second.frame_rate_num;
+					plane.frame_rate_den = it->second.frame_rate_den;
+					plane.stream_pts_ns = it->second.stream_pts_ns;
+					encoded_plane_storage = std::move(it->second.bytes);
+					plane.bytes = std::span<const uint8_t>(encoded_plane_storage.data(), encoded_plane_storage.size());
+					encoded_plane = plane;
+					pending_encoded_by_timestamp.erase(it);
+				}
+			}
+
+			const size_t total_payload_size = picture_buffer_size + (encoded_plane ? encoded_plane->bytes.size() : 0);
+			if (total_payload_size > frame_state->image_buffer().size()) {
+				const auto total_buffer_size = SHM_PAYLOAD_OFFSET + total_payload_size;
+				auto resized_frame_state     = frame_state_t::open(shm_state.fd(), total_buffer_size);
+				if (!resized_frame_state) {
+					spdlog::error("resize shared memory for frame payload failed; {}", resized_frame_state.error());
+					return;
+				}
+				frame_state = std::move(*resized_frame_state);
+			}
+
+			auto metadata_v2 = build_v2_metadata(metadata, picture_buffer_size, encoded_plane);
+			if (!metadata_v2) {
+				spdlog::error("build ABI v2 metadata failed for frame@{}", metadata.frame_count);
+				return;
+			}
+
+			auto &fs = *frame_state;
+			if (metadata_v2->header.payload_size_bytes > fs.image_buffer().size()) {
+				spdlog::error("frame payload ({}) exceeds shared memory payload capacity ({})",
+							  metadata_v2->header.payload_size_bytes,
+							  fs.image_buffer().size());
+				return;
+			}
+			std::copy_n(output_buffer.begin(), output_buffer.size(), fs.image_buffer().begin());
+			if (encoded_plane && !encoded_plane->bytes.empty()) {
+				std::copy(
+					encoded_plane->bytes.begin(),
+					encoded_plane->bytes.end(),
+					fs.image_buffer().begin() + static_cast<std::ptrdiff_t>(output_buffer.size()));
+			}
+			fs.write_metadata(*metadata_v2);
+
+			try {
+				std::array<uint8_t, sync_message_t::size()> buffer;
+				sync_msg->set_frame_count(metadata.frame_count);
+				sync_msg->set_timestamp_ns(metadata.timestamp_ns);
+				std::copy(
+					sync_msg->as_uint8s().begin(),
+					sync_msg->as_uint8s().end(),
+					buffer.begin());
+#ifdef APP_DEBUG_SYNC_MESSAGE_DUMP
+				spdlog::debug("sync_msg hex dump:\n{}", hexdump(buffer));
+#endif
+				sock.send(zmq::buffer(buffer), zmq::send_flags::none);
+			} catch (const zmq::error_t &e) {
+				spdlog::error("send synchronization message for frame@{}; {}", metadata.frame_count, e.what());
+			}
+		});
+
+		backend.TrySetOnBodyTracking([&serialize_body_tracking_frame, &nats_service, nats_enabled](const cvmmap::body_tracking_frame_t &frame) {
+			if (!nats_enabled || !nats_service) {
+				return;
+			}
+			auto bytes = serialize_body_tracking_frame(frame);
+			nats_service->PublishBodyTracking(
+				std::span<const uint8_t>(bytes.data(), bytes.size()));
+		});
+
+		backend.SetOnError([&backend,
+							&config,
+							&playlist_paths,
+							playlist_enabled,
+							&current_playlist_index,
+							&request_playlist_transition,
+							&send_status](int error_code, std::string_view message) {
+			if (error_code == backends::ERR_EOS) {
+				spdlog::info("backend EOF: {}", message);
+				if (playlist_enabled && !playlist_paths.empty()) {
+					const auto current_index = current_playlist_index.load(std::memory_order_relaxed);
+					if (current_index + 1 < playlist_paths.size()) {
+						request_playlist_transition(PlaylistTransitionAction::Advance);
+						return;
+					}
+					if (config.video.finite_source_loops_silently()) {
+						request_playlist_transition(PlaylistTransitionAction::RewindSilent);
+						return;
+					}
+					if (config.video.finite_source_loop_emits_reset()) {
+						request_playlist_transition(PlaylistTransitionAction::RewindEmitReset);
+						return;
+					}
+				}
+
+				const auto source_info = backend.GetSourceInfo();
+				if ((source_info.flags & cvmmap::SOURCE_INFO_FLAG_AUTO_LOOP) != 0) {
+					spdlog::info("looping finite stream (encore)");
+					if ((source_info.flags & cvmmap::SOURCE_INFO_FLAG_LOOP_EMITS_RESET) != 0) {
+						request_playlist_transition(PlaylistTransitionAction::ResetActiveEmitReset);
+					} else {
+						request_playlist_transition(PlaylistTransitionAction::ResetActiveSilent);
+					}
+					return;
+				}
+			} else {
+				spdlog::error("backend({}): {}", error_code, message);
+			}
+			is_running.store(false, std::memory_order::relaxed);
+		});
+	};
+
+	const auto refresh_recorder_providers = [&]() {
+		recorder_providers.clear();
+		backend.TryVisitSvoRecordable([&](auto &recordable_backend) {
+			auto *recordable_backend_ptr = &recordable_backend;
+			recorder_providers.push_back(RecorderProvider{
+				.format = cvmmap::RecordingFormat::Svo,
+				.is_available = [recordable_backend_ptr]() {
+					auto status = recordable_backend_ptr->GetRecordingStatus();
+					return status && status->can_record;
+				},
+				.start = [recordable_backend_ptr, &map_recording_error, &to_public_recording_status](
+							 const cvmmap::RecordingRequest &request)
+					-> cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError> {
+					backends::svo_recording_request_t backend_request{
+						.output_path = request.output_path,
+					};
+					if (request.svo_options) {
+						backend_request.options.compression_mode = request.svo_options->compression_mode;
+						backend_request.options.bitrate = request.svo_options->bitrate;
+						backend_request.options.target_framerate = request.svo_options->target_framerate;
+						backend_request.options.transcode_streaming_input =
+							request.svo_options->transcode_streaming_input;
+					}
+					auto result = recordable_backend_ptr->StartRecording(backend_request);
+					if (!result) {
+						return cvmmap::unexpected(
+							map_recording_error(result.error(), recordable_backend_ptr->GetLastRecordingError()));
+					}
+					return to_public_recording_status(*result);
+				},
+				.stop = [recordable_backend_ptr, &map_recording_error, &to_public_recording_status]()
+					-> cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError> {
+					auto result = recordable_backend_ptr->StopRecording();
+					if (!result) {
+						return cvmmap::unexpected(
+							map_recording_error(result.error(), recordable_backend_ptr->GetLastRecordingError()));
+					}
+					return to_public_recording_status(*result);
+				},
+				.status = [recordable_backend_ptr, &map_recording_error, &to_public_recording_status]()
+					-> cvmmap::expected<cvmmap::RecordingStatus, cvmmap::ControlError> {
+					auto result = recordable_backend_ptr->GetRecordingStatus();
+					if (!result) {
+						return cvmmap::unexpected(
+							map_recording_error(result.error(), recordable_backend_ptr->GetLastRecordingError()));
+					}
+					return to_public_recording_status(*result);
+				},
+			});
+		});
+	};
+
+	const auto initialize_active_backend = [&]() -> bool {
+		if (!emplace_active_backend()) {
+			return false;
+		}
+		bind_encoded_callback();
+		bind_backend_callbacks();
+		refresh_recorder_providers();
+		backend.Init();
+		return true;
+	};
 
 	const auto find_recorder_provider = [&recorder_providers](const cvmmap::RecordingFormat format)
 		-> RecorderProvider * {
@@ -1012,13 +1150,53 @@ int main(int argc, char **argv) {
 		return nullptr;
 	};
 
-	backend.Init();
+	// Mutex to protect backend calls from concurrent NATS and ZMQ threads
+	std::mutex backend_control_mutex;
+
+	const auto seek_timestamp = [&backend](const uint64_t timestamp_ns)
+		-> cvmmap::expected<backends::seek_result_t, backends::error_t> {
+		return backend.SeekTimestampNs(timestamp_ns);
+	};
+
+	const auto switch_playlist_item = [&](const size_t target_index, const bool emit_reset) -> int {
+		if (!playlist_enabled || playlist_paths.empty() || target_index >= playlist_paths.size()) {
+			return -EINVAL;
+		}
+
+		backend.Shutdown();
+		current_playlist_index.store(target_index, std::memory_order_relaxed);
+		apply_active_playlist_path();
+		frame_state.reset();
+		sync_msg.reset();
+		{
+			std::lock_guard lock(pending_encoded_mutex);
+			pending_encoded_by_timestamp.clear();
+		}
+
+		if (!initialize_active_backend()) {
+			is_running.store(false, std::memory_order::relaxed);
+			return -EIO;
+		}
+		if (emit_reset) {
+			send_status(MODULE_STATUS_STREAM_RESET);
+		}
+		return backends::ERR_OK;
+	};
+
+	if (!initialize_active_backend()) {
+		return 1;
+	}
 
 	// Wire up NATS handlers and start service only when transport is enabled.
 	if (nats_enabled) {
 		cvmmap::NatsControlHandlers nats_handlers;
-		nats_handlers.on_reset_frame_count = [&backend, &backend_control_mutex]() -> int {
+		nats_handlers.on_reset_frame_count =
+			[&backend, &backend_control_mutex, playlist_enabled, &current_playlist_index, &switch_playlist_item]() -> int {
 			std::lock_guard lock(backend_control_mutex);
+			if (playlist_enabled &&
+				current_playlist_index.load(std::memory_order_relaxed) != 0) {
+				return switch_playlist_item(0, false);
+			}
 			return backend.ResetFrameCount();
 		};
 		nats_handlers.on_get_source_info = [&backend, &backend_control_mutex, &recorder_providers]() {
@@ -1092,6 +1270,41 @@ int main(int argc, char **argv) {
 
 	send_status(MODULE_STATUS_ONLINE);
 	while (is_running.load(std::memory_order::relaxed)) {
+		const auto transition =
+			pending_playlist_transition.exchange(PlaylistTransitionAction::None, std::memory_order_relaxed);
+		if (transition != PlaylistTransitionAction::None) {
+			std::lock_guard lock(backend_control_mutex);
+			int rc = backends::ERR_OK;
+			switch (transition) {
+			case PlaylistTransitionAction::Advance:
+				rc = switch_playlist_item(
+					current_playlist_index.load(std::memory_order_relaxed) + 1,
+					true);
+				break;
+			case PlaylistTransitionAction::RewindEmitReset:
+				rc = switch_playlist_item(0, true);
+				break;
+			case PlaylistTransitionAction::RewindSilent:
+				rc = switch_playlist_item(0, false);
+				break;
+			case PlaylistTransitionAction::ResetActiveEmitReset:
+			case PlaylistTransitionAction::ResetActiveSilent:
+				rc = backend.ResetFrameCount();
+				if (rc == backends::ERR_OK &&
+					transition == PlaylistTransitionAction::ResetActiveEmitReset) {
+					send_status(MODULE_STATUS_STREAM_RESET);
+				}
+				break;
+			case PlaylistTransitionAction::None:
+			default:
+				break;
+			}
+			if (rc != backends::ERR_OK) {
+				spdlog::error("playlist transition failed: {}", rc);
+				is_running.store(false, std::memory_order::relaxed);
+			}
+			continue;
+		}
 		std::this_thread::sleep_for(std::chrono::milliseconds{100});
 	}
 

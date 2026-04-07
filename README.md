@@ -64,6 +64,37 @@ Playback notes:
 - seeking is available through the existing source control API unless `video.finite_stream_ending_behavior = "loop_silent"`
 - `zed.resolution` and `zed.fps` are accepted in config for compatibility but ignored at runtime for SVO input
 - SDK-side SVO recording controls are disabled while the backend is reading from an SVO file
+- SVO playlists can be configured with `[zed.playlist] paths = [...]`; use `sort_by_recording_time = true` to sort by the first frame timestamp before playback
+
+Minimal SVO playlist example:
+
+```toml
+[video]
+backend = "zed"
+finite_stream_ending_behavior = "loop"
+
+[zed]
+stream_mode = "svo"
+depth_mode = "neural"
+
+[zed.playlist]
+paths = ["/data/part1.svo2", "/data/part2.svo2"]
+sort_by_recording_time = true
+```
+
+MCAP playlists use the same shape:
+
+```toml
+[video]
+backend = "mcap"
+
+[mcap]
+video_topic = "/camera/video"
+
+[mcap.playlist]
+paths = ["/data/part1.mcap", "/data/part2.mcap"]
+sort_by_recording_time = true
+```
 
 ## ABI Policy
 

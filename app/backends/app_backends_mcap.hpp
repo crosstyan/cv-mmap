@@ -31,6 +31,8 @@ struct McapBackend {
 	error_t ResetFrameCount();
 };
 
+cvmmap::expected<uint64_t, std::string> ProbeMcapStartTimestampNs(const app::McapConfig &mcap_config);
+
 } // namespace app::backends
 
 #endif /* D3E7BA6F_0F90_4B1D_9BB4_7BCA7438468F */

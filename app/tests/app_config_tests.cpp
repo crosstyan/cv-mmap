@@ -346,6 +346,189 @@ void test_udp_rtp_rejects_decoder_that_does_not_match_codec() {
 		"udp_rtp.decoder must be one of: auto, nvh264dec, avdec_h264 when udp_rtp.codec=h264");
 }
 
+void test_mcap_playlist_parses_and_round_trips() {
+	TempDir dir;
+	const auto path = dir.path() / "mcap-playlist.toml";
+	write_file(
+		path,
+		R"(name = "mcap-playlist"
+
+[ipc]
+namespace = "cvmmap"
+prefix = "/tmp"
+
+[video]
+backend = "mcap"
+
+[mcap]
+video_topic = "/camera/video"
+depth_topic = "/camera/depth"
+body_topic = "/camera/body"
+timestamp_domain = "unix_epoch_ns"
+
+[mcap.playlist]
+paths = ["/data/one.mcap", "/data/two.mcap"]
+sort_by_recording_time = true
+)");
+
+	const auto config = app::Config::from_toml(path);
+	expect(config.mcap.has_value(), "mcap playlist config should populate mcap section");
+	expect(config.mcap->playlist.has_value(), "mcap playlist config should populate playlist");
+	expect(config.mcap->playlist->paths.size() == 2, "mcap playlist should parse both paths");
+	expect(config.mcap->playlist->sort_by_recording_time, "mcap playlist should parse sort flag");
+	expect(config.mcap->path.empty(), "mcap playlist config should not require mcap.path");
+
+	const auto rendered = config.to_toml();
+	expect(rendered.find("[mcap.playlist]") != std::string::npos, "mcap playlist should round-trip");
+	expect(rendered.find("sort_by_recording_time = true") != std::string::npos, "mcap playlist sort flag should round-trip");
+}
+
+void test_mcap_rejects_path_and_playlist_together() {
+	TempDir dir;
+	const auto path = dir.path() / "mcap-both.toml";
+	write_file(
+		path,
+		R"(name = "mcap-both"
+
+[ipc]
+namespace = "cvmmap"
+prefix = "/tmp"
+
+[video]
+backend = "mcap"
+
+[mcap]
+path = "/data/one.mcap"
+
+[mcap.playlist]
+paths = ["/data/two.mcap"]
+)");
+
+	expect_throws_contains(
+		[&] { (void)app::Config::from_toml(path); },
+		"exactly one of mcap.path or mcap.playlist.paths must be configured");
+}
+
+void test_mcap_playlist_rejects_non_boolean_sort_flag() {
+	TempDir dir;
+	const auto path = dir.path() / "mcap-invalid-sort.toml";
+	write_file(
+		path,
+		R"(name = "mcap-invalid-sort"
+
+[ipc]
+namespace = "cvmmap"
+prefix = "/tmp"
+
+[video]
+backend = "mcap"
+
+[mcap]
+video_topic = "/camera/video"
+
+[mcap.playlist]
+paths = ["/data/one.mcap"]
+sort_by_recording_time = "yes"
+)");
+
+	expect_throws_contains(
+		[&] { (void)app::Config::from_toml(path); },
+		"mcap.playlist.sort_by_recording_time must be boolean");
+}
+
+void test_zed_playlist_requires_svo_mode() {
+	TempDir dir;
+	const auto path = dir.path() / "zed-playlist-local.toml";
+	write_file(
+		path,
+		R"(name = "zed-playlist-local"
+
+[ipc]
+namespace = "cvmmap"
+prefix = "/tmp"
+
+[video]
+backend = "zed"
+
+[zed]
+stream_mode = "local"
+index = 0
+resolution = "AUTO"
+fps = 30
+depth_mode = "NONE"
+
+[zed.playlist]
+paths = ["/data/example.svo2"]
+)");
+
+	expect_throws_contains(
+		[&] { (void)app::Config::from_toml(path); },
+		"zed.playlist is only valid when zed.stream_mode is svo");
+}
+
+void test_zed_playlist_parses_without_svo_path() {
+	TempDir dir;
+	const auto path = dir.path() / "zed-playlist.toml";
+	write_file(
+		path,
+		R"(name = "zed-playlist"
+
+[ipc]
+namespace = "cvmmap"
+prefix = "/tmp"
+
+[video]
+backend = "zed"
+
+[zed]
+stream_mode = "svo"
+resolution = "AUTO"
+fps = 30
+depth_mode = "NEURAL"
+
+[zed.playlist]
+paths = ["/data/example1.svo2", "/data/example2.svo2"]
+sort_by_recording_time = true
+)");
+
+	const auto config = app::Config::from_toml(path);
+	expect(config.zed.has_value(), "zed playlist config should populate zed section");
+	expect(config.zed->playlist.has_value(), "zed playlist config should populate playlist");
+	expect(config.zed->playlist->paths.size() == 2, "zed playlist should parse both paths");
+	expect(config.zed->playlist->sort_by_recording_time, "zed playlist should parse sort flag");
+	expect(!config.zed->svo_path.has_value(), "zed playlist config should not require zed.svo_path");
+}
+
+void test_zed_rejects_svo_path_and_playlist_together() {
+	TempDir dir;
+	const auto path = dir.path() / "zed-both.toml";
+	write_file(
+		path,
+		R"(name = "zed-both"
+
+[ipc]
+namespace = "cvmmap"
+prefix = "/tmp"
+
+[video]
+backend = "zed"
+
+[zed]
+stream_mode = "svo"
+svo_path = "/data/example.svo2"
+resolution = "AUTO"
+fps = 30
+depth_mode = "NEURAL"
+
+[zed.playlist]
+paths = ["/data/example2.svo2"]
+)");
+
+	expect_throws_contains(
+		[&] { (void)app::Config::from_toml(path); },
+		"exactly one of zed.svo_path or zed.playlist.paths must be configured when zed.stream_mode is svo");
+}
+
 bool run_test(const std::string_view name, const std::function<void()> &fn) {
 	try {
 		fn();
@@ -374,5 +557,11 @@ int main() {
 	ok &= run_test("udp_rtp_accepts_h264_codec_and_decoder", test_udp_rtp_accepts_h264_codec_and_decoder);
 	ok &= run_test("udp_rtp_rejects_unknown_codec", test_udp_rtp_rejects_unknown_codec);
 	ok &= run_test("udp_rtp_rejects_decoder_that_does_not_match_codec", test_udp_rtp_rejects_decoder_that_does_not_match_codec);
+	ok &= run_test("mcap_playlist_parses_and_round_trips", test_mcap_playlist_parses_and_round_trips);
+	ok &= run_test("mcap_rejects_path_and_playlist_together", test_mcap_rejects_path_and_playlist_together);
+	ok &= run_test("mcap_playlist_rejects_non_boolean_sort_flag", test_mcap_playlist_rejects_non_boolean_sort_flag);
+	ok &= run_test("zed_playlist_requires_svo_mode", test_zed_playlist_requires_svo_mode);
+	ok &= run_test("zed_playlist_parses_without_svo_path", test_zed_playlist_parses_without_svo_path);
+	ok &= run_test("zed_rejects_svo_path_and_playlist_together", test_zed_rejects_svo_path_and_playlist_together);
 	return ok ? 0 : 1;
 }

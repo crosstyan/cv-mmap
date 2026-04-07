@@ -61,12 +61,18 @@ struct DummyConfig {
 	std::optional<std::string> timestamp_overlay_font_path;
 };
 
+struct FilePlaylistConfig {
+	std::vector<std::string> paths{};
+	bool sort_by_recording_time{false};
+};
+
 struct McapConfig {
 	std::string path{};
 	std::string video_topic{"/camera/video"};
 	std::string depth_topic{"/camera/depth"};
 	std::string body_topic{"/camera/body"};
 	cvmmap::TimestampDomain timestamp_domain{cvmmap::TimestampDomain::UnixEpochNs};
+	std::optional<FilePlaylistConfig> playlist;
 };
 
 struct ZedConfig {
@@ -111,6 +117,7 @@ struct ZedConfig {
 	std::string coordinate_system{"IMAGE"};
 	std::optional<BodyTrackingConfig> body_tracking;
 	RecordingConfig recording{};
+	std::optional<FilePlaylistConfig> playlist;
 };
 
 struct VideoConfig {

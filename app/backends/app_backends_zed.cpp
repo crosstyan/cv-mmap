@@ -57,6 +57,10 @@ bool is_network_stream_mode(const std::string_view mode) {
 	return normalized == "network" || normalized == "ethernet" || normalized == "stream";
 }
 
+bool is_svo_stream_mode(const std::string_view mode) {
+	return normalize_ascii_lower(std::string(mode)) == "svo";
+}
+
 sl::RESOLUTION parse_resolution(const std::string& value) {
 	const auto normalized = normalize_ascii_lower(value);
 
@@ -519,6 +523,53 @@ uint64_t now_ns() {
 			.count());
 }
 
+uint64_t zed_image_timestamp_ns(sl::Camera &camera) {
+	return static_cast<uint64_t>(
+		camera.getTimestamp(sl::TIME_REFERENCE::IMAGE).getNanoseconds());
+}
+
+cvmmap::expected<uint64_t, std::string> probe_zed_svo_start_timestamp_ns(
+	const std::string &path) {
+	if (path.empty()) {
+		return cvmmap::unexpected("ZED SVO path is empty");
+	}
+
+	sl::Camera camera{};
+	sl::InitParameters init_parameters{};
+	init_parameters.depth_mode = sl::DEPTH_MODE::NONE;
+	init_parameters.svo_real_time_mode = true;
+	init_parameters.input.setFromSVOFile(sl::String(path.c_str()));
+
+	const auto open_result = camera.open(init_parameters);
+	if (open_result != sl::ERROR_CODE::SUCCESS) {
+		return cvmmap::unexpected(cvmmap::format(
+			"open ZED SVO failed: {}",
+			sl::toString(open_result).get()));
+	}
+
+	const auto frame_count = camera.getSVONumberOfFrames();
+	if (frame_count <= 0) {
+		camera.close();
+		return cvmmap::unexpected("ZED SVO file does not contain any frames");
+	}
+
+	camera.setSVOPosition(0);
+	const auto grab_result = camera.grab();
+	if (grab_result != sl::ERROR_CODE::SUCCESS) {
+		camera.close();
+		return cvmmap::unexpected(cvmmap::format(
+			"initial ZED SVO grab failed: {}",
+			sl::toString(grab_result).get()));
+	}
+
+	const auto timestamp_ns = zed_image_timestamp_ns(camera);
+	camera.close();
+	if (timestamp_ns == 0) {
+		return cvmmap::unexpected("ZED SVO file returned zero image timestamp");
+	}
+	return timestamp_ns;
+}
+
 }
 
 struct ZedBackendOptions {
@@ -561,6 +612,11 @@ struct ZedBackendImpl {
 	sl::REFERENCE_FRAME body_reference_frame{sl::REFERENCE_FRAME::CAMERA};
 	std::string active_recording_path{};
 	std::string last_recording_error{};
+	bool svo_mode{false};
+	int total_svo_frames{0};
+	uint64_t timeline_start_ns{0};
+	uint64_t timeline_end_ns{0};
+	sl::ERROR_CODE last_grab_error{sl::ERROR_CODE::SUCCESS};
 
 	// =======================================================================
 	// TASK 10 EXTENSION POINTS: Ethernet-ready placeholder stubs
@@ -634,10 +690,71 @@ struct ZedBackendImpl {
 		return last_recording_error;
 	}
 
+	uint64_t effective_timestamp_ns_locked() {
+		return svo_mode ? zed_image_timestamp_ns(camera) : now_ns();
+	}
+
+	void stop_worker_thread() {
+		if (worker_thread.joinable()) {
+			worker_thread.request_stop();
+			worker_thread.join();
+		}
+	}
+
+	void start_worker_thread() {
+		worker_thread = std::jthread([this](std::stop_token stop_token) {
+			worker_loop(stop_token);
+		});
+	}
+
+	bool initialize_svo_timeline_locked() {
+		if (!svo_mode || !camera.isOpened()) {
+			timeline_start_ns = 0;
+			timeline_end_ns = 0;
+			total_svo_frames = 0;
+			return true;
+		}
+
+		total_svo_frames = camera.getSVONumberOfFrames();
+		if (total_svo_frames <= 0) {
+			return false;
+		}
+
+		auto sample_timestamp_ns = [this](const int position) -> std::optional<uint64_t> {
+			camera.setSVOPosition(position);
+			last_grab_error = camera.grab(runtime_parameters);
+			if (last_grab_error != sl::ERROR_CODE::SUCCESS) {
+				return std::nullopt;
+			}
+			const auto timestamp_ns = zed_image_timestamp_ns(camera);
+			if (timestamp_ns == 0) {
+				return std::nullopt;
+			}
+			return timestamp_ns;
+		};
+
+		const auto start_timestamp_ns = sample_timestamp_ns(0);
+		if (!start_timestamp_ns) {
+			return false;
+		}
+		timeline_start_ns = *start_timestamp_ns;
+
+		const auto end_timestamp_ns =
+			sample_timestamp_ns(std::max(0, total_svo_frames - 1));
+		if (!end_timestamp_ns) {
+			return false;
+		}
+		timeline_end_ns = *end_timestamp_ns;
+
+		camera.setSVOPosition(0);
+		last_grab_error = sl::ERROR_CODE::SUCCESS;
+		return true;
+	}
+
 	recording_status_t make_recording_status_locked() {
 		recording_status_t status{};
 		status.format = cvmmap::RecordingFormat::Svo;
-		status.can_record = true;
+		status.can_record = !svo_mode;
 		if (!camera.isOpened()) {
 			return status;
 		}
@@ -685,6 +802,7 @@ struct ZedBackendImpl {
 		body_tracking_enabled =
 			options.zed_config.body_tracking.has_value() &&
 			options.zed_config.body_tracking->enabled;
+		svo_mode = is_svo_stream_mode(options.zed_config.stream_mode);
 
 		if (body_tracking_enabled) {
 			init_parameters.coordinate_units = sl::UNIT::METER;
@@ -697,10 +815,15 @@ struct ZedBackendImpl {
 
 		const auto stream_mode = normalize_ascii_lower(options.zed_config.stream_mode);
 
-		// TASK 10: Stream mode branch with hardened logging
-		// Network/ethernet/stream modes use setFromStream (active path)
-		// Local/usb/device/auto modes use local camera accessors
-		if (is_network_stream_mode(stream_mode)) {
+		if (svo_mode) {
+			if (!options.zed_config.svo_path || options.zed_config.svo_path->empty()) {
+				spdlog::error("ZED stream_mode='svo' requires svo_path");
+				return false;
+			}
+			init_parameters.svo_real_time_mode = true;
+			spdlog::info("opening ZED SVO playback '{}'", *options.zed_config.svo_path);
+			init_parameters.input.setFromSVOFile(sl::String(options.zed_config.svo_path->c_str()));
+		} else if (is_network_stream_mode(stream_mode)) {
 			// Log extension stub activation for visibility (non-functional)
 			eth_stubs.log_placeholder_status();
 
@@ -792,6 +915,13 @@ struct ZedBackendImpl {
 					}
 				}
 				spdlog::info("ZED camera opened");
+				if (!initialize_svo_timeline_locked()) {
+					if (camera.isOpened()) {
+						camera.close();
+					}
+					spdlog::error("failed to initialize ZED SVO timeline");
+					return false;
+				}
 				return true;
 			}
 
@@ -813,6 +943,9 @@ struct ZedBackendImpl {
 	}
 
 	void warmup_camera() {
+		if (svo_mode) {
+			return;
+		}
 		const auto warmup_frames = std::max(0, options.zed_config.warmup_frames);
 		for (int i = 0; i < warmup_frames; i++) {
 			camera.grab(runtime_parameters);
@@ -884,7 +1017,7 @@ struct ZedBackendImpl {
 		frame.header.versions_major = VERSION_MAJOR;
 		frame.header.versions_minor = VERSION_MINOR;
 		frame.header.frame_count = metadata.frame_count;
-		frame.header.timestamp_ns = now_ns();
+		frame.header.timestamp_ns = effective_timestamp_ns_locked();
 		frame.header.sdk_timestamp_ns =
 			static_cast<uint64_t>(bodies.timestamp.getNanoseconds());
 		frame.header.body_record_size = sizeof(cvmmap::body_tracking_body_t);
@@ -937,11 +1070,10 @@ struct ZedBackendImpl {
 		return frame;
 	}
 
-	bool capture_frame() {
-		std::lock_guard lock(state_mutex);
-		const auto grab_result = camera.grab(runtime_parameters);
-		if (grab_result != sl::ERROR_CODE::SUCCESS) {
-			spdlog::debug("ZED grab failed: code={}", static_cast<int>(grab_result));
+	bool capture_frame_locked() {
+		last_grab_error = camera.grab(runtime_parameters);
+		if (last_grab_error != sl::ERROR_CODE::SUCCESS) {
+			spdlog::debug("ZED grab failed: code={}", static_cast<int>(last_grab_error));
 			return false;
 		}
 
@@ -1107,6 +1239,11 @@ struct ZedBackendImpl {
 		return true;
 	}
 
+	bool capture_frame() {
+		std::lock_guard lock(state_mutex);
+		return capture_frame_locked();
+	}
+
 	std::optional<frame_info_t> make_frame_info(const sl::Mat &frame) {
 		const auto width  = frame.getWidth();
 		const auto height = frame.getHeight();
@@ -1161,6 +1298,9 @@ struct ZedBackendImpl {
 	}
 
 	bool reconnect() {
+		if (svo_mode) {
+			return false;
+		}
 		std::lock_guard lock(state_mutex);
 		if (camera.isOpened()) {
 			stop_recording_locked("capture reconnect");
@@ -1220,7 +1360,7 @@ struct ZedBackendImpl {
 		metadata.frame_count = 0;
 		metadata.info        = *info;
 		metadata.info.buffer_size = static_cast<uint32_t>(initial_payload_size);
-		metadata.timestamp_ns = now_ns();
+		metadata.timestamp_ns = effective_timestamp_ns_locked();
 
 		spdlog::info("initial ZED frame info: {}x{}x{}; depth={}; bufferSize={}; pixelFormat={}; depthPlaneEnabled={}",
 					 metadata.info.width,
@@ -1240,9 +1380,7 @@ struct ZedBackendImpl {
 		}
 
 		initialized.store(true, std::memory_order_relaxed);
-		worker_thread = std::jthread([this](std::stop_token stop_token) {
-			worker_loop(stop_token);
-		});
+		start_worker_thread();
 	}
 
 	void worker_loop(std::stop_token stop_token) {
@@ -1256,7 +1394,7 @@ struct ZedBackendImpl {
 				{
 					std::lock_guard lock(state_mutex);
 					metadata.frame_count += 1;
-					metadata.timestamp_ns = now_ns();
+					metadata.timestamp_ns = effective_timestamp_ns_locked();
 					metadata.info.buffer_size = static_cast<uint32_t>(current_frame_buffer().size());
 					frame_metadata_snapshot = metadata;
 					if (pending_body_tracking_frame) {
@@ -1274,6 +1412,10 @@ struct ZedBackendImpl {
 			}
 
 			consecutive_failures++;
+			if (svo_mode && last_grab_error == sl::ERROR_CODE::END_OF_SVOFILE_REACHED) {
+				on_error(ERR_EOS, "EOF");
+				break;
+			}
 			if (consecutive_failures < max_failures) {
 				continue;
 			}
@@ -1326,13 +1468,30 @@ struct ZedBackendImpl {
 	source_info_t GetSourceInfo() {
 		std::lock_guard lock(state_mutex);
 		source_info_t info{};
-		info.source_kind = cvmmap::SourceKind::Live;
+		info.source_kind = svo_mode ? cvmmap::SourceKind::Finite : cvmmap::SourceKind::Live;
 		info.timestamp_domain = cvmmap::TimestampDomain::UnixEpochNs;
 		info.flags |= cvmmap::SOURCE_INFO_FLAG_HAS_DEPTH;
-		info.flags |= cvmmap::SOURCE_INFO_FLAG_CAN_RECORD;
+		if (!svo_mode) {
+			info.flags |= cvmmap::SOURCE_INFO_FLAG_CAN_RECORD;
+		}
+		if (svo_mode && options.video_config.finite_source_can_seek()) {
+			info.flags |= cvmmap::SOURCE_INFO_FLAG_CAN_SEEK;
+		}
+		if (svo_mode && options.video_config.finite_source_auto_loops()) {
+			info.flags |= cvmmap::SOURCE_INFO_FLAG_AUTO_LOOP;
+		}
+		if (svo_mode && options.video_config.finite_source_loop_emits_reset()) {
+			info.flags |= cvmmap::SOURCE_INFO_FLAG_LOOP_EMITS_RESET;
+		}
 		if (options.zed_config.body_tracking &&
 			options.zed_config.body_tracking->enabled) {
 			info.flags |= cvmmap::SOURCE_INFO_FLAG_HAS_BODY;
+		}
+		if (svo_mode) {
+			info.timeline_start_ns = timeline_start_ns;
+			info.timeline_end_ns = timeline_end_ns;
+			info.duration_ns =
+				timeline_end_ns >= timeline_start_ns ? timeline_end_ns - timeline_start_ns : 0;
 		}
 		info.current_timestamp_ns = metadata.timestamp_ns;
 		info.current_frame_count = metadata.frame_count;
@@ -1417,9 +1576,52 @@ struct ZedBackendImpl {
 	}
 
 	error_t ResetFrameCount() {
-		std::lock_guard lock(state_mutex);
-		metadata.frame_count = 0;
-		return 0;
+		if (!svo_mode) {
+			std::lock_guard lock(state_mutex);
+			metadata.frame_count = 0;
+			return 0;
+		}
+
+		stop_worker_thread();
+
+		frame_metadata_t frame_snapshot{};
+		std::optional<cvmmap::body_tracking_frame_t> body_snapshot{};
+		bool restart_worker = false;
+		{
+			std::lock_guard lock(state_mutex);
+			restart_worker =
+				initialized.load(std::memory_order_relaxed) &&
+				camera.isOpened() &&
+				total_svo_frames > 0;
+			if (!restart_worker) {
+				return -ENODEV;
+			}
+
+			camera.setSVOPosition(0);
+			pending_body_tracking_frame.reset();
+			last_good_depth_plane.clear();
+			metadata.frame_count = 0;
+			if (!capture_frame_locked()) {
+				return last_grab_error == sl::ERROR_CODE::END_OF_SVOFILE_REACHED ? -ERANGE : -EIO;
+			}
+			metadata.timestamp_ns = effective_timestamp_ns_locked();
+			metadata.info.buffer_size =
+				static_cast<uint32_t>(current_frame_buffer().size());
+			frame_snapshot = metadata;
+			if (pending_body_tracking_frame) {
+				pending_body_tracking_frame->header.frame_count = metadata.frame_count;
+				body_snapshot = *pending_body_tracking_frame;
+			}
+		}
+
+		on_frame(current_frame_buffer(), frame_snapshot);
+		if (body_snapshot) {
+			on_body_tracking(*body_snapshot);
+		}
+		if (restart_worker) {
+			start_worker_thread();
+		}
+		return ERR_OK;
 	}
 
 	cvmmap::expected<recording_status_t, error_t> StartRecording(const svo_recording_request_t &request) {
@@ -1606,6 +1808,14 @@ std::string ZedBackend::GetLastRecordingError() {
 	return impl->GetLastRecordingError();
 }
 
+cvmmap::expected<uint64_t, std::string> ProbeZedSvoStartTimestampNs(
+	const app::ZedConfig &zed_config) {
+	if (!zed_config.svo_path || zed_config.svo_path->empty()) {
+		return cvmmap::unexpected("zed.svo_path is not configured");
+	}
+	return probe_zed_svo_start_timestamp_ns(*zed_config.svo_path);
+}
+
 #else
 
 struct ZedBackendImpl {
@@ -1728,6 +1938,11 @@ cvmmap::expected<recording_status_t, error_t> ZedBackend::GetRecordingStatus() {
 
 std::string ZedBackend::GetLastRecordingError() {
 	return impl->GetLastRecordingError();
+}
+
+cvmmap::expected<uint64_t, std::string> ProbeZedSvoStartTimestampNs(
+	const app::ZedConfig &) {
+	return cvmmap::unexpected("ZED SDK not available in this build environment");
 }
 
 #endif

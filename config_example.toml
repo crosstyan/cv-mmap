@@ -58,6 +58,11 @@ depth_topic = "/camera/depth"
 body_topic = "/camera/body"
 timestamp_domain = "unix_epoch_ns"
 
+# Optional playlist mode (use instead of mcap.path):
+# [mcap.playlist]
+# paths = ["/data/part1.mcap", "/data/part2.mcap"]
+# sort_by_recording_time = true
+
 [zed]
 # stream_mode accepts these values:
 #   - Local modes: "local", "usb", "device", "auto"
@@ -72,6 +77,11 @@ stream_mode = "local"
 # stream_mode = "svo"
 # svo_path = "/data/example.svo2"
 # In svo mode, resolution/fps are ignored at runtime and come from the file.
+
+# SVO playlist example (use instead of svo_path):
+# [zed.playlist]
+# paths = ["/data/part1.svo2", "/data/part2.svo2"]
+# sort_by_recording_time = true
 
 # Network mode example (uncomment to use):
 # stream_mode = "ethernet"
