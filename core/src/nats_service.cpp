@@ -788,6 +788,7 @@ bool NatsControlService::Start() {
 			natsStatus_GetText(status));
 		return false;
 	}
+	spdlog::info("nats connected to '{}'", pimpl_->nats_url);
 
 	pimpl_->started = true;
 	const auto &target_key = pimpl_->target_key;
@@ -875,7 +876,10 @@ bool NatsControlService::Start() {
 				service_impl->handlers.on_recording_available &&
 				service_impl->handlers.on_recording_available(format);
 			if (!owns_format) {
-				return;
+				spdlog::info(
+					"nats recorder {} unavailable for target '{}'; responding to control requests with unavailable/unsupported status",
+					format == RecordingFormat::Svo ? "svo" : "mcap",
+					target_key);
 			}
 
 			if (service_impl->handlers.on_recording_available) {
