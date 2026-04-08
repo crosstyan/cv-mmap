@@ -26,6 +26,14 @@ inline std::string subject_control_source_capabilities(std::string_view target_k
 	return make_prefix(target_key) + ".control.source.capabilities";
 }
 
+inline std::string subject_control_source_playlist_apply(std::string_view target_key) {
+	return make_prefix(target_key) + ".control.source.playlist.apply";
+}
+
+inline std::string subject_control_source_playlist_info(std::string_view target_key) {
+	return make_prefix(target_key) + ".control.source.playlist.info";
+}
+
 // Recorder request-reply subjects
 inline std::string subject_control_recorder_svo_capabilities(std::string_view target_key) {
 	return make_prefix(target_key) + ".control.recorder.svo.capabilities";

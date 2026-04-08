@@ -48,6 +48,319 @@
 
 // APP_DEBUG_SYNC_MESSAGE_DUMP
 
+namespace {
+
+enum class PlaylistTransitionAction {
+	None,
+	Advance,
+	RewindEmitReset,
+	RewindSilent,
+	ResetActiveEmitReset,
+	ResetActiveSilent,
+};
+
+struct ResolvedPlaylistState {
+	std::vector<std::string> paths{};
+	bool sort_by_recording_time{false};
+	size_t current_index{0};
+};
+
+class IPlaylistController {
+public:
+	virtual ~IPlaylistController() = default;
+
+	[[nodiscard]]
+	virtual std::optional<cvmmap::PlaylistRequest> GetConfiguredRequest() const = 0;
+	[[nodiscard]]
+	virtual bool SupportsRuntimeApply() const = 0;
+	[[nodiscard]]
+	virtual bool HasPlaylist() const = 0;
+	[[nodiscard]]
+	virtual size_t Size() const = 0;
+	[[nodiscard]]
+	virtual size_t CurrentIndex() const = 0;
+	virtual bool SetCurrentIndex(size_t index) = 0;
+	[[nodiscard]]
+	virtual std::optional<std::string> CurrentPath() const = 0;
+	virtual void ApplyCurrentPathToConfig() = 0;
+	[[nodiscard]]
+	virtual cvmmap::PlaylistInfo GetInfo() const = 0;
+	[[nodiscard]]
+	virtual std::optional<ResolvedPlaylistState> SnapshotState() const = 0;
+	virtual void RestoreState(std::optional<ResolvedPlaylistState> state) = 0;
+	virtual void ReplaceState(ResolvedPlaylistState state) = 0;
+	[[nodiscard]]
+	virtual cvmmap::expected<ResolvedPlaylistState, cvmmap::ControlError>
+	Resolve(const cvmmap::PlaylistRequest &request) const = 0;
+};
+
+class RuntimePlaylistController final : public IPlaylistController {
+public:
+	explicit RuntimePlaylistController(app::Config &config) : config_(config) {}
+
+	[[nodiscard]]
+	std::optional<cvmmap::PlaylistRequest> GetConfiguredRequest() const override {
+		switch (config_.video.backend) {
+		case app::BackendType::MCAP:
+			if (config_.mcap && config_.mcap->playlist) {
+				return cvmmap::PlaylistRequest{
+					.paths = config_.mcap->playlist->paths,
+					.sort_by_recording_time = config_.mcap->playlist->sort_by_recording_time,
+				};
+			}
+			return std::nullopt;
+		case app::BackendType::ZED:
+			if (config_.zed && config_.zed->stream_mode == "svo" && config_.zed->playlist) {
+				return cvmmap::PlaylistRequest{
+					.paths = config_.zed->playlist->paths,
+					.sort_by_recording_time = config_.zed->playlist->sort_by_recording_time,
+				};
+			}
+			return std::nullopt;
+		default:
+			return std::nullopt;
+		}
+	}
+
+	[[nodiscard]]
+	bool SupportsRuntimeApply() const override {
+		switch (config_.video.backend) {
+		case app::BackendType::MCAP:
+			return config_.mcap.has_value();
+		case app::BackendType::ZED:
+			return config_.zed.has_value() && config_.zed->stream_mode == "svo";
+		default:
+			return false;
+		}
+	}
+
+	[[nodiscard]]
+	bool HasPlaylist() const override {
+		std::lock_guard lock(state_mutex_);
+		return state_.has_value();
+	}
+
+	[[nodiscard]]
+	size_t Size() const override {
+		std::lock_guard lock(state_mutex_);
+		return state_ ? state_->paths.size() : 0;
+	}
+
+	[[nodiscard]]
+	size_t CurrentIndex() const override {
+		std::lock_guard lock(state_mutex_);
+		return state_ ? state_->current_index : 0;
+	}
+
+	bool SetCurrentIndex(const size_t index) override {
+		std::lock_guard lock(state_mutex_);
+		if (!state_ || index >= state_->paths.size()) {
+			return false;
+		}
+		state_->current_index = index;
+		return true;
+	}
+
+	[[nodiscard]]
+	std::optional<std::string> CurrentPath() const override {
+		std::lock_guard lock(state_mutex_);
+		if (!state_ || state_->paths.empty() || state_->current_index >= state_->paths.size()) {
+			return std::nullopt;
+		}
+		return state_->paths[state_->current_index];
+	}
+
+	void ApplyCurrentPathToConfig() override {
+		auto current_path = CurrentPath();
+		if (!current_path) {
+			return;
+		}
+		switch (config_.video.backend) {
+		case app::BackendType::MCAP:
+			if (config_.mcap) {
+				config_.mcap->path = *current_path;
+			}
+			break;
+		case app::BackendType::ZED:
+			if (config_.zed) {
+				config_.zed->svo_path = *current_path;
+			}
+			break;
+		default:
+			break;
+		}
+	}
+
+	[[nodiscard]]
+	cvmmap::PlaylistInfo GetInfo() const override {
+		std::lock_guard lock(state_mutex_);
+		cvmmap::PlaylistInfo info{};
+		if (!state_) {
+			return info;
+		}
+		info.has_playlist = true;
+		info.paths = state_->paths;
+		info.sort_by_recording_time = state_->sort_by_recording_time;
+		info.current_index = static_cast<uint32_t>(state_->current_index);
+		if (state_->current_index < state_->paths.size()) {
+			info.current_path = state_->paths[state_->current_index];
+		}
+		return info;
+	}
+
+	[[nodiscard]]
+	std::optional<ResolvedPlaylistState> SnapshotState() const override {
+		std::lock_guard lock(state_mutex_);
+		return state_;
+	}
+
+	void RestoreState(std::optional<ResolvedPlaylistState> state) override {
+		std::lock_guard lock(state_mutex_);
+		state_ = std::move(state);
+	}
+
+	void ReplaceState(ResolvedPlaylistState state) override {
+		std::lock_guard lock(state_mutex_);
+		state_ = std::move(state);
+	}
+
+	[[nodiscard]]
+	cvmmap::expected<ResolvedPlaylistState, cvmmap::ControlError>
+	Resolve(const cvmmap::PlaylistRequest &request) const override {
+		if (request.paths.empty()) {
+			return cvmmap::unexpected(cvmmap::ControlError{
+				.code = cvmmap::CONTROL_RESPONSE_INVALID_PAYLOAD,
+				.message = "playlist paths must not be empty",
+			});
+		}
+		for (const auto &path : request.paths) {
+			if (path.empty()) {
+				return cvmmap::unexpected(cvmmap::ControlError{
+					.code = cvmmap::CONTROL_RESPONSE_INVALID_PAYLOAD,
+					.message = "playlist paths must not be empty",
+				});
+			}
+		}
+
+		ResolvedPlaylistState resolved{
+			.paths = request.paths,
+			.sort_by_recording_time = request.sort_by_recording_time,
+			.current_index = 0,
+		};
+
+		switch (config_.video.backend) {
+		case app::BackendType::MCAP:
+			if (!config_.mcap) {
+				return cvmmap::unexpected(cvmmap::ControlError{
+					.code = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
+					.message = "MCAP playlist apply is unavailable without an active MCAP producer",
+				});
+			}
+#ifdef WITH_BACKEND_MCAP
+			if (resolved.sort_by_recording_time) {
+				struct ProbeResult {
+					std::string path;
+					uint64_t start_timestamp_ns{0};
+				};
+				std::vector<ProbeResult> probes{};
+				probes.reserve(resolved.paths.size());
+				for (const auto &path : resolved.paths) {
+					auto probe_config = *config_.mcap;
+					probe_config.path = path;
+					auto probe = app::backends::ProbeMcapStartTimestampNs(probe_config);
+					if (!probe) {
+						return cvmmap::unexpected(cvmmap::ControlError{
+							.code = cvmmap::CONTROL_RESPONSE_ERROR,
+							.message = cvmmap::format(
+								"MCAP playlist probe failed for '{}': {}",
+								path,
+								probe.error()),
+						});
+					}
+					probes.push_back(ProbeResult{
+						.path = path,
+						.start_timestamp_ns = *probe,
+					});
+				}
+				std::stable_sort(probes.begin(), probes.end(), [](const auto &lhs, const auto &rhs) {
+					return lhs.start_timestamp_ns < rhs.start_timestamp_ns;
+				});
+				resolved.paths.clear();
+				for (const auto &probe : probes) {
+					resolved.paths.push_back(probe.path);
+				}
+			}
+			return resolved;
+#else
+			return cvmmap::unexpected(cvmmap::ControlError{
+				.code = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
+				.message = "MCAP playlist apply is unavailable in this build",
+			});
+#endif
+		case app::BackendType::ZED:
+			if (!config_.zed || config_.zed->stream_mode != "svo") {
+				return cvmmap::unexpected(cvmmap::ControlError{
+					.code = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
+					.message = "ZED playlist apply is only supported for stream_mode='svo'",
+				});
+			}
+#ifdef WITH_BACKEND_ZED
+			if (resolved.sort_by_recording_time) {
+				struct ProbeResult {
+					std::string path;
+					uint64_t start_timestamp_ns{0};
+				};
+				std::vector<ProbeResult> probes{};
+				probes.reserve(resolved.paths.size());
+				for (const auto &path : resolved.paths) {
+					auto probe_config = *config_.zed;
+					probe_config.svo_path = path;
+					auto probe = app::backends::ProbeZedSvoStartTimestampNs(probe_config);
+					if (!probe) {
+						return cvmmap::unexpected(cvmmap::ControlError{
+							.code = cvmmap::CONTROL_RESPONSE_ERROR,
+							.message = cvmmap::format(
+								"ZED playlist probe failed for '{}': {}",
+								path,
+								probe.error()),
+						});
+					}
+					probes.push_back(ProbeResult{
+						.path = path,
+						.start_timestamp_ns = *probe,
+					});
+				}
+				std::stable_sort(probes.begin(), probes.end(), [](const auto &lhs, const auto &rhs) {
+					return lhs.start_timestamp_ns < rhs.start_timestamp_ns;
+				});
+				resolved.paths.clear();
+				for (const auto &probe : probes) {
+					resolved.paths.push_back(probe.path);
+				}
+			}
+			return resolved;
+#else
+			return cvmmap::unexpected(cvmmap::ControlError{
+				.code = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
+				.message = "ZED playlist apply is unavailable in this build",
+			});
+#endif
+		default:
+			return cvmmap::unexpected(cvmmap::ControlError{
+				.code = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
+				.message = "playlist apply is only supported for MCAP and ZED SVO producers",
+			});
+		}
+	}
+
+private:
+	app::Config &config_;
+	mutable std::mutex state_mutex_{};
+	std::optional<ResolvedPlaylistState> state_{};
+};
+
+} // namespace
+
 int main(int argc, char **argv) {
 	using namespace app;
 	constexpr auto IPC_PREFIX = "ipc://";
@@ -674,100 +987,21 @@ int main(int argc, char **argv) {
 		nats_service->PublishModuleStatus(status);
 	};
 
-	std::vector<std::string> playlist_paths{};
-	std::atomic<size_t> current_playlist_index{0};
-	const auto playlist_enabled = [&]() {
-		switch (config.video.backend) {
-		case app::BackendType::MCAP:
-			return config.mcap && config.mcap->playlist.has_value();
-		case app::BackendType::ZED:
-			return config.zed && config.zed->playlist.has_value();
-		default:
-			return false;
+	std::unique_ptr<IPlaylistController> playlist_controller =
+		std::make_unique<RuntimePlaylistController>(config);
+	if (auto configured_playlist = playlist_controller->GetConfiguredRequest();
+		configured_playlist.has_value()) {
+		auto resolved_playlist = playlist_controller->Resolve(*configured_playlist);
+		if (!resolved_playlist) {
+			spdlog::error("failed to resolve configured playlist: {}", resolved_playlist.error().message);
+			return 1;
 		}
-	}();
-
-	if (playlist_enabled) {
-		if (config.video.backend == app::BackendType::MCAP) {
-			playlist_paths = config.mcap->playlist->paths;
-#ifdef WITH_BACKEND_MCAP
-			if (config.mcap->playlist->sort_by_recording_time) {
-				struct PlaylistProbeResult {
-					std::string path;
-					uint64_t start_timestamp_ns{0};
-					size_t original_index{0};
-				};
-				std::vector<PlaylistProbeResult> probes{};
-				probes.reserve(playlist_paths.size());
-				for (size_t i = 0; i < playlist_paths.size(); ++i) {
-					auto probe_config = *config.mcap;
-					probe_config.path = playlist_paths[i];
-					auto probe = app::backends::ProbeMcapStartTimestampNs(probe_config);
-					if (!probe) {
-						spdlog::error("MCAP playlist probe failed for '{}': {}", playlist_paths[i], probe.error());
-						return 1;
-					}
-					probes.push_back(PlaylistProbeResult{
-						.path = playlist_paths[i],
-						.start_timestamp_ns = *probe,
-						.original_index = i,
-					});
-				}
-				std::stable_sort(probes.begin(), probes.end(), [](const auto &lhs, const auto &rhs) {
-					return lhs.start_timestamp_ns < rhs.start_timestamp_ns;
-				});
-				playlist_paths.clear();
-				for (const auto &probe : probes) {
-					playlist_paths.push_back(probe.path);
-				}
-			}
-#endif
-		} else if (config.video.backend == app::BackendType::ZED) {
-			playlist_paths = config.zed->playlist->paths;
-#ifdef WITH_BACKEND_ZED
-			if (config.zed->playlist->sort_by_recording_time) {
-				struct PlaylistProbeResult {
-					std::string path;
-					uint64_t start_timestamp_ns{0};
-					size_t original_index{0};
-				};
-				std::vector<PlaylistProbeResult> probes{};
-				probes.reserve(playlist_paths.size());
-				for (size_t i = 0; i < playlist_paths.size(); ++i) {
-					auto probe_config = *config.zed;
-					probe_config.svo_path = playlist_paths[i];
-					auto probe = app::backends::ProbeZedSvoStartTimestampNs(probe_config);
-					if (!probe) {
-						spdlog::error("ZED playlist probe failed for '{}': {}", playlist_paths[i], probe.error());
-						return 1;
-					}
-					probes.push_back(PlaylistProbeResult{
-						.path = playlist_paths[i],
-						.start_timestamp_ns = *probe,
-						.original_index = i,
-					});
-				}
-				std::stable_sort(probes.begin(), probes.end(), [](const auto &lhs, const auto &rhs) {
-					return lhs.start_timestamp_ns < rhs.start_timestamp_ns;
-				});
-				playlist_paths.clear();
-				for (const auto &probe : probes) {
-					playlist_paths.push_back(probe.path);
-				}
-			}
-#endif
-		}
-		spdlog::info("configured {} playlist items for backend '{}'", playlist_paths.size(), app::to_string(config.video.backend));
+		playlist_controller->ReplaceState(std::move(*resolved_playlist));
+		spdlog::info(
+			"configured {} playlist items for backend '{}'",
+			playlist_controller->Size(),
+			app::to_string(config.video.backend));
 	}
-
-	enum class PlaylistTransitionAction {
-		None,
-		Advance,
-		RewindEmitReset,
-		RewindSilent,
-		ResetActiveEmitReset,
-		ResetActiveSilent,
-	};
 
 	std::atomic<PlaylistTransitionAction> pending_playlist_transition{
 		PlaylistTransitionAction::None};
@@ -779,20 +1013,7 @@ int main(int argc, char **argv) {
 			action,
 			std::memory_order_relaxed);
 	};
-
-	const auto apply_active_playlist_path = [&]() {
-		if (!playlist_enabled || playlist_paths.empty()) {
-			return;
-		}
-		const auto active_index = current_playlist_index.load(std::memory_order_relaxed);
-		if (config.video.backend == app::BackendType::MCAP && config.mcap) {
-			config.mcap->path = playlist_paths[active_index];
-		} else if (config.video.backend == app::BackendType::ZED && config.zed) {
-			config.zed->svo_path = playlist_paths[active_index];
-		}
-	};
-
-	apply_active_playlist_path();
+	playlist_controller->ApplyCurrentPathToConfig();
 
 	const auto emplace_active_backend = [&]() -> bool {
 		switch (config.video.backend) {
@@ -1037,16 +1258,13 @@ int main(int argc, char **argv) {
 
 		backend.SetOnError([&backend,
 							&config,
-							&playlist_paths,
-							playlist_enabled,
-							&current_playlist_index,
-							&request_playlist_transition,
-							&send_status](int error_code, std::string_view message) {
+							playlist_controller = playlist_controller.get(),
+							&request_playlist_transition](int error_code, std::string_view message) {
 			if (error_code == backends::ERR_EOS) {
 				spdlog::info("backend EOF: {}", message);
-				if (playlist_enabled && !playlist_paths.empty()) {
-					const auto current_index = current_playlist_index.load(std::memory_order_relaxed);
-					if (current_index + 1 < playlist_paths.size()) {
+				if (playlist_controller->HasPlaylist()) {
+					const auto current_index = playlist_controller->CurrentIndex();
+					if (current_index + 1 < playlist_controller->Size()) {
 						request_playlist_transition(PlaylistTransitionAction::Advance);
 						return;
 					}
@@ -1158,20 +1376,47 @@ int main(int argc, char **argv) {
 		return backend.SeekTimestampNs(timestamp_ns);
 	};
 
-	const auto switch_playlist_item = [&](const size_t target_index, const bool emit_reset) -> int {
-		if (!playlist_enabled || playlist_paths.empty() || target_index >= playlist_paths.size()) {
-			return -EINVAL;
-		}
-
-		backend.Shutdown();
-		current_playlist_index.store(target_index, std::memory_order_relaxed);
-		apply_active_playlist_path();
+	const auto reset_runtime_frame_state = [&frame_state,
+											&sync_msg,
+											&pending_encoded_mutex,
+											&pending_encoded_by_timestamp]() {
 		frame_state.reset();
 		sync_msg.reset();
 		{
 			std::lock_guard lock(pending_encoded_mutex);
 			pending_encoded_by_timestamp.clear();
 		}
+	};
+
+	struct BackendSourcePathSnapshot {
+		std::string mcap_path{};
+		std::optional<std::string> zed_svo_path{};
+	};
+
+	const auto snapshot_backend_source_path = [&config]() {
+		return BackendSourcePathSnapshot{
+			.mcap_path = config.mcap ? config.mcap->path : std::string{},
+			.zed_svo_path = config.zed ? config.zed->svo_path : std::optional<std::string>{},
+		};
+	};
+
+	const auto restore_backend_source_path = [&config](const BackendSourcePathSnapshot &snapshot) {
+		if (config.mcap) {
+			config.mcap->path = snapshot.mcap_path;
+		}
+		if (config.zed) {
+			config.zed->svo_path = snapshot.zed_svo_path;
+		}
+	};
+
+	const auto switch_playlist_item = [&](const size_t target_index, const bool emit_reset) -> int {
+		if (!playlist_controller->HasPlaylist() || !playlist_controller->SetCurrentIndex(target_index)) {
+			return -EINVAL;
+		}
+
+		backend.Shutdown();
+		playlist_controller->ApplyCurrentPathToConfig();
+		reset_runtime_frame_state();
 
 		if (!initialize_active_backend()) {
 			is_running.store(false, std::memory_order::relaxed);
@@ -1183,6 +1428,71 @@ int main(int argc, char **argv) {
 		return backends::ERR_OK;
 	};
 
+	const auto any_recording_active = [&recorder_providers]()
+		-> cvmmap::expected<bool, cvmmap::ControlError> {
+		for (const auto &provider : recorder_providers) {
+			if (!provider.status) {
+				continue;
+			}
+			auto status = provider.status();
+			if (!status) {
+				return cvmmap::unexpected(status.error());
+			}
+			if (status->is_recording) {
+				return true;
+			}
+		}
+		return false;
+	};
+
+	const auto apply_resolved_playlist =
+		[&backend,
+		 &initialize_active_backend,
+		 &playlist_controller,
+		 &pending_playlist_transition,
+		 &reset_runtime_frame_state,
+		 &restore_backend_source_path,
+		 &send_status,
+		 &snapshot_backend_source_path](
+			ResolvedPlaylistState resolved_playlist,
+			const bool emit_reset)
+			-> cvmmap::expected<cvmmap::PlaylistInfo, cvmmap::ControlError> {
+		const auto previous_state = playlist_controller->SnapshotState();
+		const auto previous_source_path = snapshot_backend_source_path();
+		pending_playlist_transition.exchange(
+			PlaylistTransitionAction::None,
+			std::memory_order_relaxed);
+
+		backend.Shutdown();
+		playlist_controller->ReplaceState(std::move(resolved_playlist));
+		playlist_controller->ApplyCurrentPathToConfig();
+		reset_runtime_frame_state();
+
+		if (!initialize_active_backend()) {
+			spdlog::error("failed to activate applied playlist; attempting rollback");
+			playlist_controller->RestoreState(previous_state);
+			restore_backend_source_path(previous_source_path);
+			reset_runtime_frame_state();
+			if (!initialize_active_backend()) {
+				spdlog::critical("playlist apply rollback failed; stopping producer");
+				is_running.store(false, std::memory_order::relaxed);
+				return cvmmap::unexpected(cvmmap::ControlError{
+					.code = cvmmap::CONTROL_RESPONSE_ERROR,
+					.message = "failed to apply playlist and rollback failed",
+				});
+			}
+			return cvmmap::unexpected(cvmmap::ControlError{
+				.code = cvmmap::CONTROL_RESPONSE_ERROR,
+				.message = "failed to activate the applied playlist; previous source restored",
+			});
+		}
+
+		if (emit_reset) {
+			send_status(MODULE_STATUS_STREAM_RESET);
+		}
+		return playlist_controller->GetInfo();
+	};
+
 	if (!initialize_active_backend()) {
 		return 1;
 	}
@@ -1191,10 +1501,10 @@ int main(int argc, char **argv) {
 	if (nats_enabled) {
 		cvmmap::NatsControlHandlers nats_handlers;
 		nats_handlers.on_reset_frame_count =
-			[&backend, &backend_control_mutex, playlist_enabled, &current_playlist_index, &switch_playlist_item]() -> int {
+			[&backend, &backend_control_mutex, playlist_controller = playlist_controller.get(), &switch_playlist_item]() -> int {
 			std::lock_guard lock(backend_control_mutex);
-			if (playlist_enabled &&
-				current_playlist_index.load(std::memory_order_relaxed) != 0) {
+			if (playlist_controller->HasPlaylist() &&
+				playlist_controller->CurrentIndex() != 0) {
 				return switch_playlist_item(0, false);
 			}
 			return backend.ResetFrameCount();
@@ -1214,6 +1524,42 @@ int main(int argc, char **argv) {
 		nats_handlers.on_seek_timestamp = [&backend_control_mutex, &seek_timestamp](uint64_t ts) {
 			std::lock_guard lock(backend_control_mutex);
 			return seek_timestamp(ts);
+		};
+		nats_handlers.on_apply_playlist =
+			[&apply_resolved_playlist,
+			 &any_recording_active,
+			 &backend_control_mutex,
+			 playlist_controller = playlist_controller.get()](
+				const cvmmap::PlaylistRequest &request)
+			-> cvmmap::expected<cvmmap::PlaylistInfo, cvmmap::ControlError> {
+			std::lock_guard lock(backend_control_mutex);
+			if (!playlist_controller->SupportsRuntimeApply()) {
+				return cvmmap::unexpected(cvmmap::ControlError{
+					.code = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
+					.message = "playlist apply is only supported for MCAP and ZED SVO producers",
+				});
+			}
+			auto recording_active = any_recording_active();
+			if (!recording_active) {
+				return cvmmap::unexpected(recording_active.error());
+			}
+			if (*recording_active) {
+				return cvmmap::unexpected(cvmmap::ControlError{
+					.code = cvmmap::CONTROL_RESPONSE_ERROR,
+					.message = "cannot apply a playlist while recording is active",
+				});
+			}
+			auto resolved_playlist = playlist_controller->Resolve(request);
+			if (!resolved_playlist) {
+				return cvmmap::unexpected(resolved_playlist.error());
+			}
+			return apply_resolved_playlist(std::move(*resolved_playlist), true);
+		};
+		nats_handlers.on_get_playlist_info =
+			[&backend_control_mutex, playlist_controller = playlist_controller.get()]()
+			-> cvmmap::expected<cvmmap::PlaylistInfo, cvmmap::ControlError> {
+			std::lock_guard lock(backend_control_mutex);
+			return playlist_controller->GetInfo();
 		};
 		nats_handlers.on_recording_available =
 			[&backend_control_mutex, &find_recorder_provider](const cvmmap::RecordingFormat format) {
@@ -1278,7 +1624,7 @@ int main(int argc, char **argv) {
 			switch (transition) {
 			case PlaylistTransitionAction::Advance:
 				rc = switch_playlist_item(
-					current_playlist_index.load(std::memory_order_relaxed) + 1,
+					playlist_controller->CurrentIndex() + 1,
 					true);
 				break;
 			case PlaylistTransitionAction::RewindEmitReset:

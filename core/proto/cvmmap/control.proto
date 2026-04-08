@@ -65,6 +65,34 @@ message SeekTimestampResponse {
   bool      exact_match            = 5;
 }
 
+// -- Playlist --
+message PlaylistInfo {
+  bool             has_playlist           = 1;
+  repeated string  paths                  = 2;
+  bool             sort_by_recording_time = 3;
+  uint32           current_index          = 4;
+  string           current_path           = 5;
+}
+
+message ApplyPlaylistRequest {
+  repeated string paths                  = 1;
+  bool            sort_by_recording_time = 2;
+}
+
+message ApplyPlaylistResponse {
+  ErrorCode    error         = 1;
+  PlaylistInfo playlist_info = 2;
+  string       error_message = 3;
+}
+
+message GetPlaylistInfoRequest {}
+
+message GetPlaylistInfoResponse {
+  ErrorCode    error         = 1;
+  PlaylistInfo playlist_info = 2;
+  string       error_message = 3;
+}
+
 // -- Capabilities --
 message CapabilitiesRequest {}
 message CapabilitiesResponse {

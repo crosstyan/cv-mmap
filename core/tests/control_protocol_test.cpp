@@ -1,4 +1,6 @@
+#include <cvmmap/client.hpp>
 #include <cvmmap/ipc.hpp>
+#include <cvmmap/nats_subjects.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -122,6 +124,34 @@ bool test_recording_status_response_roundtrip() {
 		   parsed.frames_encoded == 40;
 }
 
+bool test_playlist_types_hold_expected_values() {
+	cvmmap::PlaylistRequest request{};
+	request.paths = {"/tmp/a.mcap", "/tmp/b.mcap"};
+	request.sort_by_recording_time = true;
+
+	cvmmap::PlaylistInfo info{};
+	info.has_playlist = true;
+	info.paths = request.paths;
+	info.sort_by_recording_time = request.sort_by_recording_time;
+	info.current_index = 1;
+	info.current_path = request.paths[1];
+
+	return request.paths.size() == 2 &&
+		   request.sort_by_recording_time &&
+		   info.has_playlist &&
+		   info.paths.size() == 2 &&
+		   info.sort_by_recording_time &&
+		   info.current_index == 1 &&
+		   info.current_path == "/tmp/b.mcap";
+}
+
+bool test_playlist_nats_subjects() {
+	const auto apply_subject = cvmmap::nats::subject_control_source_playlist_apply("demo");
+	const auto info_subject = cvmmap::nats::subject_control_source_playlist_info("demo");
+	return apply_subject == "cvmmap.demo.control.source.playlist.apply" &&
+		   info_subject == "cvmmap.demo.control.source.playlist.info";
+}
+
 } // namespace
 
 int main() {
@@ -143,6 +173,14 @@ int main() {
 	}
 	if (!test_recording_status_response_roundtrip()) {
 		std::cerr << "recording status response round-trip failed\n";
+		return 1;
+	}
+	if (!test_playlist_types_hold_expected_values()) {
+		std::cerr << "playlist client types test failed\n";
+		return 1;
+	}
+	if (!test_playlist_nats_subjects()) {
+		std::cerr << "playlist NATS subject test failed\n";
 		return 1;
 	}
 	return 0;

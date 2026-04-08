@@ -149,6 +149,20 @@ RecordingStatus to_recording_status(const pb::RecordingStatusResponse &response)
 	};
 }
 
+PlaylistInfo to_playlist_info(const pb::PlaylistInfo &wire_info) {
+	PlaylistInfo info{
+		.has_playlist = wire_info.has_playlist(),
+		.sort_by_recording_time = wire_info.sort_by_recording_time(),
+		.current_index = wire_info.current_index(),
+		.current_path = wire_info.current_path(),
+	};
+	info.paths.reserve(static_cast<size_t>(wire_info.paths_size()));
+	for (const auto &path : wire_info.paths()) {
+		info.paths.push_back(path);
+	}
+	return info;
+}
+
 void merge_recorder_formats(
 	ControlCapabilities &capabilities,
 	const pb::CapabilitiesResponse &response) {
@@ -197,6 +211,15 @@ void apply_mcap_options(
 	}
 	if (options.frame_id) {
 		wire_options->set_frame_id(*options.frame_id);
+	}
+}
+
+void apply_playlist_request(
+	const PlaylistRequest &request,
+	pb::ApplyPlaylistRequest *wire_request) {
+	wire_request->set_sort_by_recording_time(request.sort_by_recording_time);
+	for (const auto &path : request.paths) {
+		wire_request->add_paths(path);
 	}
 }
 
@@ -492,6 +515,48 @@ cvmmap::expected<SeekResult, int> NatsControlClient::SeekTimestampNs(
 		.landed_frame_count = response->landed_frame_count(),
 		.exact_match = response->exact_match(),
 	};
+}
+
+cvmmap::expected<PlaylistInfo, ControlError> NatsControlClient::ApplyPlaylist(
+	const PlaylistRequest &request,
+	const std::chrono::milliseconds timeout) {
+	pb::ApplyPlaylistRequest wire_request;
+	apply_playlist_request(request, &wire_request);
+	auto response =
+		pimpl_->request<pb::ApplyPlaylistRequest, pb::ApplyPlaylistResponse>(
+			nats::subject_control_source_playlist_apply(pimpl_->target_key),
+			wire_request,
+			timeout);
+	if (!response) {
+		return cvmmap::unexpected(ControlError{.code = response.error()});
+	}
+	if (response->error() != pb::ERROR_CODE_OK) {
+		return cvmmap::unexpected(ControlError{
+			.code = from_proto_error_code(response->error()),
+			.message = response->error_message(),
+		});
+	}
+	return to_playlist_info(response->playlist_info());
+}
+
+cvmmap::expected<PlaylistInfo, ControlError> NatsControlClient::GetPlaylistInfo(
+	const std::chrono::milliseconds timeout) {
+	pb::GetPlaylistInfoRequest request;
+	auto response =
+		pimpl_->request<pb::GetPlaylistInfoRequest, pb::GetPlaylistInfoResponse>(
+			nats::subject_control_source_playlist_info(pimpl_->target_key),
+			request,
+			timeout);
+	if (!response) {
+		return cvmmap::unexpected(ControlError{.code = response.error()});
+	}
+	if (response->error() != pb::ERROR_CODE_OK) {
+		return cvmmap::unexpected(ControlError{
+			.code = from_proto_error_code(response->error()),
+			.message = response->error_message(),
+		});
+	}
+	return to_playlist_info(response->playlist_info());
 }
 
 cvmmap::expected<ControlCapabilities, ControlError> NatsControlClient::GetCapabilities(

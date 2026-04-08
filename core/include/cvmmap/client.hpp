@@ -88,6 +88,19 @@ struct ControlCapabilities {
 	bool supports_recording_format(RecordingFormat format) const;
 };
 
+struct PlaylistRequest {
+	std::vector<std::string> paths{};
+	bool sort_by_recording_time{false};
+};
+
+struct PlaylistInfo {
+	bool has_playlist{false};
+	std::vector<std::string> paths{};
+	bool sort_by_recording_time{false};
+	uint32_t current_index{0};
+	std::string current_path{};
+};
+
 struct SvoRecordingOptions {
 	std::optional<std::string> compression_mode{};
 	std::optional<uint32_t> bitrate{};
@@ -164,6 +177,15 @@ public:
 	cvmmap::expected<SeekResult, int32_t>
 	SeekTimestampNs(uint64_t timestamp_ns,
 				   std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
+
+	[[nodiscard]]
+	cvmmap::expected<PlaylistInfo, ControlError>
+	ApplyPlaylist(const PlaylistRequest &request,
+				  std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
+
+	[[nodiscard]]
+	cvmmap::expected<PlaylistInfo, ControlError>
+	GetPlaylistInfo(std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
 	cvmmap::expected<ControlCapabilities, ControlError>

@@ -18,6 +18,8 @@ struct NatsControlHandlers {
 	std::function<int()> on_reset_frame_count;
 	std::function<app::backends::source_info_t()> on_get_source_info;
 	std::function<cvmmap::expected<app::backends::seek_result_t, int>(uint64_t)> on_seek_timestamp;
+	std::function<cvmmap::expected<PlaylistInfo, ControlError>(const PlaylistRequest &)> on_apply_playlist;
+	std::function<cvmmap::expected<PlaylistInfo, ControlError>()> on_get_playlist_info;
 	std::function<bool(RecordingFormat)> on_recording_available;
 	std::function<cvmmap::expected<RecordingStatus, ControlError>(const RecordingRequest &)> on_start_recording;
 	std::function<cvmmap::expected<RecordingStatus, ControlError>(RecordingFormat)> on_stop_recording;

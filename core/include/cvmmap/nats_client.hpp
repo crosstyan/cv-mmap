@@ -35,6 +35,13 @@ public:
 	cvmmap::expected<SeekResult, int>
 	SeekTimestampNs(uint64_t ts, std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
+	cvmmap::expected<PlaylistInfo, ControlError>
+	ApplyPlaylist(const PlaylistRequest &request,
+				  std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
+
+	cvmmap::expected<PlaylistInfo, ControlError>
+	GetPlaylistInfo(std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
+
 	cvmmap::expected<ControlCapabilities, ControlError>
 	GetCapabilities(std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 

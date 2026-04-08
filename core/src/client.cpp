@@ -543,6 +543,23 @@ CvMmapClient::SeekTimestampNs(uint64_t timestamp_ns,
   return pimpl_->nats_client->SeekTimestampNs(timestamp_ns, timeout);
 }
 
+cvmmap::expected<PlaylistInfo, ControlError>
+CvMmapClient::ApplyPlaylist(const PlaylistRequest &request,
+                            std::chrono::milliseconds timeout) {
+  if (!pimpl_->nats_client) {
+    return cvmmap::unexpected(make_nats_disabled_error());
+  }
+  return pimpl_->nats_client->ApplyPlaylist(request, timeout);
+}
+
+cvmmap::expected<PlaylistInfo, ControlError>
+CvMmapClient::GetPlaylistInfo(std::chrono::milliseconds timeout) {
+  if (!pimpl_->nats_client) {
+    return cvmmap::unexpected(make_nats_disabled_error());
+  }
+  return pimpl_->nats_client->GetPlaylistInfo(timeout);
+}
+
 cvmmap::expected<ControlCapabilities, ControlError>
 CvMmapClient::GetCapabilities(std::chrono::milliseconds timeout) {
   if (!pimpl_->nats_client) {

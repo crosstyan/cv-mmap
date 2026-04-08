@@ -132,6 +132,41 @@ void fill_capabilities_response(
 	}
 }
 
+void fill_playlist_info(
+	pb::PlaylistInfo &wire_info,
+	const PlaylistInfo &info) {
+	wire_info.set_has_playlist(info.has_playlist);
+	wire_info.set_sort_by_recording_time(info.sort_by_recording_time);
+	wire_info.set_current_index(info.current_index);
+	wire_info.set_current_path(info.current_path);
+	for (const auto &path : info.paths) {
+		wire_info.add_paths(path);
+	}
+}
+
+cvmmap::expected<PlaylistRequest, ControlError> parse_playlist_request(
+	const pb::ApplyPlaylistRequest &request) {
+	PlaylistRequest parsed{};
+	parsed.sort_by_recording_time = request.sort_by_recording_time();
+	parsed.paths.reserve(static_cast<size_t>(request.paths_size()));
+	for (const auto &path : request.paths()) {
+		if (path.empty()) {
+			return cvmmap::unexpected(ControlError{
+				.code = CONTROL_RESPONSE_INVALID_PAYLOAD,
+				.message = "playlist paths must not be empty",
+			});
+		}
+		parsed.paths.push_back(path);
+	}
+	if (parsed.paths.empty()) {
+		return cvmmap::unexpected(ControlError{
+			.code = CONTROL_RESPONSE_INVALID_PAYLOAD,
+			.message = "playlist paths must not be empty",
+		});
+	}
+	return parsed;
+}
+
 cvmmap::expected<RecordingRequest, ControlError> parse_recording_request(
 	const pb::RecordingStartRequest &request,
 	const RecordingFormat format) {
@@ -234,6 +269,8 @@ struct NatsControlService::impl {
 	natsSubscription *sub_source_info{nullptr};
 	natsSubscription *sub_source_seek{nullptr};
 	natsSubscription *sub_source_capabilities{nullptr};
+	natsSubscription *sub_source_playlist_apply{nullptr};
+	natsSubscription *sub_source_playlist_info{nullptr};
 	natsSubscription *sub_svo_capabilities{nullptr};
 	natsSubscription *sub_svo_start{nullptr};
 	natsSubscription *sub_svo_stop{nullptr};
@@ -362,6 +399,88 @@ struct NatsControlService::impl {
 		response.set_landed_timestamp_ns(result->landed_timestamp_ns);
 		response.set_landed_frame_count(result->landed_frame_count);
 		response.set_exact_match(result->exact_match);
+		self->reply(message, response);
+	}
+
+	static void on_source_playlist_apply_msg(
+		natsConnection *,
+		natsSubscription *,
+		natsMsg *message,
+		void *closure) {
+		auto *self = static_cast<impl *>(closure);
+		pb::ApplyPlaylistResponse response;
+		if (!self->handlers.on_apply_playlist) {
+			response.set_error(pb::ERROR_CODE_UNSUPPORTED);
+			response.set_error_message("playlist apply is not supported by the active producer");
+			self->reply(message, response);
+			return;
+		}
+
+		pb::ApplyPlaylistRequest request;
+		if (!request.ParseFromArray(
+				natsMsg_GetData(message),
+				natsMsg_GetDataLength(message))) {
+			response.set_error(pb::ERROR_CODE_INVALID_PAYLOAD);
+			response.set_error_message("invalid playlist apply payload");
+			self->reply(message, response);
+			return;
+		}
+
+		auto parsed_request = parse_playlist_request(request);
+		if (!parsed_request) {
+			response.set_error(map_control_error_code(parsed_request.error().code));
+			response.set_error_message(parsed_request.error().message);
+			self->reply(message, response);
+			return;
+		}
+
+		auto result = self->handlers.on_apply_playlist(*parsed_request);
+		if (!result) {
+			response.set_error(map_control_error_code(result.error().code));
+			response.set_error_message(result.error().message);
+			self->reply(message, response);
+			return;
+		}
+
+		response.set_error(pb::ERROR_CODE_OK);
+		fill_playlist_info(*response.mutable_playlist_info(), *result);
+		self->reply(message, response);
+	}
+
+	static void on_source_playlist_info_msg(
+		natsConnection *,
+		natsSubscription *,
+		natsMsg *message,
+		void *closure) {
+		auto *self = static_cast<impl *>(closure);
+		pb::GetPlaylistInfoResponse response;
+		if (!self->handlers.on_get_playlist_info) {
+			response.set_error(pb::ERROR_CODE_UNSUPPORTED);
+			response.set_error_message("playlist query is not supported by the active producer");
+			self->reply(message, response);
+			return;
+		}
+
+		pb::GetPlaylistInfoRequest request;
+		if (!request.ParseFromArray(
+				natsMsg_GetData(message),
+				natsMsg_GetDataLength(message))) {
+			response.set_error(pb::ERROR_CODE_INVALID_PAYLOAD);
+			response.set_error_message("invalid playlist info payload");
+			self->reply(message, response);
+			return;
+		}
+
+		auto result = self->handlers.on_get_playlist_info();
+		if (!result) {
+			response.set_error(map_control_error_code(result.error().code));
+			response.set_error_message(result.error().message);
+			self->reply(message, response);
+			return;
+		}
+
+		response.set_error(pb::ERROR_CODE_OK);
+		fill_playlist_info(*response.mutable_playlist_info(), *result);
 		self->reply(message, response);
 	}
 
@@ -703,6 +822,22 @@ bool NatsControlService::Start() {
 			impl::on_source_seek_msg,
 			pimpl_.get());
 	}
+	if (pimpl_->handlers.on_apply_playlist) {
+		natsConnection_Subscribe(
+			&pimpl_->sub_source_playlist_apply,
+			pimpl_->conn,
+			nats::subject_control_source_playlist_apply(target_key).c_str(),
+			impl::on_source_playlist_apply_msg,
+			pimpl_.get());
+	}
+	if (pimpl_->handlers.on_get_playlist_info) {
+		natsConnection_Subscribe(
+			&pimpl_->sub_source_playlist_info,
+			pimpl_->conn,
+			nats::subject_control_source_playlist_info(target_key).c_str(),
+			impl::on_source_playlist_info_msg,
+			pimpl_.get());
+	}
 
 	auto *service_impl = pimpl_.get();
 	const auto subscribe_recorder_subjects =
@@ -816,6 +951,8 @@ void NatsControlService::Stop() {
 	destroy_subscription(pimpl_->sub_source_info);
 	destroy_subscription(pimpl_->sub_source_seek);
 	destroy_subscription(pimpl_->sub_source_capabilities);
+	destroy_subscription(pimpl_->sub_source_playlist_apply);
+	destroy_subscription(pimpl_->sub_source_playlist_info);
 	destroy_subscription(pimpl_->sub_svo_capabilities);
 	destroy_subscription(pimpl_->sub_svo_start);
 	destroy_subscription(pimpl_->sub_svo_stop);
