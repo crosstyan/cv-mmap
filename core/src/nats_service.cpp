@@ -258,7 +258,7 @@ uint64_t now_ns() {
 
 } // namespace
 
-constexpr std::string_view kNatsMicroServiceName = "cvmmap.producer";
+constexpr std::string_view kNatsMicroServiceName = "cvmmap_producer";
 constexpr std::string_view kNatsMicroServiceVersion = "0.1.0";
 constexpr std::string_view kNatsMicroServiceDescription =
 	"cv-mmap producer discovery and control service";
@@ -717,6 +717,13 @@ bool NatsControlService::Start() {
 		metadata_list.push_back(entry.c_str());
 	}
 
+	const auto &target_key = pimpl_->options.target_key;
+	const auto default_subject = nats::subject_control_source_info(target_key);
+	microEndpointConfig default_endpoint{};
+	default_endpoint.Name = "source_info";
+	default_endpoint.Subject = default_subject.c_str();
+	default_endpoint.Handler = impl::on_source_info_req;
+
 	microServiceConfig service_config{};
 	service_config.Name = kNatsMicroServiceName.data();
 	service_config.Version = kNatsMicroServiceVersion.data();
@@ -725,6 +732,7 @@ bool NatsControlService::Start() {
 		.List = metadata_list.data(),
 		.Count = static_cast<int>(metadata_storage.size() / 2),
 	};
+	service_config.Endpoint = &default_endpoint;
 	service_config.ErrHandler = impl::on_micro_error;
 	service_config.DoneHandler = impl::on_micro_done;
 	service_config.State = pimpl_.get();
@@ -740,7 +748,6 @@ bool NatsControlService::Start() {
 		pimpl_->conn = nullptr;
 		return false;
 	}
-
 	const auto add_endpoint =
 		[this](const char *name, const std::string &subject, microRequestHandler handler) -> bool {
 			microEndpointConfig endpoint_config{};
@@ -759,22 +766,20 @@ bool NatsControlService::Start() {
 			return true;
 		};
 
-	const auto &target_key = pimpl_->options.target_key;
 	const auto all_added =
-		add_endpoint("source.reset", nats::subject_control_source_reset(target_key), impl::on_source_reset_req) &&
-		add_endpoint("source.info", nats::subject_control_source_info(target_key), impl::on_source_info_req) &&
-		add_endpoint("source.capabilities", nats::subject_control_source_capabilities(target_key), impl::on_source_capabilities_req) &&
-		add_endpoint("source.seek", nats::subject_control_source_seek(target_key), impl::on_source_seek_req) &&
-		add_endpoint("source.playlist.apply", nats::subject_control_source_playlist_apply(target_key), impl::on_source_playlist_apply_req) &&
-		add_endpoint("source.playlist.info", nats::subject_control_source_playlist_info(target_key), impl::on_source_playlist_info_req) &&
-		add_endpoint("recorder.svo.capabilities", nats::subject_control_recorder_svo_capabilities(target_key), impl::on_svo_capabilities_req) &&
-		add_endpoint("recorder.svo.start", nats::subject_control_recorder_svo_start(target_key), impl::on_svo_start_req) &&
-		add_endpoint("recorder.svo.stop", nats::subject_control_recorder_svo_stop(target_key), impl::on_svo_stop_req) &&
-		add_endpoint("recorder.svo.status", nats::subject_control_recorder_svo_status(target_key), impl::on_svo_status_req) &&
-		add_endpoint("recorder.mcap.capabilities", nats::subject_control_recorder_mcap_capabilities(target_key), impl::on_mcap_capabilities_req) &&
-		add_endpoint("recorder.mcap.start", nats::subject_control_recorder_mcap_start(target_key), impl::on_mcap_start_req) &&
-		add_endpoint("recorder.mcap.stop", nats::subject_control_recorder_mcap_stop(target_key), impl::on_mcap_stop_req) &&
-		add_endpoint("recorder.mcap.status", nats::subject_control_recorder_mcap_status(target_key), impl::on_mcap_status_req);
+		add_endpoint("source_reset", nats::subject_control_source_reset(target_key), impl::on_source_reset_req) &&
+		add_endpoint("source_capabilities", nats::subject_control_source_capabilities(target_key), impl::on_source_capabilities_req) &&
+		add_endpoint("source_seek", nats::subject_control_source_seek(target_key), impl::on_source_seek_req) &&
+		add_endpoint("source_playlist_apply", nats::subject_control_source_playlist_apply(target_key), impl::on_source_playlist_apply_req) &&
+		add_endpoint("source_playlist_info", nats::subject_control_source_playlist_info(target_key), impl::on_source_playlist_info_req) &&
+		add_endpoint("recorder_svo_capabilities", nats::subject_control_recorder_svo_capabilities(target_key), impl::on_svo_capabilities_req) &&
+		add_endpoint("recorder_svo_start", nats::subject_control_recorder_svo_start(target_key), impl::on_svo_start_req) &&
+		add_endpoint("recorder_svo_stop", nats::subject_control_recorder_svo_stop(target_key), impl::on_svo_stop_req) &&
+		add_endpoint("recorder_svo_status", nats::subject_control_recorder_svo_status(target_key), impl::on_svo_status_req) &&
+		add_endpoint("recorder_mcap_capabilities", nats::subject_control_recorder_mcap_capabilities(target_key), impl::on_mcap_capabilities_req) &&
+		add_endpoint("recorder_mcap_start", nats::subject_control_recorder_mcap_start(target_key), impl::on_mcap_start_req) &&
+		add_endpoint("recorder_mcap_stop", nats::subject_control_recorder_mcap_stop(target_key), impl::on_mcap_stop_req) &&
+		add_endpoint("recorder_mcap_status", nats::subject_control_recorder_mcap_status(target_key), impl::on_mcap_status_req);
 
 	if (!all_added) {
 		if (pimpl_->service) {

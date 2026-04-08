@@ -374,12 +374,12 @@ When `nats.enabled = false`, startup continues in degraded producer-only mode: s
 
 ## NATS Discovery And Compatibility
 
-When `nats.enabled = true`, each producer now registers a NATS Micro service named `cvmmap.producer`.
+When `nats.enabled = true`, each producer now registers a NATS Micro service named `cvmmap_producer`.
 This makes the producer discoverable through the standard NATS service discovery subjects:
 
-- `$SRV.PING.cvmmap.producer`
-- `$SRV.INFO.cvmmap.producer.<service-id>`
-- `$SRV.STATS.cvmmap.producer.<service-id>`
+- `$SRV.PING.cvmmap_producer`
+- `$SRV.INFO.cvmmap_producer.<service-id>`
+- `$SRV.STATS.cvmmap_producer.<service-id>`
 
 The advertised metadata includes the fields needed to connect a consumer without preconfigured target naming:
 
@@ -434,7 +434,7 @@ The old constructors still work:
 
 Operational note:
 
-- if a running producer was started before this change, it will not answer `$SRV.PING.cvmmap.producer` until that producer is restarted on the new build
+- if a running producer was started before this change, it will not answer `$SRV.PING.cvmmap_producer` until that producer is restarted on the new build
 
 ## Dependencies
 

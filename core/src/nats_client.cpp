@@ -26,7 +26,7 @@ namespace json = ::google::protobuf::util;
 
 namespace {
 
-constexpr std::string_view kNatsMicroServiceName = "cvmmap.producer";
+constexpr std::string_view kNatsMicroServiceName = "cvmmap_producer";
 
 SourceKind from_proto_source_kind(const pb::SourceKind source_kind) {
 	switch (source_kind) {
@@ -249,7 +249,6 @@ std::string status_message_text(const StatusLike &status) {
 		return std::string(message);
 	}
 }
-
 DiscoveryError make_nats_discovery_error(
 	const natsStatus status,
 	std::string subject) {
