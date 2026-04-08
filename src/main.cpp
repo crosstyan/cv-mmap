@@ -459,9 +459,22 @@ int main(int argc, char **argv) {
 	std::unique_ptr<cvmmap::NatsControlService> nats_service;
 	if (nats_enabled) {
 		nats_service = std::make_unique<cvmmap::NatsControlService>(
-			config.name,
-			resolved_target.nats_target_key,
-			config.nats.url);
+			cvmmap::NatsControlServiceOptions{
+				.instance_name = resolved_target.instance,
+				.namespace_name = resolved_target.namespace_name,
+				.ipc_prefix = resolved_target.prefix,
+				.base_name = resolved_target.base_name,
+				.target_key = resolved_target.nats_target_key,
+				.shm_name = resolved_target.shm_name,
+				.zmq_addr = resolved_target.zmq_addr,
+				.backend = std::string(app::to_string(config.video.backend)),
+				.nats_url = config.nats.url,
+				.build_revision = std::string(app::version::revision()),
+				.build_tag = std::string(app::version::tag()),
+				.build_branch = std::string(app::version::branch()),
+				.build_timestamp_utc =
+					std::string(app::version::compile_timestamp_utc()),
+			});
 	} else {
 		spdlog::warn("NATS disabled; control/status and body-tracking transport are unavailable");
 	}

@@ -16,6 +16,7 @@ constexpr size_t UNIX_PATH_MAX_LEN = 107;
 
 struct ResolvedTarget {
 	std::string instance;
+	std::string namespace_name;
 	std::string prefix;
 	std::string base_name;
 	std::string nats_target_key;
@@ -155,6 +156,7 @@ ResolvedTarget resolve_target(const std::string &name_or_uri) {
 
 	return ResolvedTarget{
 		.instance  = std::move(instance),
+		.namespace_name = std::move(ns),
 		.prefix    = std::move(prefix),
 		.base_name = std::move(base_name),
 		.nats_target_key = std::move(nats_target_key),
@@ -167,6 +169,7 @@ cvmmap_target_t resolve_cvmmap_target_or_throw(const std::string &name_or_uri) {
 	const auto resolved = resolve_target(name_or_uri);
 	auto target         = cvmmap_target_t{};
 	target.instance     = resolved.instance;
+	target.namespace_name = resolved.namespace_name;
 	target.prefix       = resolved.prefix;
 	target.base_name    = resolved.base_name;
 	target.nats_target_key = resolved.nats_target_key;

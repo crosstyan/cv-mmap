@@ -258,27 +258,36 @@ uint64_t now_ns() {
 
 } // namespace
 
+constexpr std::string_view kNatsMicroServiceName = "cvmmap.producer";
+constexpr std::string_view kNatsMicroServiceVersion = "0.1.0";
+constexpr std::string_view kNatsMicroServiceDescription =
+	"cv-mmap producer discovery and control service";
+
+std::string micro_error_to_string(microError *error) {
+	if (!error) {
+		return {};
+	}
+	char buffer[512];
+	return std::string(microError_String(error, buffer, sizeof(buffer)));
+}
+
+const char *recording_format_label(const RecordingFormat format) {
+	switch (format) {
+	case RecordingFormat::Svo:
+		return "svo";
+	case RecordingFormat::Mcap:
+		return "mcap";
+	default:
+		return "unknown";
+	}
+}
+
 struct NatsControlService::impl {
-	std::string instance_name;
-	std::string target_key;
-	std::string nats_url;
+	NatsControlServiceOptions options;
 	NatsControlHandlers handlers;
 	bool started{false};
 	natsConnection *conn{nullptr};
-	natsSubscription *sub_source_reset{nullptr};
-	natsSubscription *sub_source_info{nullptr};
-	natsSubscription *sub_source_seek{nullptr};
-	natsSubscription *sub_source_capabilities{nullptr};
-	natsSubscription *sub_source_playlist_apply{nullptr};
-	natsSubscription *sub_source_playlist_info{nullptr};
-	natsSubscription *sub_svo_capabilities{nullptr};
-	natsSubscription *sub_svo_start{nullptr};
-	natsSubscription *sub_svo_stop{nullptr};
-	natsSubscription *sub_svo_status{nullptr};
-	natsSubscription *sub_mcap_capabilities{nullptr};
-	natsSubscription *sub_mcap_start{nullptr};
-	natsSubscription *sub_mcap_stop{nullptr};
-	natsSubscription *sub_mcap_status{nullptr};
+	microService *service{nullptr};
 
 	void publish(const std::string &subject, const void *data, const int size) {
 		if (!conn) {
@@ -304,29 +313,85 @@ struct NatsControlService::impl {
 	}
 
 	template <typename Response>
-	void reply(
-		natsMsg *message,
+	microError *reply(
+		microRequest *request,
 		const Response &response) {
-		const auto *reply_subject = natsMsg_GetReply(message);
-		if (reply_subject && reply_subject[0]) {
-			const auto size = response.ByteSizeLong();
-			std::vector<uint8_t> bytes(size);
-			response.SerializeToArray(bytes.data(), static_cast<int>(size));
-			natsConnection_Publish(
-				conn,
-				reply_subject,
-				bytes.data(),
-				static_cast<int>(bytes.size()));
+		const auto size = response.ByteSizeLong();
+		std::vector<uint8_t> bytes(size);
+		if (!response.SerializeToArray(bytes.data(), static_cast<int>(size))) {
+			return micro_Errorf("failed to serialize protobuf response");
 		}
-		natsMsg_Destroy(message);
+		return microRequest_Respond(
+			request,
+			reinterpret_cast<const char *>(bytes.data()),
+			bytes.size());
 	}
 
-	static void on_source_reset_msg(
-		natsConnection *,
-		natsSubscription *,
-		natsMsg *message,
-		void *closure) {
-		auto *self = static_cast<impl *>(closure);
+	static impl *from_request(microRequest *request) {
+		return static_cast<impl *>(microRequest_GetServiceState(request));
+	}
+
+	template <typename Request>
+	static bool parse_request(microRequest *request, Request *message) {
+		auto *wire_message = microRequest_GetMsg(request);
+		if (!wire_message) {
+			return false;
+		}
+		return message->ParseFromArray(
+			natsMsg_GetData(wire_message),
+			natsMsg_GetDataLength(wire_message));
+	}
+
+	bool recording_available(const RecordingFormat format) const {
+		return handlers.on_recording_available &&
+			   handlers.on_recording_available(format);
+	}
+
+	std::vector<std::string> build_metadata_storage() const {
+		std::vector<std::string> metadata;
+		metadata.reserve(28);
+		auto append = [&metadata](std::string key, std::string value) {
+			metadata.push_back(std::move(key));
+			metadata.push_back(std::move(value));
+		};
+
+		append("instance_name", options.instance_name);
+		append("namespace", options.namespace_name);
+		append("ipc_prefix", options.ipc_prefix);
+		append("base_name", options.base_name);
+		append("nats_target_key", options.target_key);
+		append("shm_name", options.shm_name);
+		append("zmq_addr", options.zmq_addr);
+		append("body_subject", nats::subject_body(options.target_key));
+		append("status_subject", nats::subject_status(options.target_key));
+		append("control_subject_prefix", nats::subject_control_prefix(options.target_key));
+		append("backend", options.backend);
+		append("build_revision", options.build_revision);
+		append("build_tag", options.build_tag);
+		append("build_branch", options.build_branch);
+		append("build_timestamp_utc", options.build_timestamp_utc);
+		return metadata;
+	}
+
+	static void on_micro_error(
+		microService *,
+		microEndpoint *,
+		natsStatus status) {
+		spdlog::error(
+			"nats micro service internal error: {}",
+			natsStatus_GetText(status));
+	}
+
+	static void on_micro_done(microService *service) {
+		if (auto *self = static_cast<impl *>(microService_GetState(service))) {
+			spdlog::info(
+				"nats micro service stopped for target '{}'",
+				self->options.target_key);
+		}
+	}
+
+	static microError *on_source_reset_req(microRequest *request) {
+		auto *self = from_request(request);
 		pb::ResetFrameCountResponse response;
 		if (self->handlers.on_reset_frame_count) {
 			response.set_error(
@@ -336,15 +401,11 @@ struct NatsControlService::impl {
 		} else {
 			response.set_error(pb::ERROR_CODE_UNSUPPORTED);
 		}
-		self->reply(message, response);
+		return self->reply(request, response);
 	}
 
-	static void on_source_info_msg(
-		natsConnection *,
-		natsSubscription *,
-		natsMsg *message,
-		void *closure) {
-		auto *self = static_cast<impl *>(closure);
+	static microError *on_source_info_req(microRequest *request) {
+		auto *self = from_request(request);
 		pb::GetSourceInfoResponse response;
 		if (self->handlers.on_get_source_info) {
 			const auto info = self->handlers.on_get_source_info();
@@ -361,37 +422,28 @@ struct NatsControlService::impl {
 		} else {
 			response.set_error(pb::ERROR_CODE_UNSUPPORTED);
 		}
-		self->reply(message, response);
+		return self->reply(request, response);
 	}
 
-	static void on_source_seek_msg(
-		natsConnection *,
-		natsSubscription *,
-		natsMsg *message,
-		void *closure) {
-		auto *self = static_cast<impl *>(closure);
+	static microError *on_source_seek_req(microRequest *request) {
+		auto *self = from_request(request);
 		pb::SeekTimestampResponse response;
 		if (!self->handlers.on_seek_timestamp) {
 			response.set_error(pb::ERROR_CODE_UNSUPPORTED);
-			self->reply(message, response);
-			return;
+			return self->reply(request, response);
 		}
 
-		pb::SeekTimestampRequest request;
-		if (!request.ParseFromArray(
-				natsMsg_GetData(message),
-				natsMsg_GetDataLength(message))) {
+		pb::SeekTimestampRequest wire_request;
+		if (!parse_request(request, &wire_request)) {
 			response.set_error(pb::ERROR_CODE_INVALID_PAYLOAD);
-			self->reply(message, response);
-			return;
+			return self->reply(request, response);
 		}
 
 		auto result = self->handlers.on_seek_timestamp(
-			request.target_timestamp_ns());
+			wire_request.target_timestamp_ns());
 		if (!result) {
 			response.set_error(map_posix_error(result.error()));
-			self->reply(message, response);
-			return;
+			return self->reply(request, response);
 		}
 
 		response.set_error(pb::ERROR_CODE_OK);
@@ -399,156 +451,121 @@ struct NatsControlService::impl {
 		response.set_landed_timestamp_ns(result->landed_timestamp_ns);
 		response.set_landed_frame_count(result->landed_frame_count);
 		response.set_exact_match(result->exact_match);
-		self->reply(message, response);
+		return self->reply(request, response);
 	}
 
-	static void on_source_playlist_apply_msg(
-		natsConnection *,
-		natsSubscription *,
-		natsMsg *message,
-		void *closure) {
-		auto *self = static_cast<impl *>(closure);
+	static microError *on_source_capabilities_req(microRequest *request) {
+		auto *self = from_request(request);
+		pb::CapabilitiesResponse response;
+		if (self->handlers.on_get_source_info) {
+			const auto info = self->handlers.on_get_source_info();
+			fill_capabilities_response(
+				response,
+				(info.flags & SOURCE_INFO_FLAG_CAN_SEEK) != 0,
+				{});
+		} else {
+			response.set_error(pb::ERROR_CODE_UNSUPPORTED);
+		}
+		return self->reply(request, response);
+	}
+
+	static microError *on_source_playlist_apply_req(microRequest *request) {
+		auto *self = from_request(request);
 		pb::ApplyPlaylistResponse response;
 		if (!self->handlers.on_apply_playlist) {
 			response.set_error(pb::ERROR_CODE_UNSUPPORTED);
 			response.set_error_message("playlist apply is not supported by the active producer");
-			self->reply(message, response);
-			return;
+			return self->reply(request, response);
 		}
 
-		pb::ApplyPlaylistRequest request;
-		if (!request.ParseFromArray(
-				natsMsg_GetData(message),
-				natsMsg_GetDataLength(message))) {
+		pb::ApplyPlaylistRequest wire_request;
+		if (!parse_request(request, &wire_request)) {
 			response.set_error(pb::ERROR_CODE_INVALID_PAYLOAD);
 			response.set_error_message("invalid playlist apply payload");
-			self->reply(message, response);
-			return;
+			return self->reply(request, response);
 		}
 
-		auto parsed_request = parse_playlist_request(request);
+		auto parsed_request = parse_playlist_request(wire_request);
 		if (!parsed_request) {
 			response.set_error(map_control_error_code(parsed_request.error().code));
 			response.set_error_message(parsed_request.error().message);
-			self->reply(message, response);
-			return;
+			return self->reply(request, response);
 		}
 
 		auto result = self->handlers.on_apply_playlist(*parsed_request);
 		if (!result) {
 			response.set_error(map_control_error_code(result.error().code));
 			response.set_error_message(result.error().message);
-			self->reply(message, response);
-			return;
+			return self->reply(request, response);
 		}
 
 		response.set_error(pb::ERROR_CODE_OK);
 		fill_playlist_info(*response.mutable_playlist_info(), *result);
-		self->reply(message, response);
+		return self->reply(request, response);
 	}
 
-	static void on_source_playlist_info_msg(
-		natsConnection *,
-		natsSubscription *,
-		natsMsg *message,
-		void *closure) {
-		auto *self = static_cast<impl *>(closure);
+	static microError *on_source_playlist_info_req(microRequest *request) {
+		auto *self = from_request(request);
 		pb::GetPlaylistInfoResponse response;
 		if (!self->handlers.on_get_playlist_info) {
 			response.set_error(pb::ERROR_CODE_UNSUPPORTED);
 			response.set_error_message("playlist query is not supported by the active producer");
-			self->reply(message, response);
-			return;
+			return self->reply(request, response);
 		}
 
-		pb::GetPlaylistInfoRequest request;
-		if (!request.ParseFromArray(
-				natsMsg_GetData(message),
-				natsMsg_GetDataLength(message))) {
+		pb::GetPlaylistInfoRequest wire_request;
+		if (!parse_request(request, &wire_request)) {
 			response.set_error(pb::ERROR_CODE_INVALID_PAYLOAD);
 			response.set_error_message("invalid playlist info payload");
-			self->reply(message, response);
-			return;
+			return self->reply(request, response);
 		}
 
 		auto result = self->handlers.on_get_playlist_info();
 		if (!result) {
 			response.set_error(map_control_error_code(result.error().code));
 			response.set_error_message(result.error().message);
-			self->reply(message, response);
-			return;
+			return self->reply(request, response);
 		}
 
 		response.set_error(pb::ERROR_CODE_OK);
 		fill_playlist_info(*response.mutable_playlist_info(), *result);
-		self->reply(message, response);
+		return self->reply(request, response);
 	}
 
-static void on_source_capabilities_msg(
-	natsConnection *,
-	natsSubscription *,
-	natsMsg *message,
-	void *closure) {
-	auto *self = static_cast<impl *>(closure);
-	pb::CapabilitiesResponse response;
-	if (self->handlers.on_get_source_info) {
-		const auto info = self->handlers.on_get_source_info();
-		fill_capabilities_response(
-			response,
-			(info.flags & SOURCE_INFO_FLAG_CAN_SEEK) != 0,
-			{});
-	} else {
-		response.set_error(pb::ERROR_CODE_UNSUPPORTED);
-	}
-	self->reply(message, response);
-	}
-
-	static void on_recording_capabilities_msg(
-		natsConnection *,
-		natsSubscription *,
-		natsMsg *message,
-		void *closure,
+	static microError *on_recording_capabilities_req(
+		microRequest *request,
 		const RecordingFormat format) {
-		auto *self = static_cast<impl *>(closure);
+		auto *self = from_request(request);
 		pb::CapabilitiesResponse response;
-		if (self->handlers.on_recording_available &&
-			self->handlers.on_recording_available(format)) {
+		if (self->recording_available(format)) {
 			fill_capabilities_response(response, false, {format});
 		} else {
 			fill_capabilities_response(response, false, {});
 		}
-		self->reply(message, response);
+		return self->reply(request, response);
 	}
 
-	static void on_recording_start_msg(
-		natsConnection *,
-		natsSubscription *,
-		natsMsg *message,
-		void *closure,
+	static microError *on_recording_start_req(
+		microRequest *request,
 		const RecordingFormat format) {
-		auto *self = static_cast<impl *>(closure);
+		auto *self = from_request(request);
 		pb::RecordingStatusResponse response;
 		if (!self->handlers.on_start_recording) {
 			response.set_error(pb::ERROR_CODE_UNSUPPORTED);
-			self->reply(message, response);
-			return;
+			return self->reply(request, response);
 		}
 
-		pb::RecordingStartRequest request;
-		if (!request.ParseFromArray(
-				natsMsg_GetData(message),
-				natsMsg_GetDataLength(message))) {
+		pb::RecordingStartRequest wire_request;
+		if (!parse_request(request, &wire_request)) {
 			response.set_error(pb::ERROR_CODE_INVALID_PAYLOAD);
-			self->reply(message, response);
-			return;
+			return self->reply(request, response);
 		}
 
-		auto parsed_request = parse_recording_request(request, format);
+		auto parsed_request = parse_recording_request(wire_request, format);
 		if (!parsed_request) {
 			response.set_error(map_control_error_code(parsed_request.error().code));
 			response.set_error_message(parsed_request.error().message);
-			self->reply(message, response);
-			return;
+			return self->reply(request, response);
 		}
 
 		try {
@@ -556,209 +573,112 @@ static void on_source_capabilities_msg(
 			if (!result) {
 				response.set_error(map_control_error_code(result.error().code));
 				response.set_error_message(result.error().message);
-				self->reply(message, response);
-				return;
+				return self->reply(request, response);
 			}
-
 			fill_recording_status_response(response, *result);
+			return self->reply(request, response);
 		} catch (const std::exception &e) {
 			response.set_error(pb::ERROR_CODE_ERROR);
 			response.set_error_message(
 				cvmmap::format("unexpected recording start failure: {}", e.what()));
-			self->reply(message, response);
-			return;
+			return self->reply(request, response);
 		} catch (...) {
 			response.set_error(pb::ERROR_CODE_ERROR);
 			response.set_error_message("unexpected recording start failure");
-			self->reply(message, response);
-			return;
+			return self->reply(request, response);
 		}
-		self->reply(message, response);
 	}
 
-	static void on_recording_stop_msg(
-		natsConnection *,
-		natsSubscription *,
-		natsMsg *message,
-		void *closure,
+	static microError *on_recording_stop_req(
+		microRequest *request,
 		const RecordingFormat format) {
-		auto *self = static_cast<impl *>(closure);
+		auto *self = from_request(request);
 		pb::RecordingStatusResponse response;
 		if (!self->handlers.on_stop_recording) {
 			response.set_error(pb::ERROR_CODE_UNSUPPORTED);
-			self->reply(message, response);
-			return;
+			return self->reply(request, response);
 		}
 
-		pb::RecordingStopRequest request;
-		if (!request.ParseFromArray(
-				natsMsg_GetData(message),
-				natsMsg_GetDataLength(message))) {
+		pb::RecordingStopRequest wire_request;
+		if (!parse_request(request, &wire_request)) {
 			response.set_error(pb::ERROR_CODE_INVALID_PAYLOAD);
-			self->reply(message, response);
-			return;
+			return self->reply(request, response);
 		}
 
 		auto result = self->handlers.on_stop_recording(format);
 		if (!result) {
 			response.set_error(map_control_error_code(result.error().code));
 			response.set_error_message(result.error().message);
-			self->reply(message, response);
-			return;
+			return self->reply(request, response);
 		}
 
 		fill_recording_status_response(response, *result);
-		self->reply(message, response);
+		return self->reply(request, response);
 	}
 
-	static void on_recording_status_msg(
-		natsConnection *,
-		natsSubscription *,
-		natsMsg *message,
-		void *closure,
+	static microError *on_recording_status_req(
+		microRequest *request,
 		const RecordingFormat format) {
-		auto *self = static_cast<impl *>(closure);
+		auto *self = from_request(request);
 		pb::RecordingStatusResponse response;
 		if (!self->handlers.on_get_recording_status) {
 			response.set_error(pb::ERROR_CODE_UNSUPPORTED);
-			self->reply(message, response);
-			return;
+			return self->reply(request, response);
 		}
 
-		pb::RecordingStatusRequest request;
-		if (!request.ParseFromArray(
-				natsMsg_GetData(message),
-				natsMsg_GetDataLength(message))) {
+		pb::RecordingStatusRequest wire_request;
+		if (!parse_request(request, &wire_request)) {
 			response.set_error(pb::ERROR_CODE_INVALID_PAYLOAD);
-			self->reply(message, response);
-			return;
+			return self->reply(request, response);
 		}
 
 		auto result = self->handlers.on_get_recording_status(format);
 		if (!result) {
 			response.set_error(map_control_error_code(result.error().code));
 			response.set_error_message(result.error().message);
-			self->reply(message, response);
-			return;
+			return self->reply(request, response);
 		}
 
 		fill_recording_status_response(response, *result);
-		self->reply(message, response);
+		return self->reply(request, response);
 	}
 
-	static void on_svo_capabilities_msg(
-		natsConnection *conn,
-		natsSubscription *sub,
-		natsMsg *message,
-		void *closure) {
-		on_recording_capabilities_msg(
-			conn,
-			sub,
-			message,
-			closure,
-			RecordingFormat::Svo);
+	static microError *on_svo_capabilities_req(microRequest *request) {
+		return on_recording_capabilities_req(request, RecordingFormat::Svo);
 	}
 
-	static void on_mcap_capabilities_msg(
-		natsConnection *conn,
-		natsSubscription *sub,
-		natsMsg *message,
-		void *closure) {
-		on_recording_capabilities_msg(
-			conn,
-			sub,
-			message,
-			closure,
-			RecordingFormat::Mcap);
+	static microError *on_mcap_capabilities_req(microRequest *request) {
+		return on_recording_capabilities_req(request, RecordingFormat::Mcap);
 	}
 
-	static void on_svo_start_msg(
-		natsConnection *conn,
-		natsSubscription *sub,
-		natsMsg *message,
-		void *closure) {
-		on_recording_start_msg(
-			conn,
-			sub,
-			message,
-			closure,
-			RecordingFormat::Svo);
+	static microError *on_svo_start_req(microRequest *request) {
+		return on_recording_start_req(request, RecordingFormat::Svo);
 	}
 
-	static void on_mcap_start_msg(
-		natsConnection *conn,
-		natsSubscription *sub,
-		natsMsg *message,
-		void *closure) {
-		on_recording_start_msg(
-			conn,
-			sub,
-			message,
-			closure,
-			RecordingFormat::Mcap);
+	static microError *on_mcap_start_req(microRequest *request) {
+		return on_recording_start_req(request, RecordingFormat::Mcap);
 	}
 
-	static void on_svo_stop_msg(
-		natsConnection *conn,
-		natsSubscription *sub,
-		natsMsg *message,
-		void *closure) {
-		on_recording_stop_msg(
-			conn,
-			sub,
-			message,
-			closure,
-			RecordingFormat::Svo);
+	static microError *on_svo_stop_req(microRequest *request) {
+		return on_recording_stop_req(request, RecordingFormat::Svo);
 	}
 
-	static void on_mcap_stop_msg(
-		natsConnection *conn,
-		natsSubscription *sub,
-		natsMsg *message,
-		void *closure) {
-		on_recording_stop_msg(
-			conn,
-			sub,
-			message,
-			closure,
-			RecordingFormat::Mcap);
+	static microError *on_mcap_stop_req(microRequest *request) {
+		return on_recording_stop_req(request, RecordingFormat::Mcap);
 	}
 
-	static void on_svo_status_msg(
-		natsConnection *conn,
-		natsSubscription *sub,
-		natsMsg *message,
-		void *closure) {
-		on_recording_status_msg(
-			conn,
-			sub,
-			message,
-			closure,
-			RecordingFormat::Svo);
+	static microError *on_svo_status_req(microRequest *request) {
+		return on_recording_status_req(request, RecordingFormat::Svo);
 	}
 
-	static void on_mcap_status_msg(
-		natsConnection *conn,
-		natsSubscription *sub,
-		natsMsg *message,
-		void *closure) {
-		on_recording_status_msg(
-			conn,
-			sub,
-			message,
-			closure,
-			RecordingFormat::Mcap);
+	static microError *on_mcap_status_req(microRequest *request) {
+		return on_recording_status_req(request, RecordingFormat::Mcap);
 	}
 };
 
-NatsControlService::NatsControlService(
-	std::string instance_name,
-	std::string target_key,
-	std::string nats_url)
+NatsControlService::NatsControlService(NatsControlServiceOptions options)
 	: pimpl_(std::make_unique<impl>()) {
-	pimpl_->instance_name = std::move(instance_name);
-	pimpl_->target_key = std::move(target_key);
-	pimpl_->nats_url = std::move(nats_url);
+	pimpl_->options = std::move(options);
 }
 
 NatsControlService::~NatsControlService() {
@@ -777,194 +697,125 @@ bool NatsControlService::Start() {
 
 	natsOptions *options = nullptr;
 	natsOptions_Create(&options);
-	natsOptions_SetURL(options, pimpl_->nats_url.c_str());
+	natsOptions_SetURL(options, pimpl_->options.nats_url.c_str());
 
 	const auto status = natsConnection_Connect(&pimpl_->conn, options);
 	natsOptions_Destroy(options);
 	if (status != NATS_OK) {
 		spdlog::error(
 			"nats connect to '{}': {}",
-			pimpl_->nats_url,
+			pimpl_->options.nats_url,
 			natsStatus_GetText(status));
 		return false;
 	}
-	spdlog::info("nats connected to '{}'", pimpl_->nats_url);
+	spdlog::info("nats connected to '{}'", pimpl_->options.nats_url);
 
-	pimpl_->started = true;
-	const auto &target_key = pimpl_->target_key;
-
-	if (pimpl_->handlers.on_reset_frame_count) {
-		natsConnection_Subscribe(
-			&pimpl_->sub_source_reset,
-			pimpl_->conn,
-			nats::subject_control_source_reset(target_key).c_str(),
-			impl::on_source_reset_msg,
-			pimpl_.get());
-	}
-	if (pimpl_->handlers.on_get_source_info) {
-		natsConnection_Subscribe(
-			&pimpl_->sub_source_info,
-			pimpl_->conn,
-			nats::subject_control_source_info(target_key).c_str(),
-			impl::on_source_info_msg,
-			pimpl_.get());
-		natsConnection_Subscribe(
-			&pimpl_->sub_source_capabilities,
-			pimpl_->conn,
-			nats::subject_control_source_capabilities(target_key).c_str(),
-			impl::on_source_capabilities_msg,
-			pimpl_.get());
-	}
-	if (pimpl_->handlers.on_seek_timestamp) {
-		natsConnection_Subscribe(
-			&pimpl_->sub_source_seek,
-			pimpl_->conn,
-			nats::subject_control_source_seek(target_key).c_str(),
-			impl::on_source_seek_msg,
-			pimpl_.get());
-	}
-	if (pimpl_->handlers.on_apply_playlist) {
-		natsConnection_Subscribe(
-			&pimpl_->sub_source_playlist_apply,
-			pimpl_->conn,
-			nats::subject_control_source_playlist_apply(target_key).c_str(),
-			impl::on_source_playlist_apply_msg,
-			pimpl_.get());
-	}
-	if (pimpl_->handlers.on_get_playlist_info) {
-		natsConnection_Subscribe(
-			&pimpl_->sub_source_playlist_info,
-			pimpl_->conn,
-			nats::subject_control_source_playlist_info(target_key).c_str(),
-			impl::on_source_playlist_info_msg,
-			pimpl_.get());
+	auto metadata_storage = pimpl_->build_metadata_storage();
+	std::vector<const char *> metadata_list;
+	metadata_list.reserve(metadata_storage.size());
+	for (const auto &entry : metadata_storage) {
+		metadata_list.push_back(entry.c_str());
 	}
 
-	auto *service_impl = pimpl_.get();
-	const auto subscribe_recorder_subjects =
-		[service_impl, &target_key](RecordingFormat format,
-								 natsSubscription **capability_sub,
-								 natsMsgHandler capability_handler,
-								 natsSubscription **start_sub,
-								 natsMsgHandler start_handler,
-								 natsSubscription **stop_sub,
-								 natsMsgHandler stop_handler,
-								 natsSubscription **status_sub,
-								 natsMsgHandler status_handler) {
-			auto capability_subject = std::string{};
-			auto start_subject = std::string{};
-			auto stop_subject = std::string{};
-			auto status_subject = std::string{};
-			switch (format) {
-			case RecordingFormat::Svo:
-				capability_subject = nats::subject_control_recorder_svo_capabilities(target_key);
-				start_subject = nats::subject_control_recorder_svo_start(target_key);
-				stop_subject = nats::subject_control_recorder_svo_stop(target_key);
-				status_subject = nats::subject_control_recorder_svo_status(target_key);
-				break;
-			case RecordingFormat::Mcap:
-				capability_subject = nats::subject_control_recorder_mcap_capabilities(target_key);
-				start_subject = nats::subject_control_recorder_mcap_start(target_key);
-				stop_subject = nats::subject_control_recorder_mcap_stop(target_key);
-				status_subject = nats::subject_control_recorder_mcap_status(target_key);
-				break;
-			default:
-				return;
-			}
+	microServiceConfig service_config{};
+	service_config.Name = kNatsMicroServiceName.data();
+	service_config.Version = kNatsMicroServiceVersion.data();
+	service_config.Description = kNatsMicroServiceDescription.data();
+	service_config.Metadata = natsMetadata{
+		.List = metadata_list.data(),
+		.Count = static_cast<int>(metadata_storage.size() / 2),
+	};
+	service_config.ErrHandler = impl::on_micro_error;
+	service_config.DoneHandler = impl::on_micro_done;
+	service_config.State = pimpl_.get();
 
-			const bool owns_format =
-				service_impl->handlers.on_recording_available &&
-				service_impl->handlers.on_recording_available(format);
-			if (!owns_format) {
-				spdlog::info(
-					"nats recorder {} unavailable for target '{}'; responding to control requests with unavailable/unsupported status",
-					format == RecordingFormat::Svo ? "svo" : "mcap",
-					target_key);
-			}
+	if (auto *error = micro_AddService(&pimpl_->service, pimpl_->conn, &service_config)) {
+		spdlog::error(
+			"failed to start nats micro service '{}': {}",
+			kNatsMicroServiceName,
+			micro_error_to_string(error));
+		microError_Destroy(error);
+		natsConnection_Close(pimpl_->conn);
+		natsConnection_Destroy(pimpl_->conn);
+		pimpl_->conn = nullptr;
+		return false;
+	}
 
-			if (service_impl->handlers.on_recording_available) {
-				natsConnection_Subscribe(
-					capability_sub,
-					service_impl->conn,
-					capability_subject.c_str(),
-					capability_handler,
-					service_impl);
+	const auto add_endpoint =
+		[this](const char *name, const std::string &subject, microRequestHandler handler) -> bool {
+			microEndpointConfig endpoint_config{};
+			endpoint_config.Name = name;
+			endpoint_config.Subject = subject.c_str();
+			endpoint_config.Handler = handler;
+			if (auto *error = microService_AddEndpoint(pimpl_->service, &endpoint_config)) {
+				spdlog::error(
+					"failed to add nats micro endpoint '{}' on '{}': {}",
+					name,
+					subject,
+					micro_error_to_string(error));
+				microError_Destroy(error);
+				return false;
 			}
-			if (service_impl->handlers.on_start_recording) {
-				natsConnection_Subscribe(
-					start_sub,
-					service_impl->conn,
-					start_subject.c_str(),
-					start_handler,
-					service_impl);
-			}
-			if (service_impl->handlers.on_stop_recording) {
-				natsConnection_Subscribe(
-					stop_sub,
-					service_impl->conn,
-					stop_subject.c_str(),
-					stop_handler,
-					service_impl);
-			}
-			if (service_impl->handlers.on_get_recording_status) {
-				natsConnection_Subscribe(
-					status_sub,
-					service_impl->conn,
-					status_subject.c_str(),
-					status_handler,
-					service_impl);
-			}
+			return true;
 		};
 
-	subscribe_recorder_subjects(
-		RecordingFormat::Svo,
-		&pimpl_->sub_svo_capabilities,
-		impl::on_svo_capabilities_msg,
-		&pimpl_->sub_svo_start,
-		impl::on_svo_start_msg,
-		&pimpl_->sub_svo_stop,
-		impl::on_svo_stop_msg,
-		&pimpl_->sub_svo_status,
-		impl::on_svo_status_msg);
-	subscribe_recorder_subjects(
-		RecordingFormat::Mcap,
-		&pimpl_->sub_mcap_capabilities,
-		impl::on_mcap_capabilities_msg,
-		&pimpl_->sub_mcap_start,
-		impl::on_mcap_start_msg,
-		&pimpl_->sub_mcap_stop,
-		impl::on_mcap_stop_msg,
-		&pimpl_->sub_mcap_status,
-		impl::on_mcap_status_msg);
+	const auto &target_key = pimpl_->options.target_key;
+	const auto all_added =
+		add_endpoint("source.reset", nats::subject_control_source_reset(target_key), impl::on_source_reset_req) &&
+		add_endpoint("source.info", nats::subject_control_source_info(target_key), impl::on_source_info_req) &&
+		add_endpoint("source.capabilities", nats::subject_control_source_capabilities(target_key), impl::on_source_capabilities_req) &&
+		add_endpoint("source.seek", nats::subject_control_source_seek(target_key), impl::on_source_seek_req) &&
+		add_endpoint("source.playlist.apply", nats::subject_control_source_playlist_apply(target_key), impl::on_source_playlist_apply_req) &&
+		add_endpoint("source.playlist.info", nats::subject_control_source_playlist_info(target_key), impl::on_source_playlist_info_req) &&
+		add_endpoint("recorder.svo.capabilities", nats::subject_control_recorder_svo_capabilities(target_key), impl::on_svo_capabilities_req) &&
+		add_endpoint("recorder.svo.start", nats::subject_control_recorder_svo_start(target_key), impl::on_svo_start_req) &&
+		add_endpoint("recorder.svo.stop", nats::subject_control_recorder_svo_stop(target_key), impl::on_svo_stop_req) &&
+		add_endpoint("recorder.svo.status", nats::subject_control_recorder_svo_status(target_key), impl::on_svo_status_req) &&
+		add_endpoint("recorder.mcap.capabilities", nats::subject_control_recorder_mcap_capabilities(target_key), impl::on_mcap_capabilities_req) &&
+		add_endpoint("recorder.mcap.start", nats::subject_control_recorder_mcap_start(target_key), impl::on_mcap_start_req) &&
+		add_endpoint("recorder.mcap.stop", nats::subject_control_recorder_mcap_stop(target_key), impl::on_mcap_stop_req) &&
+		add_endpoint("recorder.mcap.status", nats::subject_control_recorder_mcap_status(target_key), impl::on_mcap_status_req);
 
+	if (!all_added) {
+		if (pimpl_->service) {
+			microError_Ignore(microService_Destroy(pimpl_->service));
+			pimpl_->service = nullptr;
+		}
+		natsConnection_Close(pimpl_->conn);
+		natsConnection_Destroy(pimpl_->conn);
+		pimpl_->conn = nullptr;
+		return false;
+	}
+
+	for (const auto format : {RecordingFormat::Svo, RecordingFormat::Mcap}) {
+		if (!pimpl_->recording_available(format)) {
+			spdlog::info(
+				"nats recorder {} unavailable for target '{}'; responding to control requests with unavailable/unsupported status",
+				recording_format_label(format),
+				target_key);
+		}
+	}
+
+	pimpl_->started = true;
+	spdlog::info(
+		"nats micro service '{}' started for target '{}' (service discovery enabled)",
+		kNatsMicroServiceName,
+		target_key);
 	spdlog::info("nats control service started for target '{}'", target_key);
 	return true;
 }
 
 void NatsControlService::Stop() {
-	auto destroy_subscription = [](natsSubscription *&subscription) {
-		if (!subscription) {
-			return;
+	if (pimpl_->service) {
+		if (auto *error = microService_Destroy(pimpl_->service)) {
+			spdlog::error(
+				"failed to stop nats micro service '{}': {}",
+				kNatsMicroServiceName,
+				micro_error_to_string(error));
+			microError_Destroy(error);
 		}
-		natsSubscription_Unsubscribe(subscription);
-		natsSubscription_Destroy(subscription);
-		subscription = nullptr;
-	};
-
-	destroy_subscription(pimpl_->sub_source_reset);
-	destroy_subscription(pimpl_->sub_source_info);
-	destroy_subscription(pimpl_->sub_source_seek);
-	destroy_subscription(pimpl_->sub_source_capabilities);
-	destroy_subscription(pimpl_->sub_source_playlist_apply);
-	destroy_subscription(pimpl_->sub_source_playlist_info);
-	destroy_subscription(pimpl_->sub_svo_capabilities);
-	destroy_subscription(pimpl_->sub_svo_start);
-	destroy_subscription(pimpl_->sub_svo_stop);
-	destroy_subscription(pimpl_->sub_svo_status);
-	destroy_subscription(pimpl_->sub_mcap_capabilities);
-	destroy_subscription(pimpl_->sub_mcap_start);
-	destroy_subscription(pimpl_->sub_mcap_stop);
-	destroy_subscription(pimpl_->sub_mcap_status);
+		pimpl_->service = nullptr;
+	}
 
 	if (pimpl_->conn) {
 		natsConnection_Close(pimpl_->conn);
@@ -981,11 +832,11 @@ void NatsControlService::PublishModuleStatus(const int32_t status_code) {
 
 	pb::ModuleStatusEvent event;
 	event.set_status(to_proto_module_status(status_code));
-	event.set_instance(pimpl_->instance_name);
+	event.set_instance(pimpl_->options.instance_name);
 	event.set_timestamp_ns(now_ns());
 
 	pimpl_->publish_proto(
-		nats::subject_status(pimpl_->target_key),
+		nats::subject_status(pimpl_->options.target_key),
 		event);
 }
 
@@ -996,7 +847,7 @@ void NatsControlService::PublishBodyTracking(
 	}
 
 	pimpl_->publish(
-		nats::subject_body(pimpl_->target_key),
+		nats::subject_body(pimpl_->options.target_key),
 		raw_bytes.data(),
 		static_cast<int>(raw_bytes.size()));
 }

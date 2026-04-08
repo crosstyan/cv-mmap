@@ -145,3 +145,28 @@ message ModuleStatusEvent {
   string           instance     = 2;
   uint64           timestamp_ns = 3;
 }
+
+// -- NATS Micro service discovery JSON payloads --
+message NatsMicroPingResponse {
+  string name    = 1;
+  string version = 2;
+  string id      = 3;
+  string type    = 4;
+}
+
+message NatsMicroEndpointInfo {
+  string name                 = 1;
+  map<string, string> metadata = 2;
+  string queue_group          = 3;
+  string subject              = 4;
+}
+
+message NatsMicroInfoResponse {
+  string description                    = 1;
+  repeated NatsMicroEndpointInfo endpoints = 2;
+  string id                             = 3;
+  map<string, string> metadata          = 4;
+  string name                           = 5;
+  string type                           = 6;
+  string version                        = 7;
+}

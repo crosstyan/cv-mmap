@@ -6,6 +6,7 @@ namespace cvmmap {
 
 struct cvmmap_target_t {
 	std::string instance{};
+	std::string namespace_name{};
 	std::string prefix{};
 	std::string base_name{};
 	std::string nats_target_key{};

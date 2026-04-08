@@ -140,6 +140,7 @@ The current protocol state is intentionally mixed-version:
 - frame sync wire: v1 over ZMQ
 - control and module status: protobuf over NATS when enabled
 - body tracking: raw `cvmmap_body_tracking_v1` payload bytes over NATS when enabled
+- producer discovery: NATS Micro service discovery when enabled
 
 `cvmmap-core` owns the shared consumer-side protocol surface for:
 
@@ -370,6 +371,70 @@ The checked-in launcher starts four independent camera producers: `zed1`, `zed2`
 Use a `systemd` template unit such as `cv-mmap@.service` when you need boot-time startup, restart after reboot, journal integration, or tighter OS-level service management. Keep `process-compose.yaml` as the primary in-repo workflow for development, testing, and user-managed multi-instance sessions.
 
 When `nats.enabled = false`, startup continues in degraded producer-only mode: shared memory creation and ZMQ frame sync still run, but control/status transport and body-tracking transport are skipped.
+
+## NATS Discovery And Compatibility
+
+When `nats.enabled = true`, each producer now registers a NATS Micro service named `cvmmap.producer`.
+This makes the producer discoverable through the standard NATS service discovery subjects:
+
+- `$SRV.PING.cvmmap.producer`
+- `$SRV.INFO.cvmmap.producer.<service-id>`
+- `$SRV.STATS.cvmmap.producer.<service-id>`
+
+The advertised metadata includes the fields needed to connect a consumer without preconfigured target naming:
+
+- `instance_name`
+- `namespace`
+- `ipc_prefix`
+- `base_name`
+- `nats_target_key`
+- `shm_name`
+- `zmq_addr`
+- `body_subject`
+- `status_subject`
+- `control_subject_prefix`
+- `backend`
+- build metadata such as `build_revision`, `build_tag`, `build_branch`, and `build_timestamp_utc`
+
+The Micro endpoints expose the existing control RPC subjects, so discovery does not change the wire contract for control requests. The producer still serves subjects such as:
+
+- `cvmmap.<target>.control.source.reset`
+- `cvmmap.<target>.control.source.info`
+- `cvmmap.<target>.control.source.capabilities`
+- `cvmmap.<target>.control.source.seek`
+- `cvmmap.<target>.control.source.playlist.apply`
+- `cvmmap.<target>.control.source.playlist.info`
+- `cvmmap.<target>.control.recorder.svo.*`
+- `cvmmap.<target>.control.recorder.mcap.*`
+- `cvmmap.<target>.body`
+- `cvmmap.<target>.status`
+
+Compatibility rules:
+
+- existing NATS subjects remain available and are still the live control/body/status transport
+- existing clients that already know `instance_name` or `nats_target_key` do not need to change
+- discovery is additive: it helps clients find producers, but it does not replace the old subjects
+- producers with `nats.enabled = false` are not discoverable over NATS and still operate as ZeroMQ/shared-memory video producers only
+
+Consumer connection modes remain:
+
+- full transport: discover via NATS, then use NATS control/status/body plus shared memory + ZMQ frame sync
+- ZeroMQ-only video after discovery: discover via NATS, then connect with `enable_nats = false` so only shared memory + ZMQ video is used
+- manual ZeroMQ-only video: skip discovery entirely and connect by the existing target naming rules
+
+For C++ consumers, `cvmmap-core` now provides:
+
+- `DiscoverCvMmapProducers(...)`
+- `CvMmapClient::ConnectDiscovered(...)`
+
+The old constructors still work:
+
+- `CvMmapClient(instance_name)`
+- `CvMmapClient(ClientConfig{ .instance_name = ..., .enable_nats = false })`
+
+Operational note:
+
+- if a running producer was started before this change, it will not answer `$SRV.PING.cvmmap.producer` until that producer is restarted on the new build
 
 ## Dependencies
 

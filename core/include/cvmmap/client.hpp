@@ -123,6 +123,55 @@ struct RecordingRequest {
 	std::optional<McapRecordingOptions> mcap_options{};
 };
 
+enum class DiscoveryErrorCode : uint8_t {
+	Error = 0,
+	NatsError = 1,
+	Timeout = 2,
+	InvalidPayload = 3,
+	NotFound = 4,
+	Ambiguous = 5,
+};
+
+struct DiscoveryError {
+	DiscoveryErrorCode code{DiscoveryErrorCode::Error};
+	std::string message{};
+};
+
+struct DiscoveryQuery {
+	std::optional<std::string> instance_name{};
+	std::optional<std::string> nats_target_key{};
+	std::optional<std::string> backend{};
+};
+
+struct DiscoveryRequest {
+	DiscoveryQuery query{};
+	std::optional<std::string> nats_url{};
+};
+
+struct DiscoveredProducer {
+	std::string service_id{};
+	std::string service_name{};
+	std::string service_version{};
+	std::string instance_name{};
+	std::string namespace_name{};
+	std::string ipc_prefix{};
+	std::string base_name{};
+	std::string nats_target_key{};
+	std::string shm_name{};
+	std::string zmq_addr{};
+	std::string body_subject{};
+	std::string status_subject{};
+	std::string control_subject_prefix{};
+	std::string backend{};
+	std::vector<std::string> control_subjects{};
+};
+
+struct DiscoveryConnectConfig {
+	DiscoveryQuery query{};
+	std::optional<std::string> nats_url{};
+	bool enable_nats{true};
+};
+
 struct ClientConfig {
 	std::string instance_name;
 	/// Control, body tracking, and module status use NATS.
@@ -145,6 +194,17 @@ public:
 		std::chrono::milliseconds{1000};
 	static constexpr std::string_view DEFAULT_NATS_URL =
 		"nats://localhost:4222";
+
+	[[nodiscard]]
+	static cvmmap::expected<CvMmapClient, DiscoveryError>
+	ConnectDiscovered(const DiscoveredProducer &producer,
+					 bool enable_nats = true,
+					 std::optional<std::string> nats_url = {});
+
+	[[nodiscard]]
+	static cvmmap::expected<CvMmapClient, DiscoveryError>
+	ConnectDiscovered(const DiscoveryConnectConfig &config,
+					 std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	explicit CvMmapClient(const std::string &instance_name);
 	explicit CvMmapClient(const ClientConfig &config);
@@ -220,8 +280,16 @@ public:
 	GetRecordingStatus(std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 private:
+	CvMmapClient();
+
 	struct impl;
 	std::unique_ptr<impl> pimpl_;
 };
+
+[[nodiscard]]
+cvmmap::expected<std::vector<DiscoveredProducer>, DiscoveryError>
+DiscoverCvMmapProducers(
+	const DiscoveryRequest &request,
+	std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
 } // namespace cvmmap

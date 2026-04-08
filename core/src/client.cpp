@@ -60,6 +60,14 @@ ControlError make_nats_disabled_error() {
   return make_control_error(CONTROL_RESPONSE_UNSUPPORTED, NATS_DISABLED_MESSAGE);
 }
 
+DiscoveryError make_discovery_error(
+    const DiscoveryErrorCode code, std::string message) {
+  return DiscoveryError{
+      .code = code,
+      .message = std::move(message),
+  };
+}
+
 } // namespace
 
 bool ControlCapabilities::supports_recording_format(
@@ -464,6 +472,8 @@ CvMmapClient::CvMmapClient(const ClientConfig &config)
   pimpl_->init();
 }
 
+CvMmapClient::CvMmapClient() : pimpl_(std::make_unique<impl>()) {}
+
 CvMmapClient::~CvMmapClient() {
   if (pimpl_) {
     pimpl_->stop();
@@ -489,6 +499,73 @@ CvMmapClient &CvMmapClient::operator=(CvMmapClient &&other) noexcept {
     // other.pimpl_ is now nullptr, which is fine
   }
   return *this;
+}
+
+cvmmap::expected<CvMmapClient, DiscoveryError>
+CvMmapClient::ConnectDiscovered(const DiscoveredProducer &producer,
+                                const bool enable_nats,
+                                std::optional<std::string> nats_url) {
+  if (producer.instance_name.empty() || producer.shm_name.empty() ||
+      producer.zmq_addr.empty()) {
+    return cvmmap::unexpected(make_discovery_error(
+        DiscoveryErrorCode::InvalidPayload,
+        "discovered producer is missing required transport fields"));
+  }
+  if (enable_nats && producer.nats_target_key.empty()) {
+    return cvmmap::unexpected(make_discovery_error(
+        DiscoveryErrorCode::InvalidPayload,
+        "discovered producer is missing nats_target_key"));
+  }
+
+  CvMmapClient client;
+  client.pimpl_->instance_name = producer.instance_name;
+  client.pimpl_->shm_name = producer.shm_name;
+  client.pimpl_->zmq_addr = producer.zmq_addr;
+  client.pimpl_->enable_nats = enable_nats;
+  if (enable_nats) {
+    client.pimpl_->nats_client = std::make_unique<NatsControlClient>(
+        producer.nats_target_key,
+        nats_url.value_or(std::string(CvMmapClient::DEFAULT_NATS_URL)));
+  }
+  client.pimpl_->init();
+  return client;
+}
+
+cvmmap::expected<CvMmapClient, DiscoveryError>
+CvMmapClient::ConnectDiscovered(const DiscoveryConnectConfig &config,
+                                const std::chrono::milliseconds timeout) {
+  auto discovered = DiscoverCvMmapProducers(
+      DiscoveryRequest{
+          .query = config.query,
+          .nats_url = config.nats_url,
+      },
+      timeout);
+  if (!discovered) {
+    return cvmmap::unexpected(discovered.error());
+  }
+  if (discovered->empty()) {
+    return cvmmap::unexpected(make_discovery_error(
+        DiscoveryErrorCode::NotFound,
+        "no cvmmap producer matched the discovery query"));
+  }
+  if (discovered->size() != 1) {
+    auto details = std::string{};
+    for (size_t i = 0; i < discovered->size(); ++i) {
+      if (i != 0) {
+        details += ", ";
+      }
+      details += discovered->at(i).instance_name.empty()
+                     ? discovered->at(i).service_id
+                     : discovered->at(i).instance_name;
+    }
+    return cvmmap::unexpected(make_discovery_error(
+        DiscoveryErrorCode::Ambiguous,
+        cvmmap::format(
+            "discovery query matched {} producers: {}",
+            discovered->size(), details)));
+  }
+  return ConnectDiscovered(discovered->front(), config.enable_nats,
+                           config.nats_url);
 }
 
 void CvMmapClient::SetFrameCallback(OnFrameCallback &&cb) {

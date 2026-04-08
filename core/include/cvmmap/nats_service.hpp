@@ -26,9 +26,25 @@ struct NatsControlHandlers {
 	std::function<cvmmap::expected<RecordingStatus, ControlError>(RecordingFormat)> on_get_recording_status;
 };
 
+struct NatsControlServiceOptions {
+	std::string instance_name{};
+	std::string namespace_name{};
+	std::string ipc_prefix{};
+	std::string base_name{};
+	std::string target_key{};
+	std::string shm_name{};
+	std::string zmq_addr{};
+	std::string backend{};
+	std::string nats_url{};
+	std::string build_revision{};
+	std::string build_tag{};
+	std::string build_branch{};
+	std::string build_timestamp_utc{};
+};
+
 class NatsControlService {
 public:
-	NatsControlService(std::string instance_name, std::string target_key, std::string nats_url);
+	explicit NatsControlService(NatsControlServiceOptions options);
 	~NatsControlService();
 
 	NatsControlService(const NatsControlService &) = delete;
