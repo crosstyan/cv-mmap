@@ -207,6 +207,7 @@ config_*.toml
 
 output
 *.mkv
+generated/
 
 .sisyphus/evidence/
 .sisyphus/boulder.json
