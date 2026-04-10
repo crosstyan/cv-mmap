@@ -1,7 +1,6 @@
 #include <cvmmap/ipc.hpp>
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -27,16 +26,8 @@ struct generated_file_t {
 	byte_vector bytes;
 };
 
-constexpr std::string_view kControlLabel = "example";
 constexpr std::string_view kSyncLabel = "camera_0";
 constexpr std::string_view kBodyLabel = "example";
-
-constexpr size_t kRequestHeaderSize =
-	offsetof(cvmmap::control_message_request_t, request_message_length) +
-	sizeof(uint16_t);
-constexpr size_t kResponseHeaderSize =
-	offsetof(cvmmap::control_message_response_t, response_message_length) +
-	sizeof(uint16_t);
 
 template <typename T>
 byte_vector copy_struct_bytes(const T &value) {
@@ -53,122 +44,27 @@ void assign_label(uint8_t (&label)[cvmmap::LABEL_LEN_MAX], const std::string_vie
 
 byte_vector make_sync_message() {
 	cvmmap::sync_message_t sync{};
-	sync.frame_count  = 42;
+	sync.frame_count = 42;
 	sync.timestamp_ns = 123456789ull;
 	assign_label(sync._label, kSyncLabel);
 	return copy_struct_bytes(sync);
 }
 
-byte_vector make_control_request(
-	const int32_t command_id,
-	const std::string_view label,
-	std::span<const uint8_t> payload = {}) {
-	cvmmap::control_message_request_t request{};
-	request.command_id = command_id;
-	request.set_label(label);
-	request.request_message_length = static_cast<uint16_t>(payload.size());
-
-	byte_vector bytes(kRequestHeaderSize + payload.size());
-	std::memcpy(bytes.data(), &request, kRequestHeaderSize);
-	if (!payload.empty()) {
-		std::memcpy(bytes.data() + kRequestHeaderSize, payload.data(), payload.size());
-	}
-	return bytes;
-}
-
-byte_vector make_control_response(
-	const int32_t command_id,
-	const int32_t response_code,
-	const std::string_view label,
-	std::span<const uint8_t> payload = {}) {
-	cvmmap::control_message_response_t response{};
-	response.command_id = command_id;
-	response.response_code = response_code;
-	assign_label(response._label, label);
-	response.response_message_length = static_cast<uint16_t>(payload.size());
-
-	byte_vector bytes(kResponseHeaderSize + payload.size());
-	std::memcpy(bytes.data(), &response, kResponseHeaderSize);
-	if (!payload.empty()) {
-		std::memcpy(bytes.data() + kResponseHeaderSize, payload.data(), payload.size());
-	}
-	return bytes;
-}
-
-byte_vector make_source_info_payload() {
-	cvmmap::source_info_response_v1_t payload{};
-	payload.source_kind = cvmmap::SourceKind::Finite;
-	payload.timestamp_domain = cvmmap::TimestampDomain::UnixEpochNs;
-	payload.flags = cvmmap::SOURCE_INFO_FLAG_CAN_SEEK |
-					cvmmap::SOURCE_INFO_FLAG_AUTO_LOOP |
-					cvmmap::SOURCE_INFO_FLAG_HAS_DEPTH |
-					cvmmap::SOURCE_INFO_FLAG_HAS_BODY;
-	payload.timeline_start_ns = 100ull;
-	payload.timeline_end_ns = 250ull;
-	payload.duration_ns = 150ull;
-	payload.current_timestamp_ns = 175ull;
-	payload.current_frame_count = 9u;
-	return copy_struct_bytes(payload);
-}
-
-byte_vector make_seek_request_payload() {
-	cvmmap::seek_timestamp_request_v1_t payload{};
-	payload.target_timestamp_ns = 123456789ull;
-	return copy_struct_bytes(payload);
-}
-
-byte_vector make_seek_response_payload() {
-	cvmmap::seek_timestamp_response_v1_t payload{};
-	payload.exact_match = 1;
-	payload.requested_timestamp_ns = 123456789ull;
-	payload.landed_timestamp_ns = 123456999ull;
-	payload.landed_frame_count = 0u;
-	return copy_struct_bytes(payload);
-}
-
-byte_vector make_recording_start_payload() {
-	cvmmap::recording_start_request_v1_t payload{};
-	constexpr std::string_view path = "/tmp/example.svo2";
-	payload.path_length = static_cast<uint16_t>(path.size());
-
-	byte_vector bytes(sizeof(payload) + path.size());
-	std::memcpy(bytes.data(), &payload, sizeof(payload));
-	std::memcpy(bytes.data() + sizeof(payload), path.data(), path.size());
-	return bytes;
-}
-
-byte_vector make_recording_status_payload() {
-	cvmmap::recording_status_response_v1_t payload{};
-	constexpr std::string_view path = "/tmp/example.svo2";
-	payload.recording_format = cvmmap::RecordingFormat::Svo;
-	payload.flags = cvmmap::RECORDING_STATUS_FLAG_CAN_RECORD |
-					cvmmap::RECORDING_STATUS_FLAG_IS_RECORDING |
-					cvmmap::RECORDING_STATUS_FLAG_LAST_FRAME_OK;
-	payload.path_length = static_cast<uint16_t>(path.size());
-	payload.frames_ingested = 42u;
-	payload.frames_encoded = 40u;
-
-	byte_vector bytes(sizeof(payload) + path.size());
-	std::memcpy(bytes.data(), &payload, sizeof(payload));
-	std::memcpy(bytes.data() + sizeof(payload), path.data(), path.size());
-	return bytes;
-}
-
 byte_vector make_body_tracking_message() {
 	cvmmap::body_tracking_message_header_t header{};
-	header._magic              = cvmmap::BODY_TRACKING_MAGIC;
-	header.versions_major      = cvmmap::VERSION_MAJOR;
-	header.versions_minor      = cvmmap::VERSION_MINOR;
-	header.frame_count         = 42;
-	header.timestamp_ns        = 1000ull;
-	header.sdk_timestamp_ns    = 2000ull;
-	header.body_count          = 1;
-	header.body_record_size    = sizeof(cvmmap::body_tracking_body_t);
-	header.body_format         = cvmmap::BodyFormat::Body18;
-	header.body_selection      = cvmmap::BodyKeypointSelection::Full;
-	header.detection_model     = cvmmap::BodyTrackingModel::HumanBodyAccurate;
+	header._magic = cvmmap::BODY_TRACKING_MAGIC;
+	header.versions_major = cvmmap::VERSION_MAJOR;
+	header.versions_minor = cvmmap::VERSION_MINOR;
+	header.frame_count = 42;
+	header.timestamp_ns = 1000ull;
+	header.sdk_timestamp_ns = 2000ull;
+	header.body_count = 1;
+	header.body_record_size = sizeof(cvmmap::body_tracking_body_t);
+	header.body_format = cvmmap::BodyFormat::Body18;
+	header.body_selection = cvmmap::BodyKeypointSelection::Full;
+	header.detection_model = cvmmap::BodyTrackingModel::HumanBodyAccurate;
 	header.inference_precision = cvmmap::InferencePrecision::FP32;
-	header.flags               = cvmmap::BODY_TRACKING_FLAG_IS_NEW;
+	header.flags = cvmmap::BODY_TRACKING_FLAG_IS_NEW;
 	header.set_coordinate_system(cvmmap::BodyCoordinateSystem::RightHandedYUp);
 	header.set_reference_frame(cvmmap::BodyReferenceFrame::World);
 	header.set_floor_as_origin(true);
@@ -176,22 +72,22 @@ byte_vector make_body_tracking_message() {
 	assign_label(header._label, kBodyLabel);
 
 	cvmmap::body_tracking_body_t body{};
-	body.id             = 7;
+	body.id = 7;
 	body.tracking_state = cvmmap::ObjectTrackingState::Ok;
-	body.action_state   = cvmmap::ObjectActionState::Idle;
-	body.confidence     = 88.5f;
-	body.position       = {1.0f, 2.0f, 3.0f};
-	body.velocity       = {4.0f, 5.0f, 6.0f};
+	body.action_state = cvmmap::ObjectActionState::Idle;
+	body.confidence = 88.5f;
+	body.position = {1.0f, 2.0f, 3.0f};
+	body.velocity = {4.0f, 5.0f, 6.0f};
 	body.keypoint_count = 1;
-	body.flags          = cvmmap::BODY_TRACKING_BODY_FLAG_HAS_ROOT_ORIENTATION;
+	body.flags = cvmmap::BODY_TRACKING_BODY_FLAG_HAS_ROOT_ORIENTATION;
 
 	for (auto &point : body.bounding_box_2d) {
 		point = {std::numeric_limits<float>::quiet_NaN(),
 				 std::numeric_limits<float>::quiet_NaN()};
 	}
 	body.bounding_box_2d[0] = {10.0f, 11.0f};
-	body.keypoint_2d[0]     = {12.0f, 13.0f};
-	body.keypoint_3d[0]     = {1.0f, 2.0f, 3.0f};
+	body.keypoint_2d[0] = {12.0f, 13.0f};
+	body.keypoint_3d[0] = {1.0f, 2.0f, 3.0f};
 	body.keypoint_confidence[0] = 0.9f;
 
 	byte_vector bytes(
@@ -214,92 +110,6 @@ std::string build_manifest_json() {
 	out << "    \"frame_count\": 42,\n";
 	out << "    \"timestamp_ns\": 123456789,\n";
 	out << "    \"label\": \"" << kSyncLabel << "\"\n";
-	out << "  },\n";
-	out << "  \"control_request_get_source_info\": {\n";
-	out << "    \"file\": \"control_request_get_source_info.bin\",\n";
-	out << "    \"size\": " << kRequestHeaderSize << ",\n";
-	out << "    \"command_id\": " << cvmmap::CONTROL_MSG_CMD_GET_SOURCE_INFO << ",\n";
-	out << "    \"label\": \"" << kControlLabel << "\",\n";
-	out << "    \"request_message_length\": 0\n";
-	out << "  },\n";
-	out << "  \"control_response_get_source_info\": {\n";
-	out << "    \"file\": \"control_response_get_source_info.bin\",\n";
-	out << "    \"size\": " << (kResponseHeaderSize + sizeof(cvmmap::source_info_response_v1_t)) << ",\n";
-	out << "    \"command_id\": " << cvmmap::CONTROL_MSG_CMD_GET_SOURCE_INFO << ",\n";
-	out << "    \"response_code\": " << cvmmap::CONTROL_RESPONSE_OK << ",\n";
-	out << "    \"label\": \"" << kControlLabel << "\",\n";
-	out << "    \"source_info\": {\n";
-	out << "      \"source_kind\": " << static_cast<int>(cvmmap::SourceKind::Finite) << ",\n";
-	out << "      \"timestamp_domain\": " << static_cast<int>(cvmmap::TimestampDomain::UnixEpochNs) << ",\n";
-	out << "      \"flags\": "
-		<< (cvmmap::SOURCE_INFO_FLAG_CAN_SEEK |
-			cvmmap::SOURCE_INFO_FLAG_AUTO_LOOP |
-			cvmmap::SOURCE_INFO_FLAG_HAS_DEPTH |
-			cvmmap::SOURCE_INFO_FLAG_HAS_BODY) << ",\n";
-	out << "      \"timeline_start_ns\": 100,\n";
-	out << "      \"timeline_end_ns\": 250,\n";
-	out << "      \"duration_ns\": 150,\n";
-	out << "      \"current_timestamp_ns\": 175,\n";
-	out << "      \"current_frame_count\": 9\n";
-	out << "    }\n";
-	out << "  },\n";
-	out << "  \"control_request_seek_timestamp_ns\": {\n";
-	out << "    \"file\": \"control_request_seek_timestamp_ns.bin\",\n";
-	out << "    \"size\": " << (kRequestHeaderSize + sizeof(cvmmap::seek_timestamp_request_v1_t)) << ",\n";
-	out << "    \"command_id\": " << cvmmap::CONTROL_MSG_CMD_SEEK_TIMESTAMP_NS << ",\n";
-	out << "    \"label\": \"" << kControlLabel << "\",\n";
-	out << "    \"target_timestamp_ns\": 123456789\n";
-	out << "  },\n";
-	out << "  \"control_response_seek_timestamp_ns\": {\n";
-	out << "    \"file\": \"control_response_seek_timestamp_ns.bin\",\n";
-	out << "    \"size\": " << (kResponseHeaderSize + sizeof(cvmmap::seek_timestamp_response_v1_t)) << ",\n";
-	out << "    \"command_id\": " << cvmmap::CONTROL_MSG_CMD_SEEK_TIMESTAMP_NS << ",\n";
-	out << "    \"response_code\": " << cvmmap::CONTROL_RESPONSE_OK << ",\n";
-	out << "    \"label\": \"" << kControlLabel << "\",\n";
-	out << "    \"seek_result\": {\n";
-	out << "      \"requested_timestamp_ns\": 123456789,\n";
-	out << "      \"landed_timestamp_ns\": 123456999,\n";
-	out << "      \"landed_frame_count\": 0,\n";
-	out << "      \"exact_match\": true\n";
-	out << "    }\n";
-	out << "  },\n";
-	out << "  \"control_request_start_recording\": {\n";
-	out << "    \"file\": \"control_request_start_recording.bin\",\n";
-	out << "    \"size\": " << (kRequestHeaderSize + sizeof(cvmmap::recording_start_request_v1_t) + 17) << ",\n";
-	out << "    \"command_id\": " << cvmmap::CONTROL_MSG_CMD_START_RECORDING << ",\n";
-	out << "    \"label\": \"" << kControlLabel << "\",\n";
-	out << "    \"output_path\": \"/tmp/example.svo2\"\n";
-	out << "  },\n";
-	out << "  \"control_request_stop_recording\": {\n";
-	out << "    \"file\": \"control_request_stop_recording.bin\",\n";
-	out << "    \"size\": " << kRequestHeaderSize << ",\n";
-	out << "    \"command_id\": " << cvmmap::CONTROL_MSG_CMD_STOP_RECORDING << ",\n";
-	out << "    \"label\": \"" << kControlLabel << "\",\n";
-	out << "    \"request_message_length\": 0\n";
-	out << "  },\n";
-	out << "  \"control_request_get_recording_status\": {\n";
-	out << "    \"file\": \"control_request_get_recording_status.bin\",\n";
-	out << "    \"size\": " << kRequestHeaderSize << ",\n";
-	out << "    \"command_id\": " << cvmmap::CONTROL_MSG_CMD_GET_RECORDING_STATUS << ",\n";
-	out << "    \"label\": \"" << kControlLabel << "\",\n";
-	out << "    \"request_message_length\": 0\n";
-	out << "  },\n";
-	out << "  \"control_response_recording_status\": {\n";
-	out << "    \"file\": \"control_response_recording_status.bin\",\n";
-	out << "    \"size\": " << (kResponseHeaderSize + sizeof(cvmmap::recording_status_response_v1_t) + 17) << ",\n";
-	out << "    \"command_id\": " << cvmmap::CONTROL_MSG_CMD_GET_RECORDING_STATUS << ",\n";
-	out << "    \"response_code\": " << cvmmap::CONTROL_RESPONSE_OK << ",\n";
-	out << "    \"label\": \"" << kControlLabel << "\",\n";
-	out << "    \"recording_status\": {\n";
-	out << "      \"recording_format\": " << static_cast<int>(cvmmap::RecordingFormat::Svo) << ",\n";
-	out << "      \"flags\": "
-		<< (cvmmap::RECORDING_STATUS_FLAG_CAN_RECORD |
-			cvmmap::RECORDING_STATUS_FLAG_IS_RECORDING |
-			cvmmap::RECORDING_STATUS_FLAG_LAST_FRAME_OK) << ",\n";
-	out << "      \"path\": \"/tmp/example.svo2\",\n";
-	out << "      \"frames_ingested\": 42,\n";
-	out << "      \"frames_encoded\": 40\n";
-	out << "    }\n";
 	out << "  },\n";
 	out << "  \"body_tracking_valid\": {\n";
 	out << "    \"file\": \"body_tracking_valid.bin\",\n";
@@ -335,65 +145,10 @@ std::string build_manifest_json() {
 }
 
 std::vector<generated_file_t> build_generated_files() {
-	const auto source_info_payload = make_source_info_payload();
-	const auto seek_request_payload = make_seek_request_payload();
-	const auto seek_response_payload = make_seek_response_payload();
-	const auto recording_start_payload = make_recording_start_payload();
-	const auto recording_status_payload = make_recording_status_payload();
 	const auto manifest = build_manifest_json();
 
 	std::vector<generated_file_t> files;
 	files.push_back({"sync_valid.bin", make_sync_message()});
-	files.push_back({
-		"control_request_get_source_info.bin",
-		make_control_request(cvmmap::CONTROL_MSG_CMD_GET_SOURCE_INFO, kControlLabel),
-	});
-	files.push_back({
-		"control_response_get_source_info.bin",
-		make_control_response(
-			cvmmap::CONTROL_MSG_CMD_GET_SOURCE_INFO,
-			cvmmap::CONTROL_RESPONSE_OK,
-			kControlLabel,
-			source_info_payload),
-	});
-	files.push_back({
-		"control_request_seek_timestamp_ns.bin",
-		make_control_request(
-			cvmmap::CONTROL_MSG_CMD_SEEK_TIMESTAMP_NS,
-			kControlLabel,
-			seek_request_payload),
-	});
-	files.push_back({
-		"control_response_seek_timestamp_ns.bin",
-		make_control_response(
-			cvmmap::CONTROL_MSG_CMD_SEEK_TIMESTAMP_NS,
-			cvmmap::CONTROL_RESPONSE_OK,
-			kControlLabel,
-			seek_response_payload),
-	});
-	files.push_back({
-		"control_request_start_recording.bin",
-		make_control_request(
-			cvmmap::CONTROL_MSG_CMD_START_RECORDING,
-			kControlLabel,
-			recording_start_payload),
-	});
-	files.push_back({
-		"control_request_stop_recording.bin",
-		make_control_request(cvmmap::CONTROL_MSG_CMD_STOP_RECORDING, kControlLabel),
-	});
-	files.push_back({
-		"control_request_get_recording_status.bin",
-		make_control_request(cvmmap::CONTROL_MSG_CMD_GET_RECORDING_STATUS, kControlLabel),
-	});
-	files.push_back({
-		"control_response_recording_status.bin",
-		make_control_response(
-			cvmmap::CONTROL_MSG_CMD_GET_RECORDING_STATUS,
-			cvmmap::CONTROL_RESPONSE_OK,
-			kControlLabel,
-			recording_status_payload),
-	});
 	files.push_back({"body_tracking_valid.bin", make_body_tracking_message()});
 	files.push_back({
 		"manifest.json",

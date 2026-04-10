@@ -65,8 +65,9 @@ Change:
   - `source_info_response_v1`
   - `seek_timestamp_request_v1`
   - `seek_timestamp_response_v1`
-- `cvmmap_control_v1.ksy` now parses these payloads explicitly and documents the
-  real 34-byte / 38-byte wire envelope sizes
+- the legacy control v1 schema documented the real 34-byte / 38-byte wire
+  envelope sizes for those packets before the control plane moved fully to
+  protobuf over NATS
 
 Reason:
 - finite replay backends need a standard control-plane way to report source
@@ -79,7 +80,7 @@ Downstream impact:
 - `core` client can query source kind/timestamp domain/flags and seek by timestamp
 - replay-oriented consumers can distinguish finite vs live sources without
   backend-specific heuristics
-- Kaitai-based parsers can validate control packets against the actual on-wire
+- downstream parsers could validate control packets against the actual on-wire
   envelope size instead of host ABI padding
 
 Compatibility:

@@ -26,13 +26,13 @@ public:
 	void Stop();
 
 	// Control (NATS request-reply, blocking with timeout)
-	cvmmap::expected<int, int>
+	ControlErrorCode
 	ResetFrameCount(std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
-	cvmmap::expected<SourceInfo, int>
+	cvmmap::expected<SourceInfo, ControlErrorCode>
 	GetSourceInfo(std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
-	cvmmap::expected<SeekResult, int>
+	cvmmap::expected<SeekResult, ControlErrorCode>
 	SeekTimestampNs(uint64_t ts, std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
 	cvmmap::expected<PlaylistInfo, ControlError>
@@ -60,7 +60,7 @@ public:
 	// Subscriptions (NATS pub/sub)
 	using OnBodyTrackingCallback = cvmmap::move_only_function<void(const body_tracking_frame_t &)>;
 	using OnBodyTrackingRawCallback = cvmmap::move_only_function<void(std::span<const uint8_t>)>;
-	using OnModuleStatusCallback = cvmmap::move_only_function<void(int32_t status_code)>;
+	using OnModuleStatusCallback = cvmmap::move_only_function<void(ModuleStatus status)>;
 	void SetBodyTrackingCallback(OnBodyTrackingCallback &&cb);
 	void SetBodyTrackingRawCallback(OnBodyTrackingRawCallback &&cb);
 	void SetModuleStatusCallback(OnModuleStatusCallback &&cb);

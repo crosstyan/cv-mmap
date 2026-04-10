@@ -148,13 +148,11 @@ Test harnesses:
 - `docs/abi_v2_contract_checklist.md` - Full v2 field specifications
 - `docs/cvmmap_shm_metadata_v1_v2.ksy` - versioned SHM metadata Kaitai schema
 - `docs/cvmmap_sync_v1.ksy` - versioned sync message Kaitai schema
-- `docs/cvmmap_control_v1.ksy` - versioned control message Kaitai schema
 - `docs/cvmmap_body_tracking_v1.ksy` - versioned body tracking Kaitai schema
 - split Kaitai references:
   - `docs/cvmmap_sync_v1.ksy`
-  - `docs/cvmmap_control_v1.ksy`
   - `docs/cvmmap_shm_metadata_v1_v2.ksy`
   - `docs/cvmmap_body_tracking_v1.ksy`
 - `docs/python-client.md` - Python client documentation
 - `core/fixtures/uri_targets.json` - installed URI resolution fixture contract
-- `core/fixtures/protocol/` - installed C++-generated protocol fixture contract
+- `core/fixtures/protocol/` - installed C++-generated sync/body fixture contract

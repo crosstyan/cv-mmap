@@ -72,60 +72,6 @@ struct sync_message_t {
 	uint8_t _label[LABEL_LEN_MAX];
 };
 static_assert(std::alignment_of<sync_message_t>::value == 8, "sync_message_t must be 8-byte aligned");
-
-struct module_status_message_t {
-	static constexpr size_t size() {
-		return sizeof(module_status_message_t);
-	}
-
-	std::span<const uint8_t> as_uint8s() const {
-		return std::span<const uint8_t>{
-			reinterpret_cast<const uint8_t *>(this), sizeof(module_status_message_t)};
-	}
-
-	void _fill_label(const std::string_view &label) {
-		if (label.size() > LABEL_LEN_MAX) {
-			throw std::invalid_argument(cvmmap::format("label is too long: `{}`", label));
-		}
-		std::copy(label.begin(), label.end(), _label);
-		std::fill(_label + label.size(), _label + LABEL_LEN_MAX, '\0');
-	}
-
-	void _fill_with_status(int32_t status, const std::string_view &label) {
-		_magic         = MODULE_STATUS_MAGIC;
-		versions_major = VERSION_MAJOR;
-		versions_minor = VERSION_MINOR;
-		module_status  = status;
-		_fill_label(label);
-	}
-
-	static module_status_message_t make_online(const std::string_view &label) {
-		module_status_message_t msg;
-		msg._fill_with_status(MODULE_STATUS_ONLINE, label);
-		return msg;
-	}
-
-	static module_status_message_t make_offline(const std::string_view &label) {
-		module_status_message_t msg;
-		msg._fill_with_status(MODULE_STATUS_OFFLINE, label);
-		return msg;
-	}
-
-	static module_status_message_t make_frame_reset(const std::string_view &label) {
-		module_status_message_t msg;
-		msg._fill_with_status(MODULE_STATUS_STREAM_RESET, label);
-		return msg;
-	}
-
-	/** properties */
-	uint8_t _magic{MODULE_STATUS_MAGIC};
-	uint8_t _reserved_0[1]; // padding
-	uint8_t versions_major{VERSION_MAJOR};
-	uint8_t versions_minor{VERSION_MINOR};
-	int32_t module_status;
-	uint8_t _label[LABEL_LEN_MAX];
-};
-
 // https://docs.opencv.org/4.x/d3/d63/classcv_1_1Mat.html
 // See `Detailed Description`
 // strides for each dimension

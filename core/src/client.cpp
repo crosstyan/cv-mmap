@@ -37,7 +37,8 @@ constexpr std::string_view NATS_DISABLED_MESSAGE =
     "NATS is disabled for this client";
 
 namespace {
-ControlError make_control_error(int32_t code, std::span<const uint8_t> payload = {}) {
+ControlError make_control_error(
+    ControlErrorCode code, std::span<const uint8_t> payload = {}) {
   auto message = std::string{};
   if (!payload.empty()) {
     const auto *begin = reinterpret_cast<const char *>(payload.data());
@@ -49,7 +50,7 @@ ControlError make_control_error(int32_t code, std::span<const uint8_t> payload =
   };
 }
 
-ControlError make_control_error(int32_t code, std::string_view message) {
+ControlError make_control_error(ControlErrorCode code, std::string_view message) {
   return ControlError{
       .code = code,
       .message = std::string(message),
@@ -57,7 +58,7 @@ ControlError make_control_error(int32_t code, std::string_view message) {
 }
 
 ControlError make_nats_disabled_error() {
-  return make_control_error(CONTROL_RESPONSE_UNSUPPORTED, NATS_DISABLED_MESSAGE);
+  return make_control_error(ControlErrorCode::Unsupported, NATS_DISABLED_MESSAGE);
 }
 
 DiscoveryError make_discovery_error(
@@ -303,9 +304,9 @@ void CvMmapClient::impl::sync_nats_callbacks() {
 
   if (on_event_callback) {
     nats_client->SetModuleStatusCallback(
-        [this](int32_t status_code) {
+        [this](ModuleStatus status) {
           if (on_event_callback) {
-            on_event_callback(static_cast<ModuleStatus>(status_code));
+            on_event_callback(status);
           }
         });
   } else {
@@ -592,30 +593,26 @@ void CvMmapClient::Start() { return pimpl_->start(); }
 
 void CvMmapClient::Stop() { return pimpl_->stop(); }
 
-int32_t CvMmapClient::ResetFrameCount(std::chrono::milliseconds timeout) {
+ControlErrorCode CvMmapClient::ResetFrameCount(std::chrono::milliseconds timeout) {
   if (!pimpl_->nats_client) {
-    return CONTROL_RESPONSE_UNSUPPORTED;
+    return ControlErrorCode::Unsupported;
   }
-  auto response = pimpl_->nats_client->ResetFrameCount(timeout);
-  if (!response) {
-    return response.error();
-  }
-  return *response;
+  return pimpl_->nats_client->ResetFrameCount(timeout);
 }
 
-cvmmap::expected<SourceInfo, int32_t>
+cvmmap::expected<SourceInfo, ControlErrorCode>
 CvMmapClient::GetSourceInfo(std::chrono::milliseconds timeout) {
   if (!pimpl_->nats_client) {
-    return cvmmap::unexpected(CONTROL_RESPONSE_UNSUPPORTED);
+    return cvmmap::unexpected(ControlErrorCode::Unsupported);
   }
   return pimpl_->nats_client->GetSourceInfo(timeout);
 }
 
-cvmmap::expected<SeekResult, int32_t>
+cvmmap::expected<SeekResult, ControlErrorCode>
 CvMmapClient::SeekTimestampNs(uint64_t timestamp_ns,
                               std::chrono::milliseconds timeout) {
   if (!pimpl_->nats_client) {
-    return cvmmap::unexpected(CONTROL_RESPONSE_UNSUPPORTED);
+    return cvmmap::unexpected(ControlErrorCode::Unsupported);
   }
   return pimpl_->nats_client->SeekTimestampNs(timestamp_ns, timeout);
 }

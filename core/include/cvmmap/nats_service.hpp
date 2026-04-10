@@ -15,9 +15,9 @@
 namespace cvmmap {
 
 struct NatsControlHandlers {
-	std::function<int()> on_reset_frame_count;
+	std::function<ControlErrorCode()> on_reset_frame_count;
 	std::function<app::backends::source_info_t()> on_get_source_info;
-	std::function<cvmmap::expected<app::backends::seek_result_t, int>(uint64_t)> on_seek_timestamp;
+	std::function<cvmmap::expected<app::backends::seek_result_t, ControlErrorCode>(uint64_t)> on_seek_timestamp;
 	std::function<cvmmap::expected<PlaylistInfo, ControlError>(const PlaylistRequest &)> on_apply_playlist;
 	std::function<cvmmap::expected<PlaylistInfo, ControlError>()> on_get_playlist_info;
 	std::function<bool(RecordingFormat)> on_recording_available;
@@ -55,7 +55,7 @@ public:
 	bool Start();
 	void Stop();
 
-	void PublishModuleStatus(int32_t status_code);
+	void PublishModuleStatus(ModuleStatus status);
 	void PublishBodyTracking(std::span<const uint8_t> raw_bytes);
 
 private:

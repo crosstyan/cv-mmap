@@ -229,14 +229,14 @@ public:
 	Resolve(const cvmmap::PlaylistRequest &request) const override {
 		if (request.paths.empty()) {
 			return cvmmap::unexpected(cvmmap::ControlError{
-				.code = cvmmap::CONTROL_RESPONSE_INVALID_PAYLOAD,
+				.code = cvmmap::ControlErrorCode::InvalidPayload,
 				.message = "playlist paths must not be empty",
 			});
 		}
 		for (const auto &path : request.paths) {
 			if (path.empty()) {
 				return cvmmap::unexpected(cvmmap::ControlError{
-					.code = cvmmap::CONTROL_RESPONSE_INVALID_PAYLOAD,
+					.code = cvmmap::ControlErrorCode::InvalidPayload,
 					.message = "playlist paths must not be empty",
 				});
 			}
@@ -252,7 +252,7 @@ public:
 		case app::BackendType::MCAP:
 			if (!config_.mcap) {
 				return cvmmap::unexpected(cvmmap::ControlError{
-					.code = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
+					.code = cvmmap::ControlErrorCode::Unsupported,
 					.message = "MCAP playlist apply is unavailable without an active MCAP producer",
 				});
 			}
@@ -270,7 +270,7 @@ public:
 					auto probe = app::backends::ProbeMcapStartTimestampNs(probe_config);
 					if (!probe) {
 						return cvmmap::unexpected(cvmmap::ControlError{
-							.code = cvmmap::CONTROL_RESPONSE_ERROR,
+							.code = cvmmap::ControlErrorCode::Error,
 							.message = cvmmap::format(
 								"MCAP playlist probe failed for '{}': {}",
 								path,
@@ -293,14 +293,14 @@ public:
 			return resolved;
 #else
 			return cvmmap::unexpected(cvmmap::ControlError{
-				.code = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
+				.code = cvmmap::ControlErrorCode::Unsupported,
 				.message = "MCAP playlist apply is unavailable in this build",
 			});
 #endif
 		case app::BackendType::ZED:
 			if (!config_.zed || config_.zed->stream_mode != "svo") {
 				return cvmmap::unexpected(cvmmap::ControlError{
-					.code = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
+					.code = cvmmap::ControlErrorCode::Unsupported,
 					.message = "ZED playlist apply is only supported for stream_mode='svo'",
 				});
 			}
@@ -318,7 +318,7 @@ public:
 					auto probe = app::backends::ProbeZedSvoStartTimestampNs(probe_config);
 					if (!probe) {
 						return cvmmap::unexpected(cvmmap::ControlError{
-							.code = cvmmap::CONTROL_RESPONSE_ERROR,
+							.code = cvmmap::ControlErrorCode::Error,
 							.message = cvmmap::format(
 								"ZED playlist probe failed for '{}': {}",
 								path,
@@ -341,13 +341,13 @@ public:
 			return resolved;
 #else
 			return cvmmap::unexpected(cvmmap::ControlError{
-				.code = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
+				.code = cvmmap::ControlErrorCode::Unsupported,
 				.message = "ZED playlist apply is unavailable in this build",
 			});
 #endif
 		default:
 			return cvmmap::unexpected(cvmmap::ControlError{
-				.code = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
+				.code = cvmmap::ControlErrorCode::Unsupported,
 				.message = "playlist apply is only supported for MCAP and ZED SVO producers",
 			});
 		}
@@ -943,28 +943,25 @@ int main(int argc, char **argv) {
 		return metadata_v2;
 	};
 
-	const auto map_recording_error = [](const int error_code,
-										std::string message = {}) {
-		auto control_code = cvmmap::CONTROL_RESPONSE_ERROR;
+	const auto map_control_error_code = [](const int error_code) {
 		switch (error_code) {
 		case 0:
-			control_code = cvmmap::CONTROL_RESPONSE_OK;
-			break;
+			return cvmmap::ControlErrorCode::Ok;
 		case -EOPNOTSUPP:
-			control_code = cvmmap::CONTROL_RESPONSE_UNSUPPORTED;
-			break;
+			return cvmmap::ControlErrorCode::Unsupported;
 		case -EINVAL:
-			control_code = cvmmap::CONTROL_RESPONSE_INVALID_PAYLOAD;
-			break;
+			return cvmmap::ControlErrorCode::InvalidPayload;
 		case -ERANGE:
-			control_code = cvmmap::CONTROL_RESPONSE_OUT_OF_RANGE;
-			break;
+			return cvmmap::ControlErrorCode::OutOfRange;
 		default:
-			control_code = cvmmap::CONTROL_RESPONSE_ERROR;
-			break;
+			return cvmmap::ControlErrorCode::Error;
 		}
+	};
+
+	const auto map_recording_error = [&map_control_error_code](const int error_code,
+										std::string message = {}) {
 		return cvmmap::ControlError{
-			.code    = control_code,
+			.code    = map_control_error_code(error_code),
 			.message = std::move(message),
 		};
 	};
@@ -993,7 +990,7 @@ int main(int argc, char **argv) {
 	std::vector<RecorderProvider> recorder_providers{};
 	app::backends::BackendHandle backend;
 
-	const auto send_status = [&nats_service, nats_enabled](int32_t status) {
+	const auto send_status = [&nats_service, nats_enabled](cvmmap::ModuleStatus status) {
 		if (!nats_enabled || !nats_service) {
 			return;
 		}
@@ -1436,7 +1433,7 @@ int main(int argc, char **argv) {
 			return -EIO;
 		}
 		if (emit_reset) {
-			send_status(MODULE_STATUS_STREAM_RESET);
+			send_status(cvmmap::ModuleStatus::StreamReset);
 		}
 		return backends::ERR_OK;
 	};
@@ -1490,18 +1487,18 @@ int main(int argc, char **argv) {
 				spdlog::critical("playlist apply rollback failed; stopping producer");
 				is_running.store(false, std::memory_order::relaxed);
 				return cvmmap::unexpected(cvmmap::ControlError{
-					.code = cvmmap::CONTROL_RESPONSE_ERROR,
+					.code = cvmmap::ControlErrorCode::Error,
 					.message = "failed to apply playlist and rollback failed",
 				});
 			}
 			return cvmmap::unexpected(cvmmap::ControlError{
-				.code = cvmmap::CONTROL_RESPONSE_ERROR,
+				.code = cvmmap::ControlErrorCode::Error,
 				.message = "failed to activate the applied playlist; previous source restored",
 			});
 		}
 
 		if (emit_reset) {
-			send_status(MODULE_STATUS_STREAM_RESET);
+			send_status(cvmmap::ModuleStatus::StreamReset);
 		}
 		return playlist_controller->GetInfo();
 	};
@@ -1514,13 +1511,17 @@ int main(int argc, char **argv) {
 	if (nats_enabled) {
 		cvmmap::NatsControlHandlers nats_handlers;
 		nats_handlers.on_reset_frame_count =
-			[&backend, &backend_control_mutex, playlist_controller = playlist_controller.get(), &switch_playlist_item]() -> int {
+			[&backend,
+			 &backend_control_mutex,
+			 &map_control_error_code,
+			 playlist_controller = playlist_controller.get(),
+			 &switch_playlist_item]() -> cvmmap::ControlErrorCode {
 			std::lock_guard lock(backend_control_mutex);
 			if (playlist_controller->HasPlaylist() &&
 				playlist_controller->CurrentIndex() != 0) {
-				return switch_playlist_item(0, false);
+				return map_control_error_code(switch_playlist_item(0, false));
 			}
-			return backend.ResetFrameCount();
+			return map_control_error_code(backend.ResetFrameCount());
 		};
 		nats_handlers.on_get_source_info = [&backend, &backend_control_mutex, &recorder_providers]() {
 			std::lock_guard lock(backend_control_mutex);
@@ -1534,9 +1535,15 @@ int main(int argc, char **argv) {
 			}
 			return info;
 		};
-		nats_handlers.on_seek_timestamp = [&backend_control_mutex, &seek_timestamp](uint64_t ts) {
+		nats_handlers.on_seek_timestamp =
+			[&backend_control_mutex, &map_control_error_code, &seek_timestamp](uint64_t ts) {
 			std::lock_guard lock(backend_control_mutex);
-			return seek_timestamp(ts);
+			auto result = seek_timestamp(ts);
+			if (!result) {
+				return cvmmap::expected<app::backends::seek_result_t, cvmmap::ControlErrorCode>(
+					cvmmap::unexpected(map_control_error_code(result.error())));
+			}
+			return cvmmap::expected<app::backends::seek_result_t, cvmmap::ControlErrorCode>(*result);
 		};
 		nats_handlers.on_apply_playlist =
 			[&apply_resolved_playlist,
@@ -1548,7 +1555,7 @@ int main(int argc, char **argv) {
 			std::lock_guard lock(backend_control_mutex);
 			if (!playlist_controller->SupportsRuntimeApply()) {
 				return cvmmap::unexpected(cvmmap::ControlError{
-					.code = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
+					.code = cvmmap::ControlErrorCode::Unsupported,
 					.message = "playlist apply is only supported for MCAP and ZED SVO producers",
 				});
 			}
@@ -1558,7 +1565,7 @@ int main(int argc, char **argv) {
 			}
 			if (*recording_active) {
 				return cvmmap::unexpected(cvmmap::ControlError{
-					.code = cvmmap::CONTROL_RESPONSE_ERROR,
+					.code = cvmmap::ControlErrorCode::Error,
 					.message = "cannot apply a playlist while recording is active",
 				});
 			}
@@ -1587,7 +1594,7 @@ int main(int argc, char **argv) {
 			auto *provider = find_recorder_provider(request.format);
 			if (!provider || !provider->start) {
 				return cvmmap::unexpected(cvmmap::ControlError{
-					.code    = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
+					.code    = cvmmap::ControlErrorCode::Unsupported,
 					.message = "recording format is not supported by the active producer",
 				});
 			}
@@ -1600,7 +1607,7 @@ int main(int argc, char **argv) {
 			auto *provider = find_recorder_provider(format);
 			if (!provider || !provider->stop) {
 				return cvmmap::unexpected(cvmmap::ControlError{
-					.code    = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
+					.code    = cvmmap::ControlErrorCode::Unsupported,
 					.message = "recording format is not supported by the active producer",
 				});
 			}
@@ -1613,7 +1620,7 @@ int main(int argc, char **argv) {
 			auto *provider = find_recorder_provider(format);
 			if (!provider || !provider->status) {
 				return cvmmap::unexpected(cvmmap::ControlError{
-					.code    = cvmmap::CONTROL_RESPONSE_UNSUPPORTED,
+					.code    = cvmmap::ControlErrorCode::Unsupported,
 					.message = "recording format is not supported by the active producer",
 				});
 			}
@@ -1627,7 +1634,7 @@ int main(int argc, char **argv) {
 		}
 	}
 
-	send_status(MODULE_STATUS_ONLINE);
+	send_status(cvmmap::ModuleStatus::Online);
 	while (is_running.load(std::memory_order::relaxed)) {
 		const auto transition =
 			pending_playlist_transition.exchange(PlaylistTransitionAction::None, std::memory_order_relaxed);
@@ -1651,7 +1658,7 @@ int main(int argc, char **argv) {
 				rc = backend.ResetFrameCount();
 				if (rc == backends::ERR_OK &&
 					transition == PlaylistTransitionAction::ResetActiveEmitReset) {
-					send_status(MODULE_STATUS_STREAM_RESET);
+					send_status(cvmmap::ModuleStatus::StreamReset);
 				}
 				break;
 			case PlaylistTransitionAction::None:
@@ -1668,7 +1675,7 @@ int main(int argc, char **argv) {
 	}
 
 	backend.Shutdown();
-	send_status(MODULE_STATUS_OFFLINE);
+	send_status(cvmmap::ModuleStatus::Offline);
 	if (nats_service) {
 		nats_service->Stop();
 	}

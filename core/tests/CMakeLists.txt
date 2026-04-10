@@ -27,18 +27,18 @@ add_test(
 	COMMAND cvmmap_frame_metadata_tests
 )
 
-add_executable(cvmmap_control_protocol_tests
-	control_protocol_test.cpp
+add_executable(cvmmap_control_api_tests
+	control_api_test.cpp
 )
 
-target_link_libraries(cvmmap_control_protocol_tests
+target_link_libraries(cvmmap_control_api_tests
 	PRIVATE
 		cvmmap_ipc
 )
 
 add_test(
-	NAME cvmmap_control_protocol_tests
-	COMMAND cvmmap_control_protocol_tests
+	NAME cvmmap_control_api_tests
+	COMMAND cvmmap_control_api_tests
 )
 
 add_executable(cvmmap_protocol_fixture_writer

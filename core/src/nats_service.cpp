@@ -23,35 +23,19 @@ namespace pb = ::cvmmap::proto;
 
 namespace {
 
-pb::ErrorCode map_posix_error(const int error_code) {
+pb::ErrorCode map_control_error_code(const ControlErrorCode error_code) {
 	switch (error_code) {
-	case 0:
+	case ControlErrorCode::Ok:
 		return pb::ERROR_CODE_OK;
-	case -EOPNOTSUPP:
+	case ControlErrorCode::UnknownCmd:
+		return pb::ERROR_CODE_UNKNOWN_CMD;
+	case ControlErrorCode::Unsupported:
 		return pb::ERROR_CODE_UNSUPPORTED;
-	case -ERANGE:
-	case -EINVAL:
-		return pb::ERROR_CODE_OUT_OF_RANGE;
-	default:
-		return pb::ERROR_CODE_ERROR;
-	}
-}
-
-pb::ErrorCode map_control_error_code(const int error_code) {
-	switch (error_code) {
-	case CONTROL_RESPONSE_OK:
-		return pb::ERROR_CODE_OK;
-	case CONTROL_RESPONSE_UNKNOWN_CMD:
-	case CONTROL_RESPONSE_UNSUPPORTED:
-	case -EOPNOTSUPP:
-		return pb::ERROR_CODE_UNSUPPORTED;
-	case CONTROL_RESPONSE_INVALID_PAYLOAD:
+	case ControlErrorCode::InvalidPayload:
 		return pb::ERROR_CODE_INVALID_PAYLOAD;
-	case CONTROL_RESPONSE_OUT_OF_RANGE:
-	case -ERANGE:
-	case -EINVAL:
+	case ControlErrorCode::OutOfRange:
 		return pb::ERROR_CODE_OUT_OF_RANGE;
-	case CONTROL_RESPONSE_TIMEOUT:
+	case ControlErrorCode::Timeout:
 		return pb::ERROR_CODE_TIMEOUT;
 	default:
 		return pb::ERROR_CODE_ERROR;
@@ -93,14 +77,14 @@ pb::RecordingFormat to_proto_recording_format(
 	}
 }
 
-pb::ModuleStatusCode to_proto_module_status(const int32_t status_code) {
-	if (status_code == MODULE_STATUS_ONLINE) {
+pb::ModuleStatusCode to_proto_module_status(const ModuleStatus status) {
+	if (status == ModuleStatus::Online) {
 		return pb::MODULE_STATUS_CODE_ONLINE;
 	}
-	if (status_code == MODULE_STATUS_OFFLINE) {
+	if (status == ModuleStatus::Offline) {
 		return pb::MODULE_STATUS_CODE_OFFLINE;
 	}
-	if (status_code == MODULE_STATUS_STREAM_RESET) {
+	if (status == ModuleStatus::StreamReset) {
 		return pb::MODULE_STATUS_CODE_STREAM_RESET;
 	}
 	return pb::MODULE_STATUS_CODE_UNKNOWN;
@@ -152,7 +136,7 @@ cvmmap::expected<PlaylistRequest, ControlError> parse_playlist_request(
 	for (const auto &path : request.paths()) {
 		if (path.empty()) {
 			return cvmmap::unexpected(ControlError{
-				.code = CONTROL_RESPONSE_INVALID_PAYLOAD,
+				.code = ControlErrorCode::InvalidPayload,
 				.message = "playlist paths must not be empty",
 			});
 		}
@@ -160,7 +144,7 @@ cvmmap::expected<PlaylistRequest, ControlError> parse_playlist_request(
 	}
 	if (parsed.paths.empty()) {
 		return cvmmap::unexpected(ControlError{
-			.code = CONTROL_RESPONSE_INVALID_PAYLOAD,
+			.code = ControlErrorCode::InvalidPayload,
 			.message = "playlist paths must not be empty",
 		});
 	}
@@ -172,7 +156,7 @@ cvmmap::expected<RecordingRequest, ControlError> parse_recording_request(
 	const RecordingFormat format) {
 	if (request.output_path().empty()) {
 		return cvmmap::unexpected(ControlError{
-			.code = CONTROL_RESPONSE_INVALID_PAYLOAD,
+			.code = ControlErrorCode::InvalidPayload,
 			.message = "recording path is empty",
 		});
 	}
@@ -186,7 +170,7 @@ cvmmap::expected<RecordingRequest, ControlError> parse_recording_request(
 	case RecordingFormat::Svo: {
 		if (request.has_mcap_options()) {
 			return cvmmap::unexpected(ControlError{
-				.code = CONTROL_RESPONSE_INVALID_PAYLOAD,
+				.code = ControlErrorCode::InvalidPayload,
 				.message = "MCAP options are invalid for SVO recording",
 			});
 		}
@@ -213,7 +197,7 @@ cvmmap::expected<RecordingRequest, ControlError> parse_recording_request(
 	case RecordingFormat::Mcap: {
 		if (request.has_svo_options()) {
 			return cvmmap::unexpected(ControlError{
-				.code = CONTROL_RESPONSE_INVALID_PAYLOAD,
+				.code = ControlErrorCode::InvalidPayload,
 				.message = "SVO options are invalid for MCAP recording",
 			});
 		}
@@ -241,7 +225,7 @@ cvmmap::expected<RecordingRequest, ControlError> parse_recording_request(
 	}
 	default:
 		return cvmmap::unexpected(ControlError{
-			.code = CONTROL_RESPONSE_INVALID_PAYLOAD,
+			.code = ControlErrorCode::InvalidPayload,
 			.message = "recording format is required",
 		});
 	}
@@ -394,10 +378,8 @@ struct NatsControlService::impl {
 		auto *self = from_request(request);
 		pb::ResetFrameCountResponse response;
 		if (self->handlers.on_reset_frame_count) {
-			response.set_error(
-				self->handlers.on_reset_frame_count() == 0 ?
-					pb::ERROR_CODE_OK :
-					pb::ERROR_CODE_ERROR);
+			response.set_error(map_control_error_code(
+				self->handlers.on_reset_frame_count()));
 		} else {
 			response.set_error(pb::ERROR_CODE_UNSUPPORTED);
 		}
@@ -442,7 +424,7 @@ struct NatsControlService::impl {
 		auto result = self->handlers.on_seek_timestamp(
 			wire_request.target_timestamp_ns());
 		if (!result) {
-			response.set_error(map_posix_error(result.error()));
+			response.set_error(map_control_error_code(result.error()));
 			return self->reply(request, response);
 		}
 
@@ -830,13 +812,13 @@ void NatsControlService::Stop() {
 	pimpl_->started = false;
 }
 
-void NatsControlService::PublishModuleStatus(const int32_t status_code) {
+void NatsControlService::PublishModuleStatus(const ModuleStatus status) {
 	if (!pimpl_->conn) {
 		return;
 	}
 
 	pb::ModuleStatusEvent event;
-	event.set_status(to_proto_module_status(status_code));
+	event.set_status(to_proto_module_status(status));
 	event.set_instance(pimpl_->options.instance_name);
 	event.set_timestamp_ns(now_ns());
 

@@ -160,8 +160,6 @@ Normative spec documents live under `docs/`, especially:
 - `docs/abi_v2_migration_guide.md`
 - `docs/python-client.md`
 
-Legacy control-wire fixtures and parsers remain in the tree for compatibility tests under `docs/cvmmap_control_v1.ksy`, but the live control plane is the protobuf schema in `core/proto/cvmmap/control.proto`.
-
 ## ZED Body Tracking Frame Metadata
 
 When the ZED backend publishes body-tracking packets, the fixed 64-byte body

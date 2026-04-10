@@ -16,35 +16,7 @@ constexpr size_t LABEL_LEN_MAX = 24;
 constexpr size_t SHM_PAYLOAD_OFFSET = 256;
 
 constexpr uint8_t FRAME_TOPIC_MAGIC = 0x7d;
-constexpr uint8_t MODULE_STATUS_MAGIC = 0x5a;
-
-constexpr uint8_t CONTROL_MESSAGE_REQUEST_MAGIC = 0x3c;
-constexpr uint8_t CONTROL_MESSAGE_RESPONSE_MAGIC = 0x3d;
 constexpr uint8_t BODY_TRACKING_MAGIC = 0x62;
-
-constexpr int32_t CONTROL_MSG_CMD_GENERIC = 0;
-constexpr int32_t CONTROL_MSG_CMD_RESET_FRAME_COUNT = 0x1001;
-constexpr int32_t CONTROL_MSG_CMD_GET_SOURCE_INFO = 0x1002;
-constexpr int32_t CONTROL_MSG_CMD_SEEK_TIMESTAMP_NS = 0x1003;
-constexpr int32_t CONTROL_MSG_CMD_START_RECORDING = 0x1004;
-constexpr int32_t CONTROL_MSG_CMD_STOP_RECORDING = 0x1005;
-constexpr int32_t CONTROL_MSG_CMD_GET_RECORDING_STATUS = 0x1006;
-
-constexpr int32_t CONTROL_RESPONSE_OK = 0;
-constexpr int32_t CONTROL_RESPONSE_UNKNOWN_CMD = -1;
-constexpr int32_t CONTROL_RESPONSE_ERROR = -2;
-constexpr int32_t CONTROL_RESPONSE_INVALID_MAGIC = -3;
-constexpr int32_t CONTROL_RESPONSE_INVALID_LABEL = -4;
-constexpr int32_t CONTROL_RESPONSE_INVALID_VERSION = -5;
-constexpr int32_t CONTROL_RESPONSE_INVALID_MSG_SIZE = -6;
-constexpr int32_t CONTROL_RESPONSE_UNSUPPORTED = -7;
-constexpr int32_t CONTROL_RESPONSE_INVALID_PAYLOAD = -8;
-constexpr int32_t CONTROL_RESPONSE_OUT_OF_RANGE = -9;
-constexpr int32_t CONTROL_RESPONSE_TIMEOUT = -100;
-
-constexpr int32_t MODULE_STATUS_ONLINE = 0xa1;
-constexpr int32_t MODULE_STATUS_OFFLINE = 0xa0;
-constexpr int32_t MODULE_STATUS_STREAM_RESET = 0xb0;
 
 constexpr uint8_t VERSION_MAJOR = 1;
 constexpr uint8_t VERSION_MINOR = 0;
@@ -101,10 +73,21 @@ enum class DepthUnit : uint8_t {
 	Meter = 2,
 };
 
-enum class ModuleStatus : int32_t {
-	Online = MODULE_STATUS_ONLINE,
-	Offline = MODULE_STATUS_OFFLINE,
-	StreamReset = MODULE_STATUS_STREAM_RESET,
+enum class ControlErrorCode : uint8_t {
+	Ok = 0,
+	UnknownCmd = 1,
+	Error = 2,
+	Unsupported = 3,
+	InvalidPayload = 4,
+	OutOfRange = 5,
+	Timeout = 6,
+};
+
+enum class ModuleStatus : uint8_t {
+	Unknown = 0,
+	Online = 1,
+	Offline = 2,
+	StreamReset = 3,
 };
 
 enum class SourceKind : uint8_t {
@@ -359,127 +342,6 @@ struct sync_message_t {
 static_assert(alignof(sync_message_t) == 8,
 			  "sync_message_t must be 8-byte aligned");
 static_assert(sizeof(sync_message_t) == 48, "sync_message_t must be 48 bytes");
-
-struct module_status_message_t {
-	[[nodiscard]]
-	std::string_view label() const {
-		return std::string_view{reinterpret_cast<const char *>(_label)};
-	}
-
-	[[nodiscard]]
-	static constexpr size_t size() {
-		return sizeof(module_status_message_t);
-	}
-
-	uint8_t _magic{MODULE_STATUS_MAGIC};
-	uint8_t _reserved_0[1];
-	uint8_t versions_major{VERSION_MAJOR};
-	uint8_t versions_minor{VERSION_MINOR};
-	int32_t module_status;
-	uint8_t _label[LABEL_LEN_MAX];
-};
-static_assert(sizeof(module_status_message_t) == 32,
-			  "module_status_message_t must be 32 bytes");
-
-struct control_message_request_t {
-	[[nodiscard]]
-	std::string_view label() const {
-		return std::string_view{reinterpret_cast<const char *>(_label)};
-	}
-
-	void set_label(const std::string_view &label) {
-		auto len = std::min(label.size(), LABEL_LEN_MAX - 1);
-		std::copy(label.begin(), label.begin() + len, _label);
-		std::fill(_label + len, _label + LABEL_LEN_MAX, '\0');
-	}
-
-	uint8_t _magic{CONTROL_MESSAGE_REQUEST_MAGIC};
-	uint8_t _reserved_0[1];
-	uint8_t versions_major{VERSION_MAJOR};
-	uint8_t versions_minor{VERSION_MINOR};
-	int32_t command_id;
-	uint8_t _label[LABEL_LEN_MAX];
-	uint16_t request_message_length{0};
-};
-static_assert(sizeof(control_message_request_t) == 36,
-			  "control_message_request_t must be 36 bytes");
-
-struct control_message_response_t {
-	[[nodiscard]]
-	std::string_view label() const {
-		return std::string_view{reinterpret_cast<const char *>(_label)};
-	}
-
-	uint8_t _magic{CONTROL_MESSAGE_RESPONSE_MAGIC};
-	uint8_t _reserved_0[1];
-	uint8_t versions_major{VERSION_MAJOR};
-	uint8_t versions_minor{VERSION_MINOR};
-	int32_t command_id;
-	int32_t response_code;
-	uint8_t _label[LABEL_LEN_MAX];
-	uint16_t response_message_length;
-};
-static_assert(sizeof(control_message_response_t) == 40,
-			  "control_message_response_t must be 40 bytes");
-
-#pragma pack(push, 1)
-struct source_info_response_v1_t {
-	uint16_t struct_size{sizeof(source_info_response_v1_t)};
-	SourceKind source_kind{SourceKind::Unknown};
-	TimestampDomain timestamp_domain{TimestampDomain::Unknown};
-	uint32_t flags{0};
-	uint64_t timeline_start_ns{0};
-	uint64_t timeline_end_ns{0};
-	uint64_t duration_ns{0};
-	uint64_t current_timestamp_ns{0};
-	uint32_t current_frame_count{0};
-	uint32_t reserved_0{0};
-};
-static_assert(sizeof(source_info_response_v1_t) == 48,
-			  "source_info_response_v1_t must be 48 bytes");
-
-struct seek_timestamp_request_v1_t {
-	uint16_t struct_size{sizeof(seek_timestamp_request_v1_t)};
-	uint16_t reserved_0{0};
-	uint64_t target_timestamp_ns{0};
-};
-static_assert(sizeof(seek_timestamp_request_v1_t) == 12,
-			  "seek_timestamp_request_v1_t must be 12 bytes");
-
-struct seek_timestamp_response_v1_t {
-	uint16_t struct_size{sizeof(seek_timestamp_response_v1_t)};
-	uint8_t exact_match{0};
-	uint8_t reserved_0{0};
-	uint64_t requested_timestamp_ns{0};
-	uint64_t landed_timestamp_ns{0};
-	uint32_t landed_frame_count{0};
-	uint32_t reserved_1{0};
-};
-static_assert(sizeof(seek_timestamp_response_v1_t) == 28,
-			  "seek_timestamp_response_v1_t must be 28 bytes");
-
-struct recording_start_request_v1_t {
-	uint16_t struct_size{sizeof(recording_start_request_v1_t)};
-	uint16_t flags{0};
-	uint16_t path_length{0};
-	uint16_t reserved_0{0};
-};
-static_assert(sizeof(recording_start_request_v1_t) == 8,
-			  "recording_start_request_v1_t must be 8 bytes");
-
-struct recording_status_response_v1_t {
-	uint16_t struct_size{sizeof(recording_status_response_v1_t)};
-	RecordingFormat recording_format{RecordingFormat::Unknown};
-	uint8_t reserved_0{0};
-	uint16_t flags{0};
-	uint16_t path_length{0};
-	uint32_t frames_ingested{0};
-	uint32_t frames_encoded{0};
-	uint32_t reserved_1{0};
-};
-static_assert(sizeof(recording_status_response_v1_t) == 20,
-			  "recording_status_response_v1_t must be 20 bytes");
-
 struct body_tracking_message_header_t {
 	[[nodiscard]]
 	std::string_view label() const {
@@ -572,8 +434,6 @@ struct body_tracking_body_t {
 };
 static_assert(sizeof(body_tracking_body_t) == 3248,
 			  "body_tracking_body_t must be 3248 bytes");
-#pragma pack(pop)
-
 struct body_tracking_frame_t {
 	body_tracking_message_header_t header{};
 	std::vector<body_tracking_body_t> bodies{};

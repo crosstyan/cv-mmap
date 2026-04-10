@@ -76,7 +76,7 @@ struct RecordingStatus {
 };
 
 struct ControlError {
-	int32_t code{CONTROL_RESPONSE_ERROR};
+	ControlErrorCode code{ControlErrorCode::Error};
 	std::string message{};
 };
 
@@ -226,15 +226,15 @@ public:
 	void SetEventCallback(OnEventCallback &&cb);
 
 	[[nodiscard]]
-	int32_t
+	ControlErrorCode
 	ResetFrameCount(std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
-	cvmmap::expected<SourceInfo, int32_t>
+	cvmmap::expected<SourceInfo, ControlErrorCode>
 	GetSourceInfo(std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
-	cvmmap::expected<SeekResult, int32_t>
+	cvmmap::expected<SeekResult, ControlErrorCode>
 	SeekTimestampNs(uint64_t timestamp_ns,
 				   std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
