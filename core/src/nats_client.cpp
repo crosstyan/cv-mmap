@@ -50,17 +50,6 @@ TimestampDomain from_proto_timestamp_domain(const pb::TimestampDomain timestamp_
 	}
 }
 
-RecordingFormat from_proto_recording_format(const pb::RecordingFormat format) {
-	switch (format) {
-	case pb::RECORDING_FORMAT_SVO:
-		return RecordingFormat::Svo;
-	case pb::RECORDING_FORMAT_MCAP:
-		return RecordingFormat::Mcap;
-	default:
-		return RecordingFormat::Unknown;
-	}
-}
-
 ControlErrorCode from_proto_error_code(const pb::ErrorCode error_code) {
 	switch (error_code) {
 	case pb::ERROR_CODE_OK:
@@ -80,73 +69,9 @@ ControlErrorCode from_proto_error_code(const pb::ErrorCode error_code) {
 	}
 }
 
-cvmmap::expected<std::string, ControlError> recorder_capabilities_subject(
-	const std::string &target_key,
-	const RecordingFormat format) {
-	switch (format) {
-	case RecordingFormat::Svo:
-		return nats::subject_control_recorder_svo_capabilities(target_key);
-	case RecordingFormat::Mcap:
-		return nats::subject_control_recorder_mcap_capabilities(target_key);
-	default:
-		return cvmmap::unexpected(ControlError{
-			.code = ControlErrorCode::InvalidPayload,
-			.message = "recording format is required",
-		});
-	}
-}
-
-cvmmap::expected<std::string, ControlError> recording_start_subject(
-	const std::string &target_key,
-	const RecordingFormat format) {
-	switch (format) {
-	case RecordingFormat::Svo:
-		return nats::subject_control_recorder_svo_start(target_key);
-	case RecordingFormat::Mcap:
-		return nats::subject_control_recorder_mcap_start(target_key);
-	default:
-		return cvmmap::unexpected(ControlError{
-			.code = ControlErrorCode::InvalidPayload,
-			.message = "recording format is required",
-		});
-	}
-}
-
-cvmmap::expected<std::string, ControlError> recording_stop_subject(
-	const std::string &target_key,
-	const RecordingFormat format) {
-	switch (format) {
-	case RecordingFormat::Svo:
-		return nats::subject_control_recorder_svo_stop(target_key);
-	case RecordingFormat::Mcap:
-		return nats::subject_control_recorder_mcap_stop(target_key);
-	default:
-		return cvmmap::unexpected(ControlError{
-			.code = ControlErrorCode::InvalidPayload,
-			.message = "recording format is required",
-		});
-	}
-}
-
-cvmmap::expected<std::string, ControlError> recording_status_subject(
-	const std::string &target_key,
-	const RecordingFormat format) {
-	switch (format) {
-	case RecordingFormat::Svo:
-		return nats::subject_control_recorder_svo_status(target_key);
-	case RecordingFormat::Mcap:
-		return nats::subject_control_recorder_mcap_status(target_key);
-	default:
-		return cvmmap::unexpected(ControlError{
-			.code = ControlErrorCode::InvalidPayload,
-			.message = "recording format is required",
-		});
-	}
-}
-
-RecordingStatus to_recording_status(const pb::RecordingStatusResponse &response) {
-	return RecordingStatus{
-		.format = from_proto_recording_format(response.format()),
+SvoRecordingStatus to_svo_recording_status(
+	const pb::RecordingStatusResponse &response) {
+	return SvoRecordingStatus{
 		.can_record = response.can_record(),
 		.is_recording = response.is_recording(),
 		.is_paused = response.is_paused(),
@@ -171,20 +96,6 @@ PlaylistInfo to_playlist_info(const pb::PlaylistInfo &wire_info) {
 	return info;
 }
 
-void merge_recorder_formats(
-	ControlCapabilities &capabilities,
-	const pb::CapabilitiesResponse &response) {
-	for (const auto format : response.available_recording_formats()) {
-		const auto decoded = from_proto_recording_format(
-			static_cast<pb::RecordingFormat>(format));
-		if (decoded == RecordingFormat::Unknown ||
-			capabilities.supports_recording_format(decoded)) {
-			continue;
-		}
-		capabilities.available_recording_formats.push_back(decoded);
-	}
-}
-
 void apply_svo_options(
 	const SvoRecordingOptions &options,
 	pb::SvoRecordingOptions *wire_options) {
@@ -199,26 +110,6 @@ void apply_svo_options(
 	}
 	if (options.transcode_streaming_input) {
 		wire_options->set_transcode_streaming_input(*options.transcode_streaming_input);
-	}
-}
-
-void apply_mcap_options(
-	const McapRecordingOptions &options,
-	pb::McapRecordingOptions *wire_options) {
-	if (options.compression) {
-		wire_options->set_compression(*options.compression);
-	}
-	if (options.topic) {
-		wire_options->set_topic(*options.topic);
-	}
-	if (options.depth_topic) {
-		wire_options->set_depth_topic(*options.depth_topic);
-	}
-	if (options.body_topic) {
-		wire_options->set_body_topic(*options.body_topic);
-	}
-	if (options.frame_id) {
-		wire_options->set_frame_id(*options.frame_id);
 	}
 }
 
@@ -349,11 +240,11 @@ cvmmap::expected<DiscoveredProducer, DiscoveryError> to_discovered_producer(
 	} else {
 		producer.status_subject = nats::subject_status(producer.nats_target_key);
 	}
-	if (auto value = metadata_value(info.metadata(), "control_subject_prefix")) {
-		producer.control_subject_prefix = std::move(*value);
+	if (auto value = metadata_value(info.metadata(), "producer_subject_prefix")) {
+		producer.producer_subject_prefix = std::move(*value);
 	} else {
-		producer.control_subject_prefix =
-			nats::subject_control_prefix(producer.nats_target_key);
+		producer.producer_subject_prefix =
+			nats::subject_producer_prefix(producer.nats_target_key);
 	}
 	if (auto value = metadata_value(info.metadata(), "backend")) {
 		producer.backend = std::move(*value);
@@ -361,15 +252,15 @@ cvmmap::expected<DiscoveredProducer, DiscoveryError> to_discovered_producer(
 
 	for (const auto &endpoint : info.endpoints()) {
 		if (!endpoint.subject().empty()) {
-			producer.control_subjects.push_back(endpoint.subject());
+			producer.producer_subjects.push_back(endpoint.subject());
 		}
 	}
-	std::sort(producer.control_subjects.begin(), producer.control_subjects.end());
-	producer.control_subjects.erase(
+	std::sort(producer.producer_subjects.begin(), producer.producer_subjects.end());
+	producer.producer_subjects.erase(
 		std::unique(
-			producer.control_subjects.begin(),
-			producer.control_subjects.end()),
-		producer.control_subjects.end());
+			producer.producer_subjects.begin(),
+			producer.producer_subjects.end()),
+		producer.producer_subjects.end());
 
 	return producer;
 }
@@ -625,7 +516,7 @@ ControlErrorCode NatsControlClient::ResetFrameCount(
 	pb::ResetFrameCountRequest request;
 	auto response =
 		pimpl_->request<pb::ResetFrameCountRequest, pb::ResetFrameCountResponse>(
-			nats::subject_control_source_reset(pimpl_->target_key),
+			nats::subject_producer_source_reset(pimpl_->target_key),
 			request,
 			timeout);
 	if (!response) {
@@ -639,7 +530,7 @@ cvmmap::expected<SourceInfo, ControlErrorCode> NatsControlClient::GetSourceInfo(
 	pb::GetSourceInfoRequest request;
 	auto response =
 		pimpl_->request<pb::GetSourceInfoRequest, pb::GetSourceInfoResponse>(
-			nats::subject_control_source_info(pimpl_->target_key),
+			nats::subject_producer_source_info(pimpl_->target_key),
 			request,
 			timeout);
 	if (!response) {
@@ -667,7 +558,7 @@ cvmmap::expected<SeekResult, ControlErrorCode> NatsControlClient::SeekTimestampN
 	request.set_target_timestamp_ns(timestamp_ns);
 	auto response =
 		pimpl_->request<pb::SeekTimestampRequest, pb::SeekTimestampResponse>(
-			nats::subject_control_source_seek(pimpl_->target_key),
+			nats::subject_producer_source_seek(pimpl_->target_key),
 			request,
 			timeout);
 	if (!response) {
@@ -691,7 +582,7 @@ cvmmap::expected<PlaylistInfo, ControlError> NatsControlClient::ApplyPlaylist(
 	apply_playlist_request(request, &wire_request);
 	auto response =
 		pimpl_->request<pb::ApplyPlaylistRequest, pb::ApplyPlaylistResponse>(
-			nats::subject_control_source_playlist_apply(pimpl_->target_key),
+			nats::subject_producer_source_playlist_apply(pimpl_->target_key),
 			wire_request,
 			timeout);
 	if (!response) {
@@ -700,7 +591,6 @@ cvmmap::expected<PlaylistInfo, ControlError> NatsControlClient::ApplyPlaylist(
 	if (response->error() != pb::ERROR_CODE_OK) {
 		return cvmmap::unexpected(ControlError{
 			.code = from_proto_error_code(response->error()),
-			.message = response->error_message(),
 		});
 	}
 	return to_playlist_info(response->playlist_info());
@@ -711,7 +601,7 @@ cvmmap::expected<PlaylistInfo, ControlError> NatsControlClient::GetPlaylistInfo(
 	pb::GetPlaylistInfoRequest request;
 	auto response =
 		pimpl_->request<pb::GetPlaylistInfoRequest, pb::GetPlaylistInfoResponse>(
-			nats::subject_control_source_playlist_info(pimpl_->target_key),
+			nats::subject_producer_source_playlist_info(pimpl_->target_key),
 			request,
 			timeout);
 	if (!response) {
@@ -720,56 +610,59 @@ cvmmap::expected<PlaylistInfo, ControlError> NatsControlClient::GetPlaylistInfo(
 	if (response->error() != pb::ERROR_CODE_OK) {
 		return cvmmap::unexpected(ControlError{
 			.code = from_proto_error_code(response->error()),
-			.message = response->error_message(),
 		});
 	}
 	return to_playlist_info(response->playlist_info());
 }
 
-cvmmap::expected<ControlCapabilities, ControlError> NatsControlClient::GetCapabilities(
+cvmmap::expected<SourceControlCapabilities, ControlError>
+NatsControlClient::GetSourceCapabilities(
 	const std::chrono::milliseconds timeout) {
 	pb::CapabilitiesRequest request;
-	auto source_response =
+	auto response =
 		pimpl_->request<pb::CapabilitiesRequest, pb::CapabilitiesResponse>(
-			nats::subject_control_source_capabilities(pimpl_->target_key),
+			nats::subject_producer_source_capabilities(pimpl_->target_key),
 			request,
 			timeout);
-	if (!source_response) {
-		return cvmmap::unexpected(ControlError{.code = source_response.error()});
+	if (!response) {
+		return cvmmap::unexpected(ControlError{.code = response.error()});
 	}
-	if (source_response->error() != pb::ERROR_CODE_OK) {
+	if (response->error() != pb::ERROR_CODE_OK) {
 		return cvmmap::unexpected(ControlError{
-			.code = from_proto_error_code(source_response->error()),
+			.code = from_proto_error_code(response->error()),
 		});
 	}
 
-	ControlCapabilities capabilities{
-		.can_seek = source_response->can_seek(),
+	return SourceControlCapabilities{
+		.can_seek = response->can_seek(),
 	};
-
-	auto merge_recorder_capability = [&](const RecordingFormat format) {
-		auto subject = recorder_capabilities_subject(pimpl_->target_key, format);
-		if (!subject) {
-			return;
-		}
-		auto response =
-			pimpl_->request<pb::CapabilitiesRequest, pb::CapabilitiesResponse>(
-				*subject,
-				request,
-				timeout);
-		if (!response || response->error() != pb::ERROR_CODE_OK) {
-			return;
-		}
-		merge_recorder_formats(capabilities, *response);
-	};
-
-	merge_recorder_capability(RecordingFormat::Svo);
-	merge_recorder_capability(RecordingFormat::Mcap);
-	return capabilities;
 }
 
-cvmmap::expected<RecordingStatus, ControlError> NatsControlClient::StartRecording(
-	const RecordingRequest &request,
+cvmmap::expected<SvoRecordingCapabilities, ControlError>
+NatsControlClient::GetSvoRecordingCapabilities(
+	const std::chrono::milliseconds timeout) {
+	pb::CapabilitiesRequest request;
+	auto response =
+		pimpl_->request<pb::CapabilitiesRequest, pb::CapabilitiesResponse>(
+			nats::subject_producer_svo_recorder_capabilities(pimpl_->target_key),
+			request,
+			timeout);
+	if (!response) {
+		return cvmmap::unexpected(ControlError{.code = response.error()});
+	}
+	if (response->error() != pb::ERROR_CODE_OK) {
+		return cvmmap::unexpected(ControlError{
+			.code = from_proto_error_code(response->error()),
+		});
+	}
+	return SvoRecordingCapabilities{
+		.can_record = response->available_recording_formats_size() > 0,
+	};
+}
+
+cvmmap::expected<SvoRecordingStatus, ControlError>
+NatsControlClient::StartSvoRecording(
+	const SvoRecordingRequest &request,
 	const std::chrono::milliseconds timeout) {
 	if (request.output_path.empty()) {
 		return cvmmap::unexpected(ControlError{
@@ -778,47 +671,15 @@ cvmmap::expected<RecordingStatus, ControlError> NatsControlClient::StartRecordin
 		});
 	}
 
-	auto subject = recording_start_subject(pimpl_->target_key, request.format);
-	if (!subject) {
-		return cvmmap::unexpected(subject.error());
-	}
-
 	pb::RecordingStartRequest wire_request;
 	wire_request.set_output_path(request.output_path);
-
-	switch (request.format) {
-	case RecordingFormat::Svo:
-		if (request.mcap_options) {
-			return cvmmap::unexpected(ControlError{
-				.code = ControlErrorCode::InvalidPayload,
-				.message = "MCAP options are invalid for SVO recording",
-			});
-		}
-		if (request.svo_options) {
-			apply_svo_options(*request.svo_options, wire_request.mutable_svo_options());
-		}
-		break;
-	case RecordingFormat::Mcap:
-		if (request.svo_options) {
-			return cvmmap::unexpected(ControlError{
-				.code = ControlErrorCode::InvalidPayload,
-				.message = "SVO options are invalid for MCAP recording",
-			});
-		}
-		if (request.mcap_options) {
-			apply_mcap_options(*request.mcap_options, wire_request.mutable_mcap_options());
-		}
-		break;
-	default:
-		return cvmmap::unexpected(ControlError{
-			.code = ControlErrorCode::InvalidPayload,
-			.message = "recording format is required",
-		});
+	if (request.svo_options) {
+		apply_svo_options(*request.svo_options, wire_request.mutable_svo_options());
 	}
 
 	auto response =
 		pimpl_->request<pb::RecordingStartRequest, pb::RecordingStatusResponse>(
-			*subject,
+			nats::subject_producer_svo_recorder_start(pimpl_->target_key),
 			wire_request,
 			timeout);
 	if (!response) {
@@ -830,21 +691,16 @@ cvmmap::expected<RecordingStatus, ControlError> NatsControlClient::StartRecordin
 			.message = response->error_message(),
 		});
 	}
-	return to_recording_status(*response);
+	return to_svo_recording_status(*response);
 }
 
-cvmmap::expected<RecordingStatus, ControlError> NatsControlClient::StopRecording(
-	const RecordingFormat format,
+cvmmap::expected<SvoRecordingStatus, ControlError>
+NatsControlClient::StopSvoRecording(
 	const std::chrono::milliseconds timeout) {
-	auto subject = recording_stop_subject(pimpl_->target_key, format);
-	if (!subject) {
-		return cvmmap::unexpected(subject.error());
-	}
-
 	pb::RecordingStopRequest request;
 	auto response =
 		pimpl_->request<pb::RecordingStopRequest, pb::RecordingStatusResponse>(
-			*subject,
+			nats::subject_producer_svo_recorder_stop(pimpl_->target_key),
 			request,
 			timeout);
 	if (!response) {
@@ -856,21 +712,16 @@ cvmmap::expected<RecordingStatus, ControlError> NatsControlClient::StopRecording
 			.message = response->error_message(),
 		});
 	}
-	return to_recording_status(*response);
+	return to_svo_recording_status(*response);
 }
 
-cvmmap::expected<RecordingStatus, ControlError> NatsControlClient::GetRecordingStatus(
-	const RecordingFormat format,
+cvmmap::expected<SvoRecordingStatus, ControlError>
+NatsControlClient::GetSvoRecordingStatus(
 	const std::chrono::milliseconds timeout) {
-	auto subject = recording_status_subject(pimpl_->target_key, format);
-	if (!subject) {
-		return cvmmap::unexpected(subject.error());
-	}
-
 	pb::RecordingStatusRequest request;
 	auto response =
 		pimpl_->request<pb::RecordingStatusRequest, pb::RecordingStatusResponse>(
-			*subject,
+			nats::subject_producer_svo_recorder_status(pimpl_->target_key),
 			request,
 			timeout);
 	if (!response) {
@@ -882,7 +733,7 @@ cvmmap::expected<RecordingStatus, ControlError> NatsControlClient::GetRecordingS
 			.message = response->error_message(),
 		});
 	}
-	return to_recording_status(*response);
+	return to_svo_recording_status(*response);
 }
 
 void NatsControlClient::SetBodyTrackingCallback(OnBodyTrackingCallback &&callback) {

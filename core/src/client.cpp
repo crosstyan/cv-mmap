@@ -71,13 +71,6 @@ DiscoveryError make_discovery_error(
 
 } // namespace
 
-bool ControlCapabilities::supports_recording_format(
-    const RecordingFormat format) const {
-  return std::find(available_recording_formats.begin(),
-                   available_recording_formats.end(),
-                   format) != available_recording_formats.end();
-}
-
 struct SharedBuffer {
   SharedBuffer(int shm_fd) {
     shm_fd_ = shm_fd;
@@ -634,59 +627,54 @@ CvMmapClient::GetPlaylistInfo(std::chrono::milliseconds timeout) {
   return pimpl_->nats_client->GetPlaylistInfo(timeout);
 }
 
-cvmmap::expected<ControlCapabilities, ControlError>
-CvMmapClient::GetCapabilities(std::chrono::milliseconds timeout) {
+cvmmap::expected<SourceControlCapabilities, ControlError>
+CvMmapClient::GetSourceCapabilities(std::chrono::milliseconds timeout) {
   if (!pimpl_->nats_client) {
     return cvmmap::unexpected(make_nats_disabled_error());
   }
-  return pimpl_->nats_client->GetCapabilities(timeout);
+  return pimpl_->nats_client->GetSourceCapabilities(timeout);
 }
 
-cvmmap::expected<RecordingStatus, ControlError>
-CvMmapClient::StartRecording(const RecordingRequest &request,
-                             std::chrono::milliseconds timeout) {
+cvmmap::expected<SvoRecordingCapabilities, ControlError>
+CvMmapClient::GetSvoRecordingCapabilities(std::chrono::milliseconds timeout) {
   if (!pimpl_->nats_client) {
     return cvmmap::unexpected(make_nats_disabled_error());
   }
-  return pimpl_->nats_client->StartRecording(request, timeout);
+  return pimpl_->nats_client->GetSvoRecordingCapabilities(timeout);
 }
 
-cvmmap::expected<RecordingStatus, ControlError>
-CvMmapClient::StartRecording(std::string_view output_path,
-                             std::chrono::milliseconds timeout) {
-  return StartRecording(
-      RecordingRequest{
-          .format = RecordingFormat::Svo,
+cvmmap::expected<SvoRecordingStatus, ControlError>
+CvMmapClient::StartSvoRecording(const SvoRecordingRequest &request,
+                                std::chrono::milliseconds timeout) {
+  if (!pimpl_->nats_client) {
+    return cvmmap::unexpected(make_nats_disabled_error());
+  }
+  return pimpl_->nats_client->StartSvoRecording(request, timeout);
+}
+
+cvmmap::expected<SvoRecordingStatus, ControlError>
+CvMmapClient::StartSvoRecording(std::string_view output_path,
+                                std::chrono::milliseconds timeout) {
+  return StartSvoRecording(
+      SvoRecordingRequest{
           .output_path = std::string(output_path),
       },
       timeout);
 }
 
-cvmmap::expected<RecordingStatus, ControlError>
-CvMmapClient::StopRecording(RecordingFormat format,
-                            std::chrono::milliseconds timeout) {
+cvmmap::expected<SvoRecordingStatus, ControlError>
+CvMmapClient::StopSvoRecording(std::chrono::milliseconds timeout) {
   if (!pimpl_->nats_client) {
     return cvmmap::unexpected(make_nats_disabled_error());
   }
-  return pimpl_->nats_client->StopRecording(format, timeout);
+  return pimpl_->nats_client->StopSvoRecording(timeout);
 }
 
-cvmmap::expected<RecordingStatus, ControlError>
-CvMmapClient::StopRecording(std::chrono::milliseconds timeout) {
-  return StopRecording(RecordingFormat::Svo, timeout);
-}
-
-cvmmap::expected<RecordingStatus, ControlError>
-CvMmapClient::GetRecordingStatus(RecordingFormat format,
-                                 std::chrono::milliseconds timeout) {
+cvmmap::expected<SvoRecordingStatus, ControlError>
+CvMmapClient::GetSvoRecordingStatus(std::chrono::milliseconds timeout) {
   if (!pimpl_->nats_client) {
     return cvmmap::unexpected(make_nats_disabled_error());
   }
-  return pimpl_->nats_client->GetRecordingStatus(format, timeout);
-}
-
-cvmmap::expected<RecordingStatus, ControlError>
-CvMmapClient::GetRecordingStatus(std::chrono::milliseconds timeout) {
-  return GetRecordingStatus(RecordingFormat::Svo, timeout);
+  return pimpl_->nats_client->GetSvoRecordingStatus(timeout);
 }
 } // namespace cvmmap

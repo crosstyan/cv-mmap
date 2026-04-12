@@ -20,10 +20,10 @@ struct NatsControlHandlers {
 	std::function<cvmmap::expected<app::backends::seek_result_t, ControlErrorCode>(uint64_t)> on_seek_timestamp;
 	std::function<cvmmap::expected<PlaylistInfo, ControlError>(const PlaylistRequest &)> on_apply_playlist;
 	std::function<cvmmap::expected<PlaylistInfo, ControlError>()> on_get_playlist_info;
-	std::function<bool(RecordingFormat)> on_recording_available;
-	std::function<cvmmap::expected<RecordingStatus, ControlError>(const RecordingRequest &)> on_start_recording;
-	std::function<cvmmap::expected<RecordingStatus, ControlError>(RecordingFormat)> on_stop_recording;
-	std::function<cvmmap::expected<RecordingStatus, ControlError>(RecordingFormat)> on_get_recording_status;
+	std::function<SvoRecordingCapabilities()> on_get_svo_recording_capabilities;
+	std::function<cvmmap::expected<SvoRecordingStatus, ControlError>(const SvoRecordingRequest &)> on_start_svo_recording;
+	std::function<cvmmap::expected<SvoRecordingStatus, ControlError>()> on_stop_svo_recording;
+	std::function<cvmmap::expected<SvoRecordingStatus, ControlError>()> on_get_svo_recording_status;
 };
 
 struct NatsControlServiceOptions {

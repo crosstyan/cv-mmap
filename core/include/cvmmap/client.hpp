@@ -64,8 +64,7 @@ struct SeekResult {
 	bool exact_match{false};
 };
 
-struct RecordingStatus {
-	RecordingFormat format{RecordingFormat::Unknown};
+struct SvoRecordingStatus {
 	bool can_record{false};
 	bool is_recording{false};
 	bool is_paused{false};
@@ -80,12 +79,8 @@ struct ControlError {
 	std::string message{};
 };
 
-struct ControlCapabilities {
+struct SourceControlCapabilities {
 	bool can_seek{false};
-	std::vector<RecordingFormat> available_recording_formats{};
-
-	[[nodiscard]]
-	bool supports_recording_format(RecordingFormat format) const;
 };
 
 struct PlaylistRequest {
@@ -108,19 +103,13 @@ struct SvoRecordingOptions {
 	std::optional<bool> transcode_streaming_input{};
 };
 
-struct McapRecordingOptions {
-	std::optional<std::string> compression{};
-	std::optional<std::string> topic{};
-	std::optional<std::string> depth_topic{};
-	std::optional<std::string> body_topic{};
-	std::optional<std::string> frame_id{};
+struct SvoRecordingCapabilities {
+	bool can_record{false};
 };
 
-struct RecordingRequest {
-	RecordingFormat format{RecordingFormat::Unknown};
+struct SvoRecordingRequest {
 	std::string output_path{};
 	std::optional<SvoRecordingOptions> svo_options{};
-	std::optional<McapRecordingOptions> mcap_options{};
 };
 
 enum class DiscoveryErrorCode : uint8_t {
@@ -161,9 +150,9 @@ struct DiscoveredProducer {
 	std::string zmq_addr{};
 	std::string body_subject{};
 	std::string status_subject{};
-	std::string control_subject_prefix{};
+	std::string producer_subject_prefix{};
 	std::string backend{};
-	std::vector<std::string> control_subjects{};
+	std::vector<std::string> producer_subjects{};
 };
 
 struct DiscoveryConnectConfig {
@@ -248,36 +237,36 @@ public:
 	GetPlaylistInfo(std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
-	cvmmap::expected<ControlCapabilities, ControlError>
-	GetCapabilities(std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
+	cvmmap::expected<SourceControlCapabilities, ControlError>
+	GetSourceCapabilities(
+		std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
-	cvmmap::expected<RecordingStatus, ControlError>
-	StartRecording(const RecordingRequest &request,
-				  std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
+	cvmmap::expected<SvoRecordingCapabilities, ControlError>
+	GetSvoRecordingCapabilities(
+		std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
-	cvmmap::expected<RecordingStatus, ControlError>
-	StartRecording(std::string_view output_path,
-				  std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
+	cvmmap::expected<SvoRecordingStatus, ControlError>
+	StartSvoRecording(
+		const SvoRecordingRequest &request,
+		std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
-	cvmmap::expected<RecordingStatus, ControlError>
-	StopRecording(RecordingFormat format,
-				 std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
+	cvmmap::expected<SvoRecordingStatus, ControlError>
+	StartSvoRecording(
+		std::string_view output_path,
+		std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
-	cvmmap::expected<RecordingStatus, ControlError>
-	StopRecording(std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
+	cvmmap::expected<SvoRecordingStatus, ControlError>
+	StopSvoRecording(
+		std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
-	cvmmap::expected<RecordingStatus, ControlError>
-	GetRecordingStatus(RecordingFormat format,
-					  std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
-
-	[[nodiscard]]
-	cvmmap::expected<RecordingStatus, ControlError>
-	GetRecordingStatus(std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
+	cvmmap::expected<SvoRecordingStatus, ControlError>
+	GetSvoRecordingStatus(
+		std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 private:
 	CvMmapClient();

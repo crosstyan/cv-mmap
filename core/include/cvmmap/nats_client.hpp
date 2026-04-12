@@ -42,20 +42,21 @@ public:
 	cvmmap::expected<PlaylistInfo, ControlError>
 	GetPlaylistInfo(std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
-	cvmmap::expected<ControlCapabilities, ControlError>
-	GetCapabilities(std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
+	cvmmap::expected<SourceControlCapabilities, ControlError>
+	GetSourceCapabilities(std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
-	cvmmap::expected<RecordingStatus, ControlError>
-	StartRecording(const RecordingRequest &request,
-				   std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
+	cvmmap::expected<SvoRecordingCapabilities, ControlError>
+	GetSvoRecordingCapabilities(std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
-	cvmmap::expected<RecordingStatus, ControlError>
-	StopRecording(RecordingFormat format,
-				  std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
+	cvmmap::expected<SvoRecordingStatus, ControlError>
+	StartSvoRecording(const SvoRecordingRequest &request,
+					  std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
-	cvmmap::expected<RecordingStatus, ControlError>
-	GetRecordingStatus(RecordingFormat format,
-				       std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
+	cvmmap::expected<SvoRecordingStatus, ControlError>
+	StopSvoRecording(std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
+
+	cvmmap::expected<SvoRecordingStatus, ControlError>
+	GetSvoRecordingStatus(std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
 	// Subscriptions (NATS pub/sub)
 	using OnBodyTrackingCallback = cvmmap::move_only_function<void(const body_tracking_frame_t &)>;

@@ -52,10 +52,10 @@ bool test_playlist_types_hold_expected_values() {
 }
 
 bool test_playlist_nats_subjects() {
-	const auto apply_subject = cvmmap::nats::subject_control_source_playlist_apply("demo");
-	const auto info_subject = cvmmap::nats::subject_control_source_playlist_info("demo");
-	return apply_subject == "cvmmap.demo.control.source.playlist.apply" &&
-		   info_subject == "cvmmap.demo.control.source.playlist.info";
+	const auto apply_subject = cvmmap::nats::subject_producer_source_playlist_apply("demo");
+	const auto info_subject = cvmmap::nats::subject_producer_source_playlist_info("demo");
+	return apply_subject == "cvmmap.demo.producer.source.playlist.apply" &&
+		   info_subject == "cvmmap.demo.producer.source.playlist.info";
 }
 
 } // namespace
