@@ -473,7 +473,7 @@ struct GStreamerBackendImpl {
 					GError *err = nullptr;
 					gchar *debug_info;
 					gst_message_parse_error(msg, &err, &debug_info);
-					spdlog::error("GStreamer error: {} ({})", err->message, debug_info ? debug_info : "none");
+					spdlog::error("GStreamer issue: {} ({})", err->message, debug_info ? debug_info : "none");
 					on_error(-EIO, err->message);
 					g_clear_error(&err);
 					g_free(debug_info);
@@ -512,7 +512,7 @@ struct GStreamerBackendImpl {
 				if (!process_sample(sample)) {
 					consecutive_errors++;
 					if (consecutive_errors >= MAX_CONSECUTIVE_ERRORS) {
-						spdlog::error("too many consecutive processing errors");
+						spdlog::error("too many consecutive bad frame-processing results");
 						on_error(-EIO, "Too many frame processing errors");
 						return;
 					}

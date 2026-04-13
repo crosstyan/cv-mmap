@@ -334,7 +334,7 @@ void CvMmapClient::impl::polling_task_() {
     try {
       zmq::poll(poll_items, std::chrono::milliseconds{100});
     } catch (const zmq::error_t &e) {
-      spdlog::error("client poll error: {}", e.what());
+      spdlog::error("bad client poll: {}", e.what());
       continue;
     }
 

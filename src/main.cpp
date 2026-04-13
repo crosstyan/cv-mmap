@@ -1001,7 +1001,7 @@ int main(int argc, char **argv) {
 		configured_playlist.has_value()) {
 		auto resolved_playlist = playlist_controller->Resolve(*configured_playlist);
 		if (!resolved_playlist) {
-			spdlog::error("failed to resolve configured playlist: {}", resolved_playlist.error().message);
+			spdlog::error("bad configured playlist resolution: {}", resolved_playlist.error().message);
 			return 1;
 		}
 		playlist_controller->ReplaceState(std::move(*resolved_playlist));
@@ -1021,6 +1021,32 @@ int main(int argc, char **argv) {
 			action,
 			std::memory_order_relaxed);
 	};
+	const auto request_playlist_item_transition =
+		[&config, playlist_controller = playlist_controller.get(), &request_playlist_transition](
+			const bool require_alternative_item) {
+			if (!playlist_controller->HasPlaylist()) {
+				return false;
+			}
+
+			const auto size = playlist_controller->Size();
+			const auto current_index = playlist_controller->CurrentIndex();
+			if (current_index + 1 < size) {
+				request_playlist_transition(PlaylistTransitionAction::Advance);
+				return true;
+			}
+			if (require_alternative_item && size < 2) {
+				return false;
+			}
+			if (config.video.finite_source_loops_silently()) {
+				request_playlist_transition(PlaylistTransitionAction::RewindSilent);
+				return true;
+			}
+			if (config.video.finite_source_loop_emits_reset()) {
+				request_playlist_transition(PlaylistTransitionAction::RewindEmitReset);
+				return true;
+			}
+			return false;
+		};
 	playlist_controller->ApplyCurrentPathToConfig();
 
 	const auto emplace_active_backend = [&]() -> bool {
@@ -1148,7 +1174,7 @@ int main(int argc, char **argv) {
 			initial_metadata.timestamp_ns = now_ns();
 			auto initial_metadata_v2      = build_v2_metadata(initial_metadata, picture_buffer_size);
 			if (!initial_metadata_v2) {
-				spdlog::error("build initial ABI v2 metadata failed");
+				spdlog::error("bad initial ABI v2 metadata build");
 				return;
 			}
 			fs->write_metadata(*initial_metadata_v2);
@@ -1174,7 +1200,7 @@ int main(int argc, char **argv) {
 				try {
 					output_buffer = undistort_pass->apply(output_buffer, metadata.info);
 				} catch (const std::exception &e) {
-					spdlog::error("undistort preprocess failed: {}", e.what());
+					spdlog::error("bad undistort preprocess: {}", e.what());
 					return;
 				}
 			}
@@ -1210,7 +1236,7 @@ int main(int argc, char **argv) {
 				const auto total_buffer_size = SHM_PAYLOAD_OFFSET + total_payload_size;
 				auto resized_frame_state     = frame_state_t::open(shm_state.fd(), total_buffer_size);
 				if (!resized_frame_state) {
-					spdlog::error("resize shared memory for frame payload failed; {}", resized_frame_state.error());
+					spdlog::error("bad frame payload shared-memory resize; {}", resized_frame_state.error());
 					return;
 				}
 				frame_state = std::move(*resized_frame_state);
@@ -1218,7 +1244,7 @@ int main(int argc, char **argv) {
 
 			auto metadata_v2 = build_v2_metadata(metadata, picture_buffer_size, encoded_plane);
 			if (!metadata_v2) {
-				spdlog::error("build ABI v2 metadata failed for frame@{}", metadata.frame_count);
+				spdlog::error("bad ABI v2 metadata for frame@{}", metadata.frame_count);
 				return;
 			}
 
@@ -1265,25 +1291,12 @@ int main(int argc, char **argv) {
 		});
 
 		backend.SetOnError([&backend,
-							&config,
-							playlist_controller = playlist_controller.get(),
+							&request_playlist_item_transition,
 							&request_playlist_transition](int error_code, std::string_view message) {
 			if (error_code == backends::ERR_EOS) {
 				spdlog::info("backend EOF: {}", message);
-				if (playlist_controller->HasPlaylist()) {
-					const auto current_index = playlist_controller->CurrentIndex();
-					if (current_index + 1 < playlist_controller->Size()) {
-						request_playlist_transition(PlaylistTransitionAction::Advance);
-						return;
-					}
-					if (config.video.finite_source_loops_silently()) {
-						request_playlist_transition(PlaylistTransitionAction::RewindSilent);
-						return;
-					}
-					if (config.video.finite_source_loop_emits_reset()) {
-						request_playlist_transition(PlaylistTransitionAction::RewindEmitReset);
-						return;
-					}
+				if (request_playlist_item_transition(false)) {
+					return;
 				}
 
 				const auto source_info = backend.GetSourceInfo();
@@ -1296,6 +1309,12 @@ int main(int argc, char **argv) {
 					}
 					return;
 				}
+			} else if (error_code == backends::ERR_SKIP_PLAYLIST_ITEM) {
+				if (request_playlist_item_transition(true)) {
+					spdlog::warn("skipping bad finite source item: {}", message);
+					return;
+				}
+				spdlog::error("bad finite source item: {}", message);
 			} else {
 				spdlog::error("backend({}): {}", error_code, message);
 			}
@@ -1461,7 +1480,7 @@ int main(int argc, char **argv) {
 		reset_runtime_frame_state();
 
 		if (!initialize_active_backend()) {
-			spdlog::error("failed to activate applied playlist; attempting rollback");
+			spdlog::error("bad applied playlist activation; attempting rollback");
 			playlist_controller->RestoreState(previous_state);
 			restore_backend_source_path(previous_source_path);
 			reset_runtime_frame_state();
@@ -1610,7 +1629,7 @@ int main(int argc, char **argv) {
 		};
 		nats_service->SetHandlers(std::move(nats_handlers));
 		if (!nats_service->Start()) {
-			spdlog::error("failed to start NATS control service on '{}'", config.nats.url);
+			spdlog::error("bad NATS control service startup on '{}'", config.nats.url);
 			backend.Shutdown();
 			return 1;
 		}
@@ -1648,7 +1667,7 @@ int main(int argc, char **argv) {
 				break;
 			}
 			if (rc != backends::ERR_OK) {
-				spdlog::error("playlist transition failed: {}", rc);
+				spdlog::error("bad playlist transition: {}", rc);
 				is_running.store(false, std::memory_order::relaxed);
 			}
 			continue;

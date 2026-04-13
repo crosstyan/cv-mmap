@@ -690,6 +690,19 @@ struct ZedBackendImpl {
 		return last_recording_error;
 	}
 
+	[[nodiscard]]
+	std::string format_svo_skip_message(const std::string_view prefix) const {
+		const auto path = options.zed_config.svo_path.value_or("<unknown>");
+		if (last_grab_error != sl::ERROR_CODE::SUCCESS) {
+			return cvmmap::format(
+				"{} '{}': {}",
+				prefix,
+				path,
+				sl::toString(last_grab_error).get());
+		}
+		return cvmmap::format("{} '{}'", prefix, path);
+	}
+
 	uint64_t effective_timestamp_ns_locked() {
 		return svo_mode ? zed_image_timestamp_ns(camera) : now_ns();
 	}
@@ -879,7 +892,7 @@ struct ZedBackendImpl {
 					auto positional_result =
 						camera.enablePositionalTracking(positional_tracking_parameters);
 					if (positional_result != sl::ERROR_CODE::SUCCESS) {
-						spdlog::error("failed to enable ZED positional tracking: code={}", static_cast<int>(positional_result));
+						spdlog::error("bad ZED positional tracking setup: code={}", static_cast<int>(positional_result));
 						camera.close();
 						return false;
 					}
@@ -908,7 +921,7 @@ struct ZedBackendImpl {
 					auto body_tracking_result =
 						camera.enableBodyTracking(body_tracking_parameters);
 					if (body_tracking_result != sl::ERROR_CODE::SUCCESS) {
-						spdlog::error("failed to enable ZED body tracking: code={}", static_cast<int>(body_tracking_result));
+						spdlog::error("bad ZED body tracking setup: code={}", static_cast<int>(body_tracking_result));
 						camera.disablePositionalTracking();
 						camera.close();
 						return false;
@@ -919,7 +932,7 @@ struct ZedBackendImpl {
 					if (camera.isOpened()) {
 						camera.close();
 					}
-					spdlog::error("failed to initialize ZED SVO timeline");
+					spdlog::error("bad ZED SVO timeline initialization");
 					return false;
 				}
 				return true;
@@ -938,7 +951,7 @@ struct ZedBackendImpl {
 			std::this_thread::sleep_for(std::chrono::milliseconds(200));
 		}
 
-		spdlog::error("failed to open ZED camera within {}ms: code={}", timeout_ms, static_cast<int>(open_result));
+		spdlog::error("bad ZED camera open after {}ms timeout: code={}", timeout_ms, static_cast<int>(open_result));
 		return false;
 	}
 
@@ -1200,7 +1213,7 @@ struct ZedBackendImpl {
 
 		packed_frame.resize(packed_size);
 		if (!copy_compact_plane(left_frame, *left_row_bytes, std::span<uint8_t>(packed_frame.data(), packed_left_size))) {
-			spdlog::error("failed to compact/copy left plane into packed payload");
+			spdlog::error("bad left-plane compaction/copy into packed payload");
 			return false;
 		}
 
@@ -1329,6 +1342,11 @@ struct ZedBackendImpl {
 		}
 
 		if (!open_camera()) {
+			if (svo_mode) {
+				const auto message = format_svo_skip_message("bad ZED SVO open");
+				on_error(ERR_SKIP_PLAYLIST_ITEM, message);
+				return;
+			}
 			on_error(-ENODEV, "Failed to open ZED camera");
 			return;
 		}
@@ -1336,7 +1354,13 @@ struct ZedBackendImpl {
 		warmup_camera();
 
 		if (!capture_frame()) {
-			spdlog::error("failed to capture first frame from ZED");
+			spdlog::error("bad first ZED frame capture");
+			if (svo_mode) {
+				const auto message = format_svo_skip_message("bad first-frame read from ZED SVO");
+				on_error(ERR_SKIP_PLAYLIST_ITEM, message);
+				camera.close();
+				return;
+			}
 			on_error(-EIO, "Failed to capture first frame");
 			camera.close();
 			return;
@@ -1420,7 +1444,12 @@ struct ZedBackendImpl {
 				continue;
 			}
 
-			spdlog::error("ZED capture failed {} consecutive times", consecutive_failures);
+			spdlog::error("bad ZED capture streak: {} consecutive attempts", consecutive_failures);
+			if (svo_mode) {
+				const auto message = format_svo_skip_message("corrupted or unreadable ZED SVO segment");
+				on_error(ERR_SKIP_PLAYLIST_ITEM, message);
+				break;
+			}
 			if (!options.zed_config.reconnect) {
 				on_error(-EIO, "ZED capture failure");
 				break;

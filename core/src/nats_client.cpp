@@ -368,7 +368,7 @@ struct NatsControlClient::impl {
 			if (parsed) {
 				self->on_body_tracking(*parsed);
 			} else {
-				spdlog::error("nats body parse error: {}", parsed.error());
+				spdlog::error("bad NATS body parse: {}", parsed.error());
 			}
 		}
 		natsMsg_Destroy(message);

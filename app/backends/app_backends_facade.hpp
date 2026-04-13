@@ -21,6 +21,9 @@ using on_body_tracking_fn_t = cvmmap::move_only_function<void(const cvmmap::body
 /// @brief Callback invoked on backend errors (e.g., capture failure, device disconnection)
 using on_error_fn_t = cvmmap::move_only_function<void(error_t error_code, std::string_view message)>;
 
+/// @brief Internal signal that the active finite source item should be skipped.
+constexpr error_t ERR_SKIP_PLAYLIST_ITEM = 1;
+
 PRO_DEF_MEM_DISPATCH(MemInit, Init);
 PRO_DEF_MEM_DISPATCH(MemShutdown, Shutdown);
 PRO_DEF_MEM_DISPATCH(MemSetOnMetadata, SetOnMetadata);
