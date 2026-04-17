@@ -4,6 +4,7 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+include(GNUInstallDirs)
 option(CVMMAP_BUILD_TESTS "Build cv-mmap test targets" OFF)
 if(CVMMAP_BUILD_TESTS)
 	enable_testing()
@@ -55,6 +56,25 @@ endif()
 message(STATUS "cv-mmap native std::expected support: ${CVMMAP_HAS_STD_EXPECTED}")
 message(STATUS "cv-mmap native std::format support: ${CVMMAP_HAS_STD_FORMAT}")
 
+function(cvmmap_append_runtime_dir out_var runtime_library)
+	execute_process(
+		COMMAND "${CMAKE_CXX_COMPILER}" -print-file-name=${runtime_library}
+		OUTPUT_VARIABLE runtime_library_path
+		OUTPUT_STRIP_TRAILING_WHITESPACE)
+	if (IS_ABSOLUTE "${runtime_library_path}")
+		get_filename_component(runtime_library_dir "${runtime_library_path}" DIRECTORY)
+		set(${out_var} "${${out_var}};${runtime_library_dir}" PARENT_SCOPE)
+	endif()
+endfunction()
+
+set(CVMMAP_BUILD_RPATH "")
+# Build-tree binaries compiled with a non-system GCC need that toolchain's
+# C++ runtime on the dynamic loader search path.
+cvmmap_append_runtime_dir(CVMMAP_BUILD_RPATH libstdc++.so.6)
+cvmmap_append_runtime_dir(CVMMAP_BUILD_RPATH libgcc_s.so.1)
+list(REMOVE_DUPLICATES CVMMAP_BUILD_RPATH)
+
+
 # brew install cppzmq
 # or
 # apt-get install libzmq3-dev
@@ -83,6 +103,12 @@ add_executable(cv-mmap src/main.cpp)
 target_include_directories(cv-mmap PRIVATE src/inc)
 target_link_libraries(cv-mmap PRIVATE cppzmq)
 target_link_options(cv-mmap PRIVATE "LINKER:--copy-dt-needed-entries")
+if (CVMMAP_BUILD_RPATH)
+	set_target_properties(cv-mmap PROPERTIES
+		BUILD_RPATH "${CVMMAP_BUILD_RPATH}")
+endif()
+set_target_properties(cv-mmap PROPERTIES
+	INSTALL_RPATH "$ORIGIN/../lib")
 
 add_subdirectory(app)
 target_link_libraries(cv-mmap
@@ -91,3 +117,7 @@ target_link_libraries(cv-mmap
 		spdlog::spdlog
 		app
 		cvmmap::nats)
+
+
+install(TARGETS cv-mmap
+	RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

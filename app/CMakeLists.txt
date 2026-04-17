@@ -269,7 +269,8 @@ target_link_libraries(app_video_backends PRIVATE cvmmap_stb_truetype_headers)
 target_link_libraries(app_video_backends PUBLIC msft_proxy4::proxy)
 target_compile_definitions(app_video_backends
 	PRIVATE
-		CVMMAP_DUMMY_DEFAULT_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../third_party/fonts/JetBrainsMono-Regular.ttf")
+		CVMMAP_DUMMY_DEFAULT_FONT_INSTALL_RELATIVE_PATH="../${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME}/fonts/JetBrainsMono-Regular.ttf"
+		CVMMAP_DUMMY_BUILD_TREE_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../third_party/fonts/JetBrainsMono-Regular.ttf")
 
 if (WITH_BACKEND_OPENCV)
 		target_compile_definitions(app_video_backends PUBLIC WITH_BACKEND_OPENCV=1)
@@ -353,3 +354,7 @@ if (CVMMAP_BUILD_TESTS)
 	)
 	add_subdirectory(tests)
 endif()
+
+
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/fonts/JetBrainsMono-Regular.ttf"
+	DESTINATION ${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME}/fonts)

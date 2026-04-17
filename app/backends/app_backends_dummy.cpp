@@ -74,7 +74,22 @@ namespace {
 	};
 
 	std::filesystem::path default_dummy_overlay_font_path() {
-		return std::filesystem::path(CVMMAP_DUMMY_DEFAULT_FONT_PATH);
+		std::error_code error;
+		const auto executable_path = std::filesystem::read_symlink("/proc/self/exe", error);
+		if (!error) {
+			const auto installed_font_path = executable_path.parent_path() / CVMMAP_DUMMY_DEFAULT_FONT_INSTALL_RELATIVE_PATH;
+			if (std::filesystem::exists(installed_font_path, error) && !error) {
+				return installed_font_path;
+			}
+		}
+		const auto build_tree_font_path = std::filesystem::path(CVMMAP_DUMMY_BUILD_TREE_FONT_PATH);
+		if (std::filesystem::exists(build_tree_font_path, error) && !error) {
+			return build_tree_font_path;
+		}
+		if (!error && !executable_path.empty()) {
+			return executable_path.parent_path() / CVMMAP_DUMMY_DEFAULT_FONT_INSTALL_RELATIVE_PATH;
+		}
+		return build_tree_font_path;
 	}
 
 	std::vector<unsigned char> read_binary_file(const std::filesystem::path &path) {
