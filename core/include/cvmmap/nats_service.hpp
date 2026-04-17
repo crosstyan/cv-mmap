@@ -20,6 +20,10 @@ struct NatsControlHandlers {
 	std::function<cvmmap::expected<app::backends::seek_result_t, ControlErrorCode>(uint64_t)> on_seek_timestamp;
 	std::function<cvmmap::expected<PlaylistInfo, ControlError>(const PlaylistRequest &)> on_apply_playlist;
 	std::function<cvmmap::expected<PlaylistInfo, ControlError>()> on_get_playlist_info;
+	std::function<cvmmap::expected<CameraControlCapabilities, ControlError>()> on_get_camera_control_capabilities;
+	std::function<cvmmap::expected<CameraControlState, ControlError>(CameraControlSetting)> on_get_camera_control;
+	std::function<cvmmap::expected<CameraControlState, ControlError>(const CameraControlRequest &)> on_set_camera_control;
+	std::function<cvmmap::expected<CameraControlState, ControlError>(const CameraControlRangeRequest &)> on_set_camera_control_range;
 	std::function<SvoRecordingCapabilities()> on_get_svo_recording_capabilities;
 	std::function<cvmmap::expected<SvoRecordingStatus, ControlError>(const SvoRecordingRequest &)> on_start_svo_recording;
 	std::function<cvmmap::expected<SvoRecordingStatus, ControlError>()> on_stop_svo_recording;

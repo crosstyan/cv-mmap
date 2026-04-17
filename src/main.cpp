@@ -983,6 +983,32 @@ int main(int argc, char **argv) {
 		};
 	};
 
+	const auto to_public_camera_control_state = [](const backends::camera_control_state_t &state) {
+		return cvmmap::CameraControlState{
+			.setting = state.setting,
+			.kind = state.kind,
+			.value = state.value,
+			.min_value = state.min_value,
+			.max_value = state.max_value,
+		};
+	};
+
+	const auto to_public_camera_control_capabilities = [](
+		const backends::camera_control_capabilities_t &capabilities) {
+		return cvmmap::CameraControlCapabilities{
+			.supported = capabilities.supported,
+			.supported_settings = capabilities.supported_settings,
+		};
+	};
+
+	const auto map_backend_control_error = [&map_control_error_code](const int error_code, std::string message = {}) {
+		return cvmmap::ControlError{
+			.code = map_control_error_code(error_code),
+			.message = std::move(message),
+		};
+	};
+
+
 	const auto to_public_recording_status = [](const backends::recording_status_t &status) {
 		return cvmmap::SvoRecordingStatus{
 			.can_record      = status.can_record,
@@ -995,6 +1021,13 @@ int main(int argc, char **argv) {
 		};
 	};
 
+	struct CameraControlProvider {
+		std::function<cvmmap::expected<cvmmap::CameraControlCapabilities, cvmmap::ControlError>()> capabilities;
+		std::function<cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError>(cvmmap::CameraControlSetting)> get;
+		std::function<cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError>(const cvmmap::CameraControlRequest &)> set;
+		std::function<cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError>(const cvmmap::CameraControlRangeRequest &)> set_range;
+	};
+
 	struct SvoRecorderProvider {
 		std::function<bool()> is_available;
 		std::function<cvmmap::expected<cvmmap::SvoRecordingStatus, cvmmap::ControlError>(const cvmmap::SvoRecordingRequest &)> start;
@@ -1002,6 +1035,7 @@ int main(int argc, char **argv) {
 		std::function<cvmmap::expected<cvmmap::SvoRecordingStatus, cvmmap::ControlError>()> status;
 	};
 
+	std::optional<CameraControlProvider> camera_control_provider{};
 	std::optional<SvoRecorderProvider> svo_recorder_provider{};
 	app::backends::BackendHandle backend;
 
@@ -1333,6 +1367,58 @@ int main(int argc, char **argv) {
 		});
 	};
 
+	const auto refresh_camera_control_provider = [&]() {
+		camera_control_provider.reset();
+		backend.TryVisitCameraControllable([&](auto &camera_backend) {
+			auto *camera_backend_ptr = &camera_backend;
+			camera_control_provider = CameraControlProvider{
+				.capabilities = [camera_backend_ptr, &to_public_camera_control_capabilities]()
+					-> cvmmap::expected<cvmmap::CameraControlCapabilities, cvmmap::ControlError> {
+					return to_public_camera_control_capabilities(
+						camera_backend_ptr->GetCameraControlCapabilities());
+				},
+				.get = [camera_backend_ptr, &map_backend_control_error, &to_public_camera_control_state](
+						const cvmmap::CameraControlSetting setting)
+					-> cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError> {
+					auto result = camera_backend_ptr->GetCameraControl(setting);
+					if (!result) {
+						return cvmmap::unexpected(map_backend_control_error(result.error()));
+					}
+					return to_public_camera_control_state(*result);
+				},
+				.set = [camera_backend_ptr, &map_backend_control_error, &to_public_camera_control_state](
+						const cvmmap::CameraControlRequest &request)
+					-> cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError> {
+					backends::camera_control_request_t backend_request{
+						.setting = request.setting,
+						.mode = request.mode,
+						.value = request.value,
+					};
+					auto result = camera_backend_ptr->SetCameraControl(backend_request);
+					if (!result) {
+						return cvmmap::unexpected(map_backend_control_error(result.error()));
+					}
+					return to_public_camera_control_state(*result);
+				},
+				.set_range = [camera_backend_ptr, &map_backend_control_error, &to_public_camera_control_state](
+						const cvmmap::CameraControlRangeRequest &request)
+					-> cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError> {
+					backends::camera_control_range_request_t backend_request{
+						.setting = request.setting,
+						.min_value = request.min_value,
+						.max_value = request.max_value,
+					};
+					auto result = camera_backend_ptr->SetCameraControlRange(backend_request);
+					if (!result) {
+						return cvmmap::unexpected(map_backend_control_error(result.error()));
+					}
+					return to_public_camera_control_state(*result);
+				},
+			};
+		});
+	};
+
+
 	const auto refresh_svo_recorder_provider = [&]() {
 		svo_recorder_provider.reset();
 		backend.TryVisitSvoRecordable([&](auto &recordable_backend) {
@@ -1390,6 +1476,7 @@ int main(int argc, char **argv) {
 		}
 		bind_encoded_callback();
 		bind_backend_callbacks();
+		refresh_camera_control_provider();
 		refresh_svo_recorder_provider();
 		backend.Init();
 		return true;
@@ -1583,6 +1670,54 @@ int main(int argc, char **argv) {
 			-> cvmmap::expected<cvmmap::PlaylistInfo, cvmmap::ControlError> {
 				return playlist_controller->GetInfo();
 			};
+		nats_handlers.on_get_camera_control_capabilities =
+			[&backend_control_mutex, &camera_control_provider]()
+			-> cvmmap::expected<cvmmap::CameraControlCapabilities, cvmmap::ControlError> {
+				std::lock_guard lock(backend_control_mutex);
+				if (!camera_control_provider || !camera_control_provider->capabilities) {
+					return cvmmap::CameraControlCapabilities{};
+				}
+				return camera_control_provider->capabilities();
+			};
+		nats_handlers.on_get_camera_control =
+			[&backend_control_mutex, &camera_control_provider](const cvmmap::CameraControlSetting setting)
+			-> cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError> {
+				std::lock_guard lock(backend_control_mutex);
+				if (!camera_control_provider || !camera_control_provider->get) {
+					return cvmmap::unexpected(cvmmap::ControlError{
+						.code = cvmmap::ControlErrorCode::Unsupported,
+						.message = "camera control is not supported by the active producer",
+					});
+				}
+				return camera_control_provider->get(setting);
+			};
+		nats_handlers.on_set_camera_control =
+			[&backend_control_mutex, &camera_control_provider](const cvmmap::CameraControlRequest &request)
+			-> cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError> {
+				std::lock_guard lock(backend_control_mutex);
+				if (!camera_control_provider || !camera_control_provider->set) {
+					return cvmmap::unexpected(cvmmap::ControlError{
+						.code = cvmmap::ControlErrorCode::Unsupported,
+						.message = "camera control is not supported by the active producer",
+					});
+				}
+				return camera_control_provider->set(request);
+			};
+		nats_handlers.on_set_camera_control_range =
+			[&backend_control_mutex, &camera_control_provider](
+				const cvmmap::CameraControlRangeRequest &request)
+			-> cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError> {
+				std::lock_guard lock(backend_control_mutex);
+				if (!camera_control_provider || !camera_control_provider->set_range) {
+					return cvmmap::unexpected(cvmmap::ControlError{
+						.code = cvmmap::ControlErrorCode::Unsupported,
+						.message = "camera control is not supported by the active producer",
+					});
+				}
+				return camera_control_provider->set_range(request);
+			};
+
+
 		nats_handlers.on_get_svo_recording_capabilities =
 			[&backend_control_mutex, &svo_recorder_provider]() -> cvmmap::SvoRecordingCapabilities {
 				std::lock_guard lock(backend_control_mutex);

@@ -88,6 +88,167 @@ pb::ModuleStatusCode to_proto_module_status(const ModuleStatus status) {
 	return pb::MODULE_STATUS_CODE_UNKNOWN;
 }
 
+pb::CameraControlSetting to_proto_camera_control_setting(
+	const cvmmap::CameraControlSetting setting) {
+	switch (setting) {
+	case cvmmap::CameraControlSetting::Exposure:
+		return pb::CAMERA_CONTROL_SETTING_EXPOSURE;
+	case cvmmap::CameraControlSetting::Gain:
+		return pb::CAMERA_CONTROL_SETTING_GAIN;
+	case cvmmap::CameraControlSetting::AecAgc:
+		return pb::CAMERA_CONTROL_SETTING_AEC_AGC;
+	case cvmmap::CameraControlSetting::WhitebalanceTemperature:
+		return pb::CAMERA_CONTROL_SETTING_WHITEBALANCE_TEMPERATURE;
+	case cvmmap::CameraControlSetting::WhitebalanceAuto:
+		return pb::CAMERA_CONTROL_SETTING_WHITEBALANCE_AUTO;
+	case cvmmap::CameraControlSetting::LedStatus:
+		return pb::CAMERA_CONTROL_SETTING_LED_STATUS;
+	case cvmmap::CameraControlSetting::ExposureTime:
+		return pb::CAMERA_CONTROL_SETTING_EXPOSURE_TIME;
+	case cvmmap::CameraControlSetting::AnalogGain:
+		return pb::CAMERA_CONTROL_SETTING_ANALOG_GAIN;
+	case cvmmap::CameraControlSetting::DigitalGain:
+		return pb::CAMERA_CONTROL_SETTING_DIGITAL_GAIN;
+	case cvmmap::CameraControlSetting::AutoExposureTimeRange:
+		return pb::CAMERA_CONTROL_SETTING_AUTO_EXPOSURE_TIME_RANGE;
+	case cvmmap::CameraControlSetting::AutoAnalogGainRange:
+		return pb::CAMERA_CONTROL_SETTING_AUTO_ANALOG_GAIN_RANGE;
+	case cvmmap::CameraControlSetting::AutoDigitalGainRange:
+		return pb::CAMERA_CONTROL_SETTING_AUTO_DIGITAL_GAIN_RANGE;
+	default:
+		return pb::CAMERA_CONTROL_SETTING_UNKNOWN;
+	}
+}
+
+cvmmap::CameraControlSetting from_proto_camera_control_setting(
+	const pb::CameraControlSetting setting) {
+	switch (setting) {
+	case pb::CAMERA_CONTROL_SETTING_EXPOSURE:
+		return cvmmap::CameraControlSetting::Exposure;
+	case pb::CAMERA_CONTROL_SETTING_GAIN:
+		return cvmmap::CameraControlSetting::Gain;
+	case pb::CAMERA_CONTROL_SETTING_AEC_AGC:
+		return cvmmap::CameraControlSetting::AecAgc;
+	case pb::CAMERA_CONTROL_SETTING_WHITEBALANCE_TEMPERATURE:
+		return cvmmap::CameraControlSetting::WhitebalanceTemperature;
+	case pb::CAMERA_CONTROL_SETTING_WHITEBALANCE_AUTO:
+		return cvmmap::CameraControlSetting::WhitebalanceAuto;
+	case pb::CAMERA_CONTROL_SETTING_LED_STATUS:
+		return cvmmap::CameraControlSetting::LedStatus;
+	case pb::CAMERA_CONTROL_SETTING_EXPOSURE_TIME:
+		return cvmmap::CameraControlSetting::ExposureTime;
+	case pb::CAMERA_CONTROL_SETTING_ANALOG_GAIN:
+		return cvmmap::CameraControlSetting::AnalogGain;
+	case pb::CAMERA_CONTROL_SETTING_DIGITAL_GAIN:
+		return cvmmap::CameraControlSetting::DigitalGain;
+	case pb::CAMERA_CONTROL_SETTING_AUTO_EXPOSURE_TIME_RANGE:
+		return cvmmap::CameraControlSetting::AutoExposureTimeRange;
+	case pb::CAMERA_CONTROL_SETTING_AUTO_ANALOG_GAIN_RANGE:
+		return cvmmap::CameraControlSetting::AutoAnalogGainRange;
+	case pb::CAMERA_CONTROL_SETTING_AUTO_DIGITAL_GAIN_RANGE:
+		return cvmmap::CameraControlSetting::AutoDigitalGainRange;
+	default:
+		return cvmmap::CameraControlSetting::Unknown;
+	}
+}
+
+pb::CameraControlValueKind to_proto_camera_control_value_kind(
+	const cvmmap::CameraControlValueKind kind) {
+	switch (kind) {
+	case cvmmap::CameraControlValueKind::Single:
+		return pb::CAMERA_CONTROL_VALUE_KIND_SINGLE;
+	case cvmmap::CameraControlValueKind::Range:
+		return pb::CAMERA_CONTROL_VALUE_KIND_RANGE;
+	default:
+		return pb::CAMERA_CONTROL_VALUE_KIND_UNKNOWN;
+	}
+}
+
+cvmmap::CameraControlWriteMode from_proto_camera_control_write_mode(
+	const pb::CameraControlWriteMode mode) {
+	switch (mode) {
+	case pb::CAMERA_CONTROL_WRITE_MODE_MANUAL:
+		return cvmmap::CameraControlWriteMode::Manual;
+	case pb::CAMERA_CONTROL_WRITE_MODE_AUTO:
+		return cvmmap::CameraControlWriteMode::Auto;
+	default:
+		return cvmmap::CameraControlWriteMode::Unknown;
+	}
+}
+
+void fill_camera_control_state(
+	pb::CameraControlState &wire_state,
+	const CameraControlState &state) {
+	wire_state.set_setting(to_proto_camera_control_setting(state.setting));
+	wire_state.set_kind(to_proto_camera_control_value_kind(state.kind));
+	wire_state.set_value(state.value);
+	wire_state.set_min_value(state.min_value);
+	wire_state.set_max_value(state.max_value);
+}
+
+void fill_camera_control_capabilities_response(
+	pb::GetCameraControlCapabilitiesResponse &response,
+	const CameraControlCapabilities &capabilities) {
+	response.set_error(pb::ERROR_CODE_OK);
+	response.set_supported(capabilities.supported);
+	for (const auto setting : capabilities.supported_settings) {
+		response.add_supported_settings(
+			to_proto_camera_control_setting(setting));
+	}
+}
+
+cvmmap::expected<CameraControlSetting, ControlError> parse_camera_control_setting(
+	const pb::CameraControlSetting setting) {
+	const auto parsed = from_proto_camera_control_setting(setting);
+	if (parsed == CameraControlSetting::Unknown) {
+		return cvmmap::unexpected(ControlError{
+			.code = ControlErrorCode::InvalidPayload,
+			.message = "camera control setting is required",
+		});
+	}
+	return parsed;
+}
+
+cvmmap::expected<CameraControlRequest, ControlError> parse_camera_control_request(
+	const pb::SetCameraControlRequest &request) {
+	auto setting = parse_camera_control_setting(request.setting());
+	if (!setting) {
+		return cvmmap::unexpected(setting.error());
+	}
+	const auto mode = from_proto_camera_control_write_mode(request.mode());
+	if (mode == CameraControlWriteMode::Unknown) {
+		return cvmmap::unexpected(ControlError{
+			.code = ControlErrorCode::InvalidPayload,
+			.message = "camera control write mode is required",
+		});
+	}
+	return CameraControlRequest{
+		.setting = *setting,
+		.mode = mode,
+		.value = request.value(),
+	};
+}
+
+cvmmap::expected<CameraControlRangeRequest, ControlError> parse_camera_control_range_request(
+	const pb::SetCameraControlRangeRequest &request) {
+	auto setting = parse_camera_control_setting(request.setting());
+	if (!setting) {
+		return cvmmap::unexpected(setting.error());
+	}
+	if (request.min_value() > request.max_value()) {
+		return cvmmap::unexpected(ControlError{
+			.code = ControlErrorCode::InvalidPayload,
+			.message = "camera control range min_value must be <= max_value",
+		});
+	}
+	return CameraControlRangeRequest{
+		.setting = *setting,
+		.min_value = request.min_value(),
+		.max_value = request.max_value(),
+	};
+}
+
+
 void fill_svo_recording_status_response(
 	pb::RecordingStatusResponse &response,
 	const SvoRecordingStatus &status) {
@@ -455,6 +616,139 @@ struct NatsControlService::impl {
 		return self->reply(request, response);
 	}
 
+static microError *on_camera_control_capabilities_req(microRequest *request) {
+	auto *self = from_request(request);
+	pb::GetCameraControlCapabilitiesResponse response;
+	if (!self->handlers.on_get_camera_control_capabilities) {
+		response.set_error(pb::ERROR_CODE_UNSUPPORTED);
+		response.set_error_message("camera control is not supported by the active producer");
+		return self->reply(request, response);
+	}
+
+	pb::GetCameraControlCapabilitiesRequest wire_request;
+	if (!parse_request(request, &wire_request)) {
+		response.set_error(pb::ERROR_CODE_INVALID_PAYLOAD);
+		response.set_error_message("invalid camera control capabilities payload");
+		return self->reply(request, response);
+	}
+
+	auto result = self->handlers.on_get_camera_control_capabilities();
+	if (!result) {
+		response.set_error(map_control_error_code(result.error().code));
+		response.set_error_message(result.error().message);
+		return self->reply(request, response);
+	}
+
+	fill_camera_control_capabilities_response(response, *result);
+	return self->reply(request, response);
+}
+
+static microError *on_camera_control_get_req(microRequest *request) {
+	auto *self = from_request(request);
+	pb::GetCameraControlResponse response;
+	if (!self->handlers.on_get_camera_control) {
+		response.set_error(pb::ERROR_CODE_UNSUPPORTED);
+		response.set_error_message("camera control is not supported by the active producer");
+		return self->reply(request, response);
+	}
+
+	pb::GetCameraControlRequest wire_request;
+	if (!parse_request(request, &wire_request)) {
+		response.set_error(pb::ERROR_CODE_INVALID_PAYLOAD);
+		response.set_error_message("invalid camera control get payload");
+		return self->reply(request, response);
+	}
+
+	auto setting = parse_camera_control_setting(wire_request.setting());
+	if (!setting) {
+		response.set_error(map_control_error_code(setting.error().code));
+		response.set_error_message(setting.error().message);
+		return self->reply(request, response);
+	}
+
+	auto result = self->handlers.on_get_camera_control(*setting);
+	if (!result) {
+		response.set_error(map_control_error_code(result.error().code));
+		response.set_error_message(result.error().message);
+		return self->reply(request, response);
+	}
+
+	response.set_error(pb::ERROR_CODE_OK);
+	fill_camera_control_state(*response.mutable_control(), *result);
+	return self->reply(request, response);
+}
+
+static microError *on_camera_control_set_req(microRequest *request) {
+	auto *self = from_request(request);
+	pb::SetCameraControlResponse response;
+	if (!self->handlers.on_set_camera_control) {
+		response.set_error(pb::ERROR_CODE_UNSUPPORTED);
+		response.set_error_message("camera control is not supported by the active producer");
+		return self->reply(request, response);
+	}
+
+	pb::SetCameraControlRequest wire_request;
+	if (!parse_request(request, &wire_request)) {
+		response.set_error(pb::ERROR_CODE_INVALID_PAYLOAD);
+		response.set_error_message("invalid camera control set payload");
+		return self->reply(request, response);
+	}
+
+	auto parsed_request = parse_camera_control_request(wire_request);
+	if (!parsed_request) {
+		response.set_error(map_control_error_code(parsed_request.error().code));
+		response.set_error_message(parsed_request.error().message);
+		return self->reply(request, response);
+	}
+
+	auto result = self->handlers.on_set_camera_control(*parsed_request);
+	if (!result) {
+		response.set_error(map_control_error_code(result.error().code));
+		response.set_error_message(result.error().message);
+		return self->reply(request, response);
+	}
+
+	response.set_error(pb::ERROR_CODE_OK);
+	fill_camera_control_state(*response.mutable_control(), *result);
+	return self->reply(request, response);
+}
+
+static microError *on_camera_control_set_range_req(microRequest *request) {
+	auto *self = from_request(request);
+	pb::SetCameraControlRangeResponse response;
+	if (!self->handlers.on_set_camera_control_range) {
+		response.set_error(pb::ERROR_CODE_UNSUPPORTED);
+		response.set_error_message("camera control is not supported by the active producer");
+		return self->reply(request, response);
+	}
+
+	pb::SetCameraControlRangeRequest wire_request;
+	if (!parse_request(request, &wire_request)) {
+		response.set_error(pb::ERROR_CODE_INVALID_PAYLOAD);
+		response.set_error_message("invalid camera control set_range payload");
+		return self->reply(request, response);
+	}
+
+	auto parsed_request = parse_camera_control_range_request(wire_request);
+	if (!parsed_request) {
+		response.set_error(map_control_error_code(parsed_request.error().code));
+		response.set_error_message(parsed_request.error().message);
+		return self->reply(request, response);
+	}
+
+	auto result = self->handlers.on_set_camera_control_range(*parsed_request);
+	if (!result) {
+		response.set_error(map_control_error_code(result.error().code));
+		response.set_error_message(result.error().message);
+		return self->reply(request, response);
+	}
+
+	response.set_error(pb::ERROR_CODE_OK);
+	fill_camera_control_state(*response.mutable_control(), *result);
+	return self->reply(request, response);
+}
+
+
 	static microError *on_svo_recording_capabilities_req(microRequest *request) {
 		auto *self = from_request(request);
 		pb::CapabilitiesResponse response;
@@ -659,6 +953,10 @@ bool NatsControlService::Start() {
 		add_endpoint("source_seek", nats::subject_producer_source_seek(target_key), impl::on_source_seek_req) &&
 		add_endpoint("source_playlist_apply", nats::subject_producer_source_playlist_apply(target_key), impl::on_source_playlist_apply_req) &&
 		add_endpoint("source_playlist_info", nats::subject_producer_source_playlist_info(target_key), impl::on_source_playlist_info_req) &&
+		add_endpoint("camera_control_capabilities", nats::subject_producer_camera_control_capabilities(target_key), impl::on_camera_control_capabilities_req) &&
+		add_endpoint("camera_control_get", nats::subject_producer_camera_control_get(target_key), impl::on_camera_control_get_req) &&
+		add_endpoint("camera_control_set", nats::subject_producer_camera_control_set(target_key), impl::on_camera_control_set_req) &&
+		add_endpoint("camera_control_set_range", nats::subject_producer_camera_control_set_range(target_key), impl::on_camera_control_set_range_req) &&
 		add_endpoint("recorder_svo_capabilities", nats::subject_producer_svo_recorder_capabilities(target_key), impl::on_svo_recording_capabilities_req) &&
 		add_endpoint("recorder_svo_start", nats::subject_producer_svo_recorder_start(target_key), impl::on_svo_recording_start_req) &&
 		add_endpoint("recorder_svo_stop", nats::subject_producer_svo_recorder_stop(target_key), impl::on_svo_recording_stop_req) &&

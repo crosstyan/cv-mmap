@@ -29,6 +29,10 @@ struct ZedBackend {
 	source_info_t GetSourceInfo();
 	cvmmap::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns);
 	error_t ResetFrameCount();
+	camera_control_capabilities_t GetCameraControlCapabilities();
+	cvmmap::expected<camera_control_state_t, error_t> GetCameraControl(cvmmap::CameraControlSetting setting);
+	cvmmap::expected<camera_control_state_t, error_t> SetCameraControl(const camera_control_request_t &request);
+	cvmmap::expected<camera_control_state_t, error_t> SetCameraControlRange(const camera_control_range_request_t &request);
 	cvmmap::expected<recording_status_t, error_t> StartRecording(const svo_recording_request_t &request);
 	cvmmap::expected<recording_status_t, error_t> StopRecording();
 	cvmmap::expected<recording_status_t, error_t> GetRecordingStatus();

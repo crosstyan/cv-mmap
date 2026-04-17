@@ -38,6 +38,24 @@ inline std::string subject_producer_source_playlist_info(std::string_view target
 	return subject_producer_prefix(target_key) + ".source.playlist.info";
 }
 
+// Camera control request-reply subjects
+inline std::string subject_producer_camera_control_capabilities(std::string_view target_key) {
+	return subject_producer_prefix(target_key) + ".camera_control.capabilities";
+}
+
+inline std::string subject_producer_camera_control_get(std::string_view target_key) {
+	return subject_producer_prefix(target_key) + ".camera_control.get";
+}
+
+inline std::string subject_producer_camera_control_set(std::string_view target_key) {
+	return subject_producer_prefix(target_key) + ".camera_control.set";
+}
+
+inline std::string subject_producer_camera_control_set_range(std::string_view target_key) {
+	return subject_producer_prefix(target_key) + ".camera_control.set_range";
+}
+
+
 // SVO recorder request-reply subjects
 inline std::string subject_producer_svo_recorder_capabilities(std::string_view target_key) {
 	return subject_producer_prefix(target_key) + ".recorder.svo.capabilities";

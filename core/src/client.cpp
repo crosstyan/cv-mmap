@@ -635,6 +635,42 @@ CvMmapClient::GetSourceCapabilities(std::chrono::milliseconds timeout) {
   return pimpl_->nats_client->GetSourceCapabilities(timeout);
 }
 
+cvmmap::expected<CameraControlCapabilities, ControlError>
+CvMmapClient::GetCameraControlCapabilities(std::chrono::milliseconds timeout) {
+  if (!pimpl_->nats_client) {
+    return cvmmap::unexpected(make_nats_disabled_error());
+  }
+  return pimpl_->nats_client->GetCameraControlCapabilities(timeout);
+}
+
+cvmmap::expected<CameraControlState, ControlError>
+CvMmapClient::GetCameraControl(CameraControlSetting setting,
+                              std::chrono::milliseconds timeout) {
+  if (!pimpl_->nats_client) {
+    return cvmmap::unexpected(make_nats_disabled_error());
+  }
+  return pimpl_->nats_client->GetCameraControl(setting, timeout);
+}
+
+cvmmap::expected<CameraControlState, ControlError>
+CvMmapClient::SetCameraControl(const CameraControlRequest &request,
+                              std::chrono::milliseconds timeout) {
+  if (!pimpl_->nats_client) {
+    return cvmmap::unexpected(make_nats_disabled_error());
+  }
+  return pimpl_->nats_client->SetCameraControl(request, timeout);
+}
+
+cvmmap::expected<CameraControlState, ControlError>
+CvMmapClient::SetCameraControlRange(const CameraControlRangeRequest &request,
+                                   std::chrono::milliseconds timeout) {
+  if (!pimpl_->nats_client) {
+    return cvmmap::unexpected(make_nats_disabled_error());
+  }
+  return pimpl_->nats_client->SetCameraControlRange(request, timeout);
+}
+
+
 cvmmap::expected<SvoRecordingCapabilities, ControlError>
 CvMmapClient::GetSvoRecordingCapabilities(std::chrono::milliseconds timeout) {
   if (!pimpl_->nats_client) {

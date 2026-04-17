@@ -20,6 +20,34 @@ enum RecordingFormat {
   RECORDING_FORMAT_MCAP    = 2;
 }
 
+enum CameraControlSetting {
+  CAMERA_CONTROL_SETTING_UNKNOWN                  = 0;
+  CAMERA_CONTROL_SETTING_EXPOSURE                 = 1;
+  CAMERA_CONTROL_SETTING_GAIN                     = 2;
+  CAMERA_CONTROL_SETTING_AEC_AGC                  = 3;
+  CAMERA_CONTROL_SETTING_WHITEBALANCE_TEMPERATURE = 4;
+  CAMERA_CONTROL_SETTING_WHITEBALANCE_AUTO        = 5;
+  CAMERA_CONTROL_SETTING_LED_STATUS               = 6;
+  CAMERA_CONTROL_SETTING_EXPOSURE_TIME            = 7;
+  CAMERA_CONTROL_SETTING_ANALOG_GAIN              = 8;
+  CAMERA_CONTROL_SETTING_DIGITAL_GAIN             = 9;
+  CAMERA_CONTROL_SETTING_AUTO_EXPOSURE_TIME_RANGE = 10;
+  CAMERA_CONTROL_SETTING_AUTO_ANALOG_GAIN_RANGE   = 11;
+  CAMERA_CONTROL_SETTING_AUTO_DIGITAL_GAIN_RANGE  = 12;
+}
+
+enum CameraControlValueKind {
+  CAMERA_CONTROL_VALUE_KIND_UNKNOWN = 0;
+  CAMERA_CONTROL_VALUE_KIND_SINGLE  = 1;
+  CAMERA_CONTROL_VALUE_KIND_RANGE   = 2;
+}
+
+enum CameraControlWriteMode {
+  CAMERA_CONTROL_WRITE_MODE_UNKNOWN = 0;
+  CAMERA_CONTROL_WRITE_MODE_MANUAL  = 1;
+  CAMERA_CONTROL_WRITE_MODE_AUTO    = 2;
+}
+
 enum ModuleStatusCode {
   MODULE_STATUS_CODE_UNKNOWN      = 0;
   MODULE_STATUS_CODE_ONLINE       = 1;
@@ -100,6 +128,58 @@ message CapabilitiesResponse {
   bool can_seek = 2;
   repeated RecordingFormat available_recording_formats = 3;
 }
+
+// -- Camera Control --
+message GetCameraControlCapabilitiesRequest {}
+message GetCameraControlCapabilitiesResponse {
+  ErrorCode               error              = 1;
+  bool                    supported          = 2;
+  repeated CameraControlSetting supported_settings = 3;
+  string                  error_message      = 4;
+}
+
+message CameraControlState {
+  CameraControlSetting   setting   = 1;
+  CameraControlValueKind kind      = 2;
+  sint32                 value     = 3;
+  sint32                 min_value = 4;
+  sint32                 max_value = 5;
+}
+
+message GetCameraControlRequest {
+  CameraControlSetting setting = 1;
+}
+
+message GetCameraControlResponse {
+  ErrorCode          error         = 1;
+  CameraControlState control       = 2;
+  string             error_message = 3;
+}
+
+message SetCameraControlRequest {
+  CameraControlSetting   setting = 1;
+  CameraControlWriteMode mode    = 2;
+  sint32                 value   = 3;
+}
+
+message SetCameraControlResponse {
+  ErrorCode          error         = 1;
+  CameraControlState control       = 2;
+  string             error_message = 3;
+}
+
+message SetCameraControlRangeRequest {
+  CameraControlSetting setting   = 1;
+  sint32               min_value = 2;
+  sint32               max_value = 3;
+}
+
+message SetCameraControlRangeResponse {
+  ErrorCode          error         = 1;
+  CameraControlState control       = 2;
+  string             error_message = 3;
+}
+
 
 // -- Recording --
 message SvoRecordingOptions {

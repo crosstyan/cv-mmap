@@ -134,6 +134,36 @@ public:
 			storage_);
 	}
 
+	template <typename Fn>
+	bool TryVisitCameraControllable(Fn &&fn) {
+		ensure_active();
+		return std::visit(
+			[&](auto &backend_ptr) -> bool {
+				using storage_type = std::decay_t<decltype(backend_ptr)>;
+				if constexpr (std::is_same_v<storage_type, std::monostate>) {
+					throw std::logic_error("backend handle used without an active backend");
+				} else {
+					auto &backend = *backend_ptr;
+					if constexpr (requires(
+						decltype(backend) candidate,
+						cvmmap::CameraControlSetting setting,
+						const camera_control_request_t &request,
+						const camera_control_range_request_t &range_request) {
+						candidate.GetCameraControlCapabilities();
+						candidate.GetCameraControl(setting);
+						candidate.SetCameraControl(request);
+						candidate.SetCameraControlRange(range_request);
+					}) {
+						fn(backend);
+						return true;
+					} else {
+						return false;
+					}
+				}
+			},
+			storage_);
+	}
+
 	void SetOnError(on_error_fn_t on_error) {
 		visit_active_void([&](auto &backend) { backend.SetOnError(std::move(on_error)); });
 	}

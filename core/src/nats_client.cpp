@@ -69,6 +69,112 @@ ControlErrorCode from_proto_error_code(const pb::ErrorCode error_code) {
 	}
 }
 
+CameraControlSetting from_proto_camera_control_setting(
+	const pb::CameraControlSetting setting) {
+	switch (setting) {
+	case pb::CAMERA_CONTROL_SETTING_EXPOSURE:
+		return CameraControlSetting::Exposure;
+	case pb::CAMERA_CONTROL_SETTING_GAIN:
+		return CameraControlSetting::Gain;
+	case pb::CAMERA_CONTROL_SETTING_AEC_AGC:
+		return CameraControlSetting::AecAgc;
+	case pb::CAMERA_CONTROL_SETTING_WHITEBALANCE_TEMPERATURE:
+		return CameraControlSetting::WhitebalanceTemperature;
+	case pb::CAMERA_CONTROL_SETTING_WHITEBALANCE_AUTO:
+		return CameraControlSetting::WhitebalanceAuto;
+	case pb::CAMERA_CONTROL_SETTING_LED_STATUS:
+		return CameraControlSetting::LedStatus;
+	case pb::CAMERA_CONTROL_SETTING_EXPOSURE_TIME:
+		return CameraControlSetting::ExposureTime;
+	case pb::CAMERA_CONTROL_SETTING_ANALOG_GAIN:
+		return CameraControlSetting::AnalogGain;
+	case pb::CAMERA_CONTROL_SETTING_DIGITAL_GAIN:
+		return CameraControlSetting::DigitalGain;
+	case pb::CAMERA_CONTROL_SETTING_AUTO_EXPOSURE_TIME_RANGE:
+		return CameraControlSetting::AutoExposureTimeRange;
+	case pb::CAMERA_CONTROL_SETTING_AUTO_ANALOG_GAIN_RANGE:
+		return CameraControlSetting::AutoAnalogGainRange;
+	case pb::CAMERA_CONTROL_SETTING_AUTO_DIGITAL_GAIN_RANGE:
+		return CameraControlSetting::AutoDigitalGainRange;
+	default:
+		return CameraControlSetting::Unknown;
+	}
+}
+
+CameraControlValueKind from_proto_camera_control_value_kind(
+	const pb::CameraControlValueKind kind) {
+	switch (kind) {
+	case pb::CAMERA_CONTROL_VALUE_KIND_SINGLE:
+		return CameraControlValueKind::Single;
+	case pb::CAMERA_CONTROL_VALUE_KIND_RANGE:
+		return CameraControlValueKind::Range;
+	default:
+		return CameraControlValueKind::Unknown;
+	}
+}
+
+pb::CameraControlSetting to_proto_camera_control_setting(
+	const CameraControlSetting setting) {
+	switch (setting) {
+	case CameraControlSetting::Exposure:
+		return pb::CAMERA_CONTROL_SETTING_EXPOSURE;
+	case CameraControlSetting::Gain:
+		return pb::CAMERA_CONTROL_SETTING_GAIN;
+	case CameraControlSetting::AecAgc:
+		return pb::CAMERA_CONTROL_SETTING_AEC_AGC;
+	case CameraControlSetting::WhitebalanceTemperature:
+		return pb::CAMERA_CONTROL_SETTING_WHITEBALANCE_TEMPERATURE;
+	case CameraControlSetting::WhitebalanceAuto:
+		return pb::CAMERA_CONTROL_SETTING_WHITEBALANCE_AUTO;
+	case CameraControlSetting::LedStatus:
+		return pb::CAMERA_CONTROL_SETTING_LED_STATUS;
+	case CameraControlSetting::ExposureTime:
+		return pb::CAMERA_CONTROL_SETTING_EXPOSURE_TIME;
+	case CameraControlSetting::AnalogGain:
+		return pb::CAMERA_CONTROL_SETTING_ANALOG_GAIN;
+	case CameraControlSetting::DigitalGain:
+		return pb::CAMERA_CONTROL_SETTING_DIGITAL_GAIN;
+	case CameraControlSetting::AutoExposureTimeRange:
+		return pb::CAMERA_CONTROL_SETTING_AUTO_EXPOSURE_TIME_RANGE;
+	case CameraControlSetting::AutoAnalogGainRange:
+		return pb::CAMERA_CONTROL_SETTING_AUTO_ANALOG_GAIN_RANGE;
+	case CameraControlSetting::AutoDigitalGainRange:
+		return pb::CAMERA_CONTROL_SETTING_AUTO_DIGITAL_GAIN_RANGE;
+	default:
+		return pb::CAMERA_CONTROL_SETTING_UNKNOWN;
+	}
+}
+
+pb::CameraControlWriteMode to_proto_camera_control_write_mode(
+	const CameraControlWriteMode mode) {
+	switch (mode) {
+	case CameraControlWriteMode::Manual:
+		return pb::CAMERA_CONTROL_WRITE_MODE_MANUAL;
+	case CameraControlWriteMode::Auto:
+		return pb::CAMERA_CONTROL_WRITE_MODE_AUTO;
+	default:
+		return pb::CAMERA_CONTROL_WRITE_MODE_UNKNOWN;
+	}
+}
+
+CameraControlState to_camera_control_state(const pb::CameraControlState &wire_state) {
+	return CameraControlState{
+		.setting = from_proto_camera_control_setting(wire_state.setting()),
+		.kind = from_proto_camera_control_value_kind(wire_state.kind()),
+		.value = wire_state.value(),
+		.min_value = wire_state.min_value(),
+		.max_value = wire_state.max_value(),
+	};
+}
+
+ControlError response_error(ControlErrorCode code, const std::string &message = {}) {
+	return ControlError{
+		.code = code,
+		.message = message,
+	};
+}
+
+
 SvoRecordingStatus to_svo_recording_status(
 	const pb::RecordingStatusResponse &response) {
 	return SvoRecordingStatus{
@@ -586,14 +692,118 @@ cvmmap::expected<PlaylistInfo, ControlError> NatsControlClient::ApplyPlaylist(
 			wire_request,
 			timeout);
 	if (!response) {
-		return cvmmap::unexpected(ControlError{.code = response.error()});
+		return cvmmap::unexpected(response_error(response.error()));
 	}
 	if (response->error() != pb::ERROR_CODE_OK) {
-		return cvmmap::unexpected(ControlError{
-			.code = from_proto_error_code(response->error()),
-		});
+		return cvmmap::unexpected(response_error(
+			from_proto_error_code(response->error()),
+			response->error_message()));
 	}
 	return to_playlist_info(response->playlist_info());
+}
+
+cvmmap::expected<CameraControlCapabilities, ControlError>
+NatsControlClient::GetCameraControlCapabilities(
+	const std::chrono::milliseconds timeout) {
+	pb::GetCameraControlCapabilitiesRequest request;
+	auto response =
+		pimpl_->request<
+			pb::GetCameraControlCapabilitiesRequest,
+			pb::GetCameraControlCapabilitiesResponse>(
+				nats::subject_producer_camera_control_capabilities(
+					pimpl_->target_key),
+				request,
+				timeout);
+	if (!response) {
+		return cvmmap::unexpected(response_error(response.error()));
+	}
+	if (response->error() != pb::ERROR_CODE_OK) {
+		return cvmmap::unexpected(response_error(
+			from_proto_error_code(response->error()),
+			response->error_message()));
+	}
+
+	CameraControlCapabilities capabilities{
+		.supported = response->supported(),
+	};
+	capabilities.supported_settings.reserve(
+		static_cast<size_t>(response->supported_settings_size()));
+	for (const auto setting : response->supported_settings()) {
+		capabilities.supported_settings.push_back(
+			from_proto_camera_control_setting(
+				static_cast<pb::CameraControlSetting>(setting)));
+	}
+	return capabilities;
+}
+
+cvmmap::expected<CameraControlState, ControlError> NatsControlClient::GetCameraControl(
+	const CameraControlSetting setting,
+	const std::chrono::milliseconds timeout) {
+	pb::GetCameraControlRequest request;
+	request.set_setting(to_proto_camera_control_setting(setting));
+	auto response =
+		pimpl_->request<pb::GetCameraControlRequest, pb::GetCameraControlResponse>(
+			nats::subject_producer_camera_control_get(pimpl_->target_key),
+			request,
+			timeout);
+	if (!response) {
+		return cvmmap::unexpected(response_error(response.error()));
+	}
+	if (response->error() != pb::ERROR_CODE_OK) {
+		return cvmmap::unexpected(response_error(
+			from_proto_error_code(response->error()),
+			response->error_message()));
+	}
+	return to_camera_control_state(response->control());
+}
+
+cvmmap::expected<CameraControlState, ControlError> NatsControlClient::SetCameraControl(
+	const CameraControlRequest &request,
+	const std::chrono::milliseconds timeout) {
+	pb::SetCameraControlRequest wire_request;
+	wire_request.set_setting(to_proto_camera_control_setting(request.setting));
+	wire_request.set_mode(to_proto_camera_control_write_mode(request.mode));
+	wire_request.set_value(request.value);
+	auto response =
+		pimpl_->request<pb::SetCameraControlRequest, pb::SetCameraControlResponse>(
+			nats::subject_producer_camera_control_set(pimpl_->target_key),
+			wire_request,
+			timeout);
+	if (!response) {
+		return cvmmap::unexpected(response_error(response.error()));
+	}
+	if (response->error() != pb::ERROR_CODE_OK) {
+		return cvmmap::unexpected(response_error(
+			from_proto_error_code(response->error()),
+			response->error_message()));
+	}
+	return to_camera_control_state(response->control());
+}
+
+cvmmap::expected<CameraControlState, ControlError> NatsControlClient::SetCameraControlRange(
+	const CameraControlRangeRequest &request,
+	const std::chrono::milliseconds timeout) {
+	pb::SetCameraControlRangeRequest wire_request;
+	wire_request.set_setting(to_proto_camera_control_setting(request.setting));
+	wire_request.set_min_value(request.min_value);
+	wire_request.set_max_value(request.max_value);
+	auto response =
+		pimpl_->request<
+			pb::SetCameraControlRangeRequest,
+			pb::SetCameraControlRangeResponse>(
+				nats::subject_producer_camera_control_set_range(
+					pimpl_->target_key),
+				wire_request,
+				timeout);
+	if (!response) {
+		return cvmmap::unexpected(response_error(response.error()));
+	}
+	if (response->error() != pb::ERROR_CODE_OK) {
+		return cvmmap::unexpected(response_error(
+			from_proto_error_code(response->error()),
+			response->error_message()));
+	}
+	return to_camera_control_state(response->control());
 }
 
 cvmmap::expected<PlaylistInfo, ControlError> NatsControlClient::GetPlaylistInfo(
@@ -605,12 +815,12 @@ cvmmap::expected<PlaylistInfo, ControlError> NatsControlClient::GetPlaylistInfo(
 			request,
 			timeout);
 	if (!response) {
-		return cvmmap::unexpected(ControlError{.code = response.error()});
+		return cvmmap::unexpected(response_error(response.error()));
 	}
 	if (response->error() != pb::ERROR_CODE_OK) {
-		return cvmmap::unexpected(ControlError{
-			.code = from_proto_error_code(response->error()),
-		});
+		return cvmmap::unexpected(response_error(
+			from_proto_error_code(response->error()),
+			response->error_message()));
 	}
 	return to_playlist_info(response->playlist_info());
 }
@@ -625,12 +835,11 @@ NatsControlClient::GetSourceCapabilities(
 			request,
 			timeout);
 	if (!response) {
-		return cvmmap::unexpected(ControlError{.code = response.error()});
+		return cvmmap::unexpected(response_error(response.error()));
 	}
 	if (response->error() != pb::ERROR_CODE_OK) {
-		return cvmmap::unexpected(ControlError{
-			.code = from_proto_error_code(response->error()),
-		});
+		return cvmmap::unexpected(response_error(
+			from_proto_error_code(response->error())));
 	}
 
 	return SourceControlCapabilities{
@@ -648,12 +857,11 @@ NatsControlClient::GetSvoRecordingCapabilities(
 			request,
 			timeout);
 	if (!response) {
-		return cvmmap::unexpected(ControlError{.code = response.error()});
+		return cvmmap::unexpected(response_error(response.error()));
 	}
 	if (response->error() != pb::ERROR_CODE_OK) {
-		return cvmmap::unexpected(ControlError{
-			.code = from_proto_error_code(response->error()),
-		});
+		return cvmmap::unexpected(response_error(
+			from_proto_error_code(response->error())));
 	}
 	return SvoRecordingCapabilities{
 		.can_record = response->available_recording_formats_size() > 0,
@@ -683,13 +891,12 @@ NatsControlClient::StartSvoRecording(
 			wire_request,
 			timeout);
 	if (!response) {
-		return cvmmap::unexpected(ControlError{.code = response.error()});
+		return cvmmap::unexpected(response_error(response.error()));
 	}
 	if (response->error() != pb::ERROR_CODE_OK) {
-		return cvmmap::unexpected(ControlError{
-			.code = from_proto_error_code(response->error()),
-			.message = response->error_message(),
-		});
+		return cvmmap::unexpected(response_error(
+			from_proto_error_code(response->error()),
+			response->error_message()));
 	}
 	return to_svo_recording_status(*response);
 }
@@ -704,13 +911,12 @@ NatsControlClient::StopSvoRecording(
 			request,
 			timeout);
 	if (!response) {
-		return cvmmap::unexpected(ControlError{.code = response.error()});
+		return cvmmap::unexpected(response_error(response.error()));
 	}
 	if (response->error() != pb::ERROR_CODE_OK) {
-		return cvmmap::unexpected(ControlError{
-			.code = from_proto_error_code(response->error()),
-			.message = response->error_message(),
-		});
+		return cvmmap::unexpected(response_error(
+			from_proto_error_code(response->error()),
+			response->error_message()));
 	}
 	return to_svo_recording_status(*response);
 }
@@ -725,13 +931,12 @@ NatsControlClient::GetSvoRecordingStatus(
 			request,
 			timeout);
 	if (!response) {
-		return cvmmap::unexpected(ControlError{.code = response.error()});
+		return cvmmap::unexpected(response_error(response.error()));
 	}
 	if (response->error() != pb::ERROR_CODE_OK) {
-		return cvmmap::unexpected(ControlError{
-			.code = from_proto_error_code(response->error()),
-			.message = response->error_message(),
-		});
+		return cvmmap::unexpected(response_error(
+			from_proto_error_code(response->error()),
+			response->error_message()));
 	}
 	return to_svo_recording_status(*response);
 }

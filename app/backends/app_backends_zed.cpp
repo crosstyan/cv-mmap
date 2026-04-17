@@ -61,6 +61,50 @@ bool is_svo_stream_mode(const std::string_view mode) {
 	return normalize_ascii_lower(std::string(mode)) == "svo";
 }
 
+struct ZedCameraControlDescriptor {
+	cvmmap::CameraControlSetting setting;
+	cvmmap::CameraControlValueKind kind;
+	sl::VIDEO_SETTINGS zed_setting;
+	bool legacy_supported;
+	bool x_family_supported;
+};
+
+constexpr std::array<ZedCameraControlDescriptor, 3> ZED_CAMERA_CONTROL_DESCRIPTORS{{
+	{cvmmap::CameraControlSetting::Exposure, cvmmap::CameraControlValueKind::Single, sl::VIDEO_SETTINGS::EXPOSURE, true, false},
+	{cvmmap::CameraControlSetting::ExposureTime, cvmmap::CameraControlValueKind::Single, sl::VIDEO_SETTINGS::EXPOSURE_TIME, false, true},
+	{cvmmap::CameraControlSetting::AutoExposureTimeRange, cvmmap::CameraControlValueKind::Range, sl::VIDEO_SETTINGS::AUTO_EXPOSURE_TIME_RANGE, false, true},
+}};
+
+bool is_zed_x_family_model(const sl::MODEL model) {
+	switch (model) {
+	case sl::MODEL::ZED_X:
+	case sl::MODEL::ZED_XM:
+	case sl::MODEL::ZED_X_HDR:
+	case sl::MODEL::ZED_X_HDR_MINI:
+	case sl::MODEL::ZED_X_HDR_MAX:
+	case sl::MODEL::VIRTUAL_ZED_X:
+	case sl::MODEL::ZED_XONE_GS:
+	case sl::MODEL::ZED_XONE_UHD:
+	case sl::MODEL::ZED_XONE_HDR:
+		return true;
+	default:
+		return false;
+	}
+}
+
+const ZedCameraControlDescriptor *find_zed_camera_control_descriptor(const cvmmap::CameraControlSetting setting) {
+	for (const auto &descriptor : ZED_CAMERA_CONTROL_DESCRIPTORS) {
+		if (descriptor.setting == setting) {
+			return &descriptor;
+		}
+	}
+	return nullptr;
+}
+
+bool is_zed_camera_control_supported(const ZedCameraControlDescriptor &descriptor, const sl::MODEL model) {
+	return is_zed_x_family_model(model) ? descriptor.x_family_supported : descriptor.legacy_supported;
+}
+
 sl::RESOLUTION parse_resolution(const std::string& value) {
 	const auto normalized = normalize_ascii_lower(value);
 
@@ -706,6 +750,71 @@ struct ZedBackendImpl {
 		std::lock_guard lock(snapshot_mutex);
 		return published.last_recording_error;
 	}
+
+ 	error_t camera_control_availability_error_locked() const {
+ 		if (svo_mode) {
+ 			return -EOPNOTSUPP;
+ 		}
+ 		if (!initialized.load(std::memory_order_relaxed) || !camera.isOpened()) {
+ 			return -ENODEV;
+ 		}
+ 		return ERR_OK;
+ 	}
+
+ 	static error_t map_camera_control_operation_error(
+ 		sl::ERROR_CODE code,
+ 		error_t invalid_parameters_error) {
+ 		switch (code) {
+ 		case sl::ERROR_CODE::SUCCESS:
+ 			return ERR_OK;
+ 		case sl::ERROR_CODE::CAMERA_NOT_DETECTED:
+ 			return -ENODEV;
+ 		case sl::ERROR_CODE::INVALID_FUNCTION_CALL:
+ 			return -EOPNOTSUPP;
+ 		case sl::ERROR_CODE::INVALID_FUNCTION_PARAMETERS:
+ 			return invalid_parameters_error;
+ 		default:
+ 			return -EIO;
+ 		}
+ 	}
+
+ 	bool can_read_camera_control_locked(const ZedCameraControlDescriptor &descriptor) {
+ 		if (descriptor.kind == cvmmap::CameraControlValueKind::Single) {
+ 			int value = 0;
+ 			return camera.getCameraSettings(descriptor.zed_setting, value) == sl::ERROR_CODE::SUCCESS;
+ 		}
+
+ 		int min_value = 0;
+ 		int max_value = 0;
+ 		return camera.getCameraSettings(descriptor.zed_setting, min_value, max_value) == sl::ERROR_CODE::SUCCESS;
+ 	}
+
+ 	cvmmap::expected<camera_control_state_t, error_t> get_camera_control_locked(
+ 		const ZedCameraControlDescriptor &descriptor) {
+ 		camera_control_state_t state{};
+ 		state.setting = descriptor.setting;
+ 		state.kind = descriptor.kind;
+
+ 		if (descriptor.kind == cvmmap::CameraControlValueKind::Single) {
+ 			int value = 0;
+ 			const auto result = camera.getCameraSettings(descriptor.zed_setting, value);
+ 			if (result != sl::ERROR_CODE::SUCCESS) {
+ 				return cvmmap::unexpected(map_camera_control_operation_error(result, -EIO));
+ 			}
+ 			state.value = value;
+ 			return state;
+ 		}
+
+ 		int min_value = 0;
+ 		int max_value = 0;
+ 		const auto result = camera.getCameraSettings(descriptor.zed_setting, min_value, max_value);
+ 		if (result != sl::ERROR_CODE::SUCCESS) {
+ 			return cvmmap::unexpected(map_camera_control_operation_error(result, -EIO));
+ 		}
+ 		state.min_value = min_value;
+ 		state.max_value = max_value;
+ 		return state;
+ 	}
 
 	uint64_t effective_timestamp_ns_locked() {
 		return svo_mode ? zed_image_timestamp_ns(camera) : now_ns();
@@ -1675,6 +1784,110 @@ struct ZedBackendImpl {
 		return ERR_OK;
 	}
 
+	camera_control_capabilities_t GetCameraControlCapabilities() {
+		std::lock_guard lock(camera_mutex);
+		camera_control_capabilities_t capabilities{};
+		if (camera_control_availability_error_locked() != ERR_OK) {
+			return capabilities;
+		}
+
+		const auto camera_model = camera.getCameraInformation().camera_model;
+		for (const auto &descriptor : ZED_CAMERA_CONTROL_DESCRIPTORS) {
+			if (!is_zed_camera_control_supported(descriptor, camera_model)) {
+				continue;
+			}
+			if (!can_read_camera_control_locked(descriptor)) {
+				continue;
+			}
+			capabilities.supported_settings.push_back(descriptor.setting);
+		}
+		capabilities.supported = !capabilities.supported_settings.empty();
+		return capabilities;
+	}
+
+	cvmmap::expected<camera_control_state_t, error_t> GetCameraControl(cvmmap::CameraControlSetting setting) {
+		std::lock_guard lock(camera_mutex);
+		if (const auto availability_error = camera_control_availability_error_locked(); availability_error != ERR_OK) {
+			return cvmmap::unexpected(availability_error);
+		}
+
+		const auto *descriptor = find_zed_camera_control_descriptor(setting);
+		if (descriptor == nullptr) {
+			return cvmmap::unexpected(-EOPNOTSUPP);
+		}
+
+		const auto camera_model = camera.getCameraInformation().camera_model;
+		if (!is_zed_camera_control_supported(*descriptor, camera_model) || !can_read_camera_control_locked(*descriptor)) {
+			return cvmmap::unexpected(-EOPNOTSUPP);
+		}
+
+		return get_camera_control_locked(*descriptor);
+	}
+
+	cvmmap::expected<camera_control_state_t, error_t> SetCameraControl(const camera_control_request_t &request) {
+		std::lock_guard lock(camera_mutex);
+		if (const auto availability_error = camera_control_availability_error_locked(); availability_error != ERR_OK) {
+			return cvmmap::unexpected(availability_error);
+		}
+
+		const auto *descriptor = find_zed_camera_control_descriptor(request.setting);
+		if (descriptor == nullptr || descriptor->kind != cvmmap::CameraControlValueKind::Single) {
+			return cvmmap::unexpected(-EOPNOTSUPP);
+		}
+
+		const auto camera_model = camera.getCameraInformation().camera_model;
+		if (!is_zed_camera_control_supported(*descriptor, camera_model) || !can_read_camera_control_locked(*descriptor)) {
+			return cvmmap::unexpected(-EOPNOTSUPP);
+		}
+
+		if (request.mode != cvmmap::CameraControlWriteMode::Manual &&
+			request.mode != cvmmap::CameraControlWriteMode::Auto) {
+			return cvmmap::unexpected(-EINVAL);
+		}
+
+		const int value = request.mode == cvmmap::CameraControlWriteMode::Auto ?
+			sl::VIDEO_SETTINGS_VALUE_AUTO :
+			request.value;
+		const auto result = camera.setCameraSettings(descriptor->zed_setting, value);
+		if (result != sl::ERROR_CODE::SUCCESS) {
+			return cvmmap::unexpected(map_camera_control_operation_error(result, -ERANGE));
+		}
+
+		return get_camera_control_locked(*descriptor);
+	}
+
+	cvmmap::expected<camera_control_state_t, error_t> SetCameraControlRange(
+		const camera_control_range_request_t &request) {
+		std::lock_guard lock(camera_mutex);
+		if (const auto availability_error = camera_control_availability_error_locked(); availability_error != ERR_OK) {
+			return cvmmap::unexpected(availability_error);
+		}
+
+		const auto *descriptor = find_zed_camera_control_descriptor(request.setting);
+		if (descriptor == nullptr || descriptor->kind != cvmmap::CameraControlValueKind::Range) {
+			return cvmmap::unexpected(-EOPNOTSUPP);
+		}
+
+		const auto camera_model = camera.getCameraInformation().camera_model;
+		if (!is_zed_camera_control_supported(*descriptor, camera_model) || !can_read_camera_control_locked(*descriptor)) {
+			return cvmmap::unexpected(-EOPNOTSUPP);
+		}
+		if (request.min_value > request.max_value) {
+			return cvmmap::unexpected(-ERANGE);
+		}
+
+		const auto result = camera.setCameraSettings(
+			descriptor->zed_setting,
+			request.min_value,
+			request.max_value);
+		if (result != sl::ERROR_CODE::SUCCESS) {
+			return cvmmap::unexpected(map_camera_control_operation_error(result, -ERANGE));
+		}
+
+		return get_camera_control_locked(*descriptor);
+	}
+
+
 	cvmmap::expected<recording_status_t, error_t> StartRecording(const svo_recording_request_t &request) {
 		if (is_svo_stream_mode(options.zed_config.stream_mode)) {
 			set_recording_error("recording not supported for SVO playback input");
@@ -1849,6 +2062,25 @@ error_t ZedBackend::ResetFrameCount() {
 	return impl->ResetFrameCount();
 }
 
+camera_control_capabilities_t ZedBackend::GetCameraControlCapabilities() {
+	return impl->GetCameraControlCapabilities();
+}
+
+cvmmap::expected<camera_control_state_t, error_t> ZedBackend::GetCameraControl(
+	cvmmap::CameraControlSetting setting) {
+	return impl->GetCameraControl(setting);
+}
+
+cvmmap::expected<camera_control_state_t, error_t> ZedBackend::SetCameraControl(
+	const camera_control_request_t &request) {
+	return impl->SetCameraControl(request);
+}
+
+cvmmap::expected<camera_control_state_t, error_t> ZedBackend::SetCameraControlRange(
+	const camera_control_range_request_t &request) {
+	return impl->SetCameraControlRange(request);
+}
+
 cvmmap::expected<recording_status_t, error_t> ZedBackend::StartRecording(
 	const svo_recording_request_t &request) {
 	return impl->StartRecording(request);
@@ -1923,6 +2155,23 @@ struct ZedBackendImpl {
 		return 0;
 	}
 
+ 	camera_control_capabilities_t GetCameraControlCapabilities() {
+ 		return {};
+ 	}
+
+ 	cvmmap::expected<camera_control_state_t, error_t> GetCameraControl(cvmmap::CameraControlSetting) {
+ 		return cvmmap::unexpected(-EOPNOTSUPP);
+ 	}
+
+ 	cvmmap::expected<camera_control_state_t, error_t> SetCameraControl(const camera_control_request_t &) {
+ 		return cvmmap::unexpected(-EOPNOTSUPP);
+ 	}
+
+ 	cvmmap::expected<camera_control_state_t, error_t> SetCameraControlRange(
+ 		const camera_control_range_request_t &) {
+ 		return cvmmap::unexpected(-EOPNOTSUPP);
+ 	}
+
 	cvmmap::expected<recording_status_t, error_t> StartRecording(const svo_recording_request_t &) {
 		return cvmmap::unexpected(-EOPNOTSUPP);
 	}
@@ -1979,6 +2228,25 @@ cvmmap::expected<seek_result_t, error_t> ZedBackend::SeekTimestampNs(uint64_t ti
 
 error_t ZedBackend::ResetFrameCount() {
 	return impl->ResetFrameCount();
+}
+
+camera_control_capabilities_t ZedBackend::GetCameraControlCapabilities() {
+	return impl->GetCameraControlCapabilities();
+}
+
+cvmmap::expected<camera_control_state_t, error_t> ZedBackend::GetCameraControl(
+	cvmmap::CameraControlSetting setting) {
+	return impl->GetCameraControl(setting);
+}
+
+cvmmap::expected<camera_control_state_t, error_t> ZedBackend::SetCameraControl(
+	const camera_control_request_t &request) {
+	return impl->SetCameraControl(request);
+}
+
+cvmmap::expected<camera_control_state_t, error_t> ZedBackend::SetCameraControlRange(
+	const camera_control_range_request_t &request) {
+	return impl->SetCameraControlRange(request);
 }
 
 cvmmap::expected<recording_status_t, error_t> ZedBackend::StartRecording(

@@ -83,6 +83,41 @@ struct SourceControlCapabilities {
 	bool can_seek{false};
 };
 
+struct CameraControlState {
+	CameraControlSetting setting{CameraControlSetting::Unknown};
+	CameraControlValueKind kind{CameraControlValueKind::Unknown};
+	int32_t value{0};
+	int32_t min_value{0};
+	int32_t max_value{0};
+
+	[[nodiscard]]
+	bool is_range() const {
+		return kind == CameraControlValueKind::Range;
+	}
+
+	[[nodiscard]]
+	bool is_single() const {
+		return kind == CameraControlValueKind::Single;
+	}
+};
+
+struct CameraControlCapabilities {
+	bool supported{false};
+	std::vector<CameraControlSetting> supported_settings{};
+};
+
+struct CameraControlRequest {
+	CameraControlSetting setting{CameraControlSetting::Unknown};
+	CameraControlWriteMode mode{CameraControlWriteMode::Manual};
+	int32_t value{0};
+};
+
+struct CameraControlRangeRequest {
+	CameraControlSetting setting{CameraControlSetting::Unknown};
+	int32_t min_value{0};
+	int32_t max_value{0};
+};
+
 struct PlaylistRequest {
 	std::vector<std::string> paths{};
 	bool sort_by_recording_time{false};
@@ -240,6 +275,30 @@ public:
 	cvmmap::expected<SourceControlCapabilities, ControlError>
 	GetSourceCapabilities(
 		std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
+
+	[[nodiscard]]
+	cvmmap::expected<CameraControlCapabilities, ControlError>
+	GetCameraControlCapabilities(
+		std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
+
+	[[nodiscard]]
+	cvmmap::expected<CameraControlState, ControlError>
+	GetCameraControl(
+		CameraControlSetting setting,
+		std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
+
+	[[nodiscard]]
+	cvmmap::expected<CameraControlState, ControlError>
+	SetCameraControl(
+		const CameraControlRequest &request,
+		std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
+
+	[[nodiscard]]
+	cvmmap::expected<CameraControlState, ControlError>
+	SetCameraControlRange(
+		const CameraControlRangeRequest &request,
+		std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
+
 
 	[[nodiscard]]
 	cvmmap::expected<SvoRecordingCapabilities, ControlError>

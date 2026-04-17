@@ -115,6 +115,34 @@ enum class RecordingFormat : uint8_t {
 	Mcap = 2,
 };
 
+enum class CameraControlSetting : uint8_t {
+	Unknown = 0,
+	Exposure = 1,
+	Gain = 2,
+	AecAgc = 3,
+	WhitebalanceTemperature = 4,
+	WhitebalanceAuto = 5,
+	LedStatus = 6,
+	ExposureTime = 7,
+	AnalogGain = 8,
+	DigitalGain = 9,
+	AutoExposureTimeRange = 10,
+	AutoAnalogGainRange = 11,
+	AutoDigitalGainRange = 12,
+};
+
+enum class CameraControlValueKind : uint8_t {
+	Unknown = 0,
+	Single = 1,
+	Range = 2,
+};
+
+enum class CameraControlWriteMode : uint8_t {
+	Unknown = 0,
+	Manual = 1,
+	Auto = 2,
+};
+
 constexpr uint16_t RECORDING_STATUS_FLAG_CAN_RECORD = 0x0001u;
 constexpr uint16_t RECORDING_STATUS_FLAG_IS_RECORDING = 0x0002u;
 constexpr uint16_t RECORDING_STATUS_FLAG_IS_PAUSED = 0x0004u;

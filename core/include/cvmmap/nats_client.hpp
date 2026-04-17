@@ -45,6 +45,26 @@ public:
 	cvmmap::expected<SourceControlCapabilities, ControlError>
 	GetSourceCapabilities(std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
+	cvmmap::expected<CameraControlCapabilities, ControlError>
+	GetCameraControlCapabilities(
+		std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
+
+	cvmmap::expected<CameraControlState, ControlError>
+	GetCameraControl(
+		CameraControlSetting setting,
+		std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
+
+	cvmmap::expected<CameraControlState, ControlError>
+	SetCameraControl(
+		const CameraControlRequest &request,
+		std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
+
+	cvmmap::expected<CameraControlState, ControlError>
+	SetCameraControlRange(
+		const CameraControlRangeRequest &request,
+		std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
+
+
 	cvmmap::expected<SvoRecordingCapabilities, ControlError>
 	GetSvoRecordingCapabilities(std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 

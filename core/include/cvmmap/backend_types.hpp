@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <vector>
 #include <string>
 
 #include <cvmmap/ipc.hpp>
@@ -44,6 +45,32 @@ struct recording_status_t {
 	uint32_t frames_encoded{0};
 	std::string active_path{};
 };
+struct camera_control_state_t {
+	cvmmap::CameraControlSetting setting{cvmmap::CameraControlSetting::Unknown};
+	cvmmap::CameraControlValueKind kind{cvmmap::CameraControlValueKind::Unknown};
+	int32_t value{0};
+	int32_t min_value{0};
+	int32_t max_value{0};
+};
+
+struct camera_control_capabilities_t {
+	bool supported{false};
+	std::vector<cvmmap::CameraControlSetting> supported_settings{};
+};
+
+struct camera_control_request_t {
+	cvmmap::CameraControlSetting setting{cvmmap::CameraControlSetting::Unknown};
+	cvmmap::CameraControlWriteMode mode{cvmmap::CameraControlWriteMode::Manual};
+	int32_t value{0};
+};
+
+struct camera_control_range_request_t {
+	cvmmap::CameraControlSetting setting{cvmmap::CameraControlSetting::Unknown};
+	int32_t min_value{0};
+	int32_t max_value{0};
+};
+
+
 
 struct svo_recording_options_t {
 	std::optional<std::string> compression_mode{};
