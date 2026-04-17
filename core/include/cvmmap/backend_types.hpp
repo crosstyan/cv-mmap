@@ -14,6 +14,8 @@ using error_t = int;
 constexpr error_t ERR_OK  = 0;
 constexpr error_t ERR_EOS = ERR_OK;
 
+constexpr error_t ERR_FATAL_CAMERA_RECOVERY = -0x7001;
+
 struct source_info_t {
 	cvmmap::SourceKind source_kind{cvmmap::SourceKind::Unknown};
 	cvmmap::TimestampDomain timestamp_domain{cvmmap::TimestampDomain::Unknown};

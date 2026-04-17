@@ -65,6 +65,12 @@ struct ResolvedPlaylistState {
 	size_t current_index{0};
 };
 
+enum class ProcessExitCode : int {
+	Success = 0,
+	Failure = 1,
+	FatalCameraRecovery = 32,
+};
+
 class IPlaylistController {
 public:
 	virtual ~IPlaylistController() = default;
@@ -481,6 +487,7 @@ int main(int argc, char **argv) {
 
 	static auto is_running   = std::atomic_bool{true};
 	static auto sigint_count = std::atomic_int{0};
+	int exit_code = static_cast<int>(ProcessExitCode::Success);
 
 	/**
 	 * @brief signal handler for SIGINT
@@ -658,7 +665,17 @@ int main(int argc, char **argv) {
 	std::optional<frame_state_t> frame_state;
 	std::optional<sync_message_t> sync_msg;
 	std::mutex pending_encoded_mutex{};
-	std::unordered_map<uint64_t, app::backends::encoded_access_unit_t> pending_encoded_by_timestamp{};
+	struct pending_encoded_access_unit_t {
+		cvmmap::EncodedCodec codec{cvmmap::EncodedCodec::Unknown};
+		cvmmap::EncodedBitstreamFormat bitstream_format{cvmmap::EncodedBitstreamFormat::Unknown};
+		uint16_t flags{0};
+		uint16_t frame_rate_num{0};
+		uint16_t frame_rate_den{0};
+		uint64_t source_timestamp_ns{0};
+		uint64_t stream_pts_ns{0};
+		std::vector<uint8_t> bytes{};
+	};
+	std::unordered_map<uint64_t, pending_encoded_access_unit_t> pending_encoded_by_timestamp{};
 	auto undistort_pass = app::preprocess::make_undistort_pass(config.preprocess);
 	if (undistort_pass) {
 		spdlog::info("undistort preprocess pass is enabled");
@@ -1120,9 +1137,18 @@ int main(int argc, char **argv) {
 #ifdef WITH_BACKEND_GSTREAMER
 		if (auto *udp_rtp_backend = backend.get_if<app::backends::UdpRtpBackend>(); udp_rtp_backend != nullptr) {
 			udp_rtp_backend->SetOnEncodedAccessUnit(
-				[&pending_encoded_mutex, &pending_encoded_by_timestamp](const app::backends::encoded_access_unit_t &access_unit) {
+				[&pending_encoded_mutex, &pending_encoded_by_timestamp](const auto &access_unit) {
 					std::lock_guard lock(pending_encoded_mutex);
-					pending_encoded_by_timestamp[access_unit.source_timestamp_ns] = access_unit;
+					pending_encoded_by_timestamp[access_unit.source_timestamp_ns] = pending_encoded_access_unit_t{
+						.codec = access_unit.codec,
+						.bitstream_format = access_unit.bitstream_format,
+						.flags = access_unit.flags,
+						.frame_rate_num = access_unit.frame_rate_num,
+						.frame_rate_den = access_unit.frame_rate_den,
+						.source_timestamp_ns = access_unit.source_timestamp_ns,
+						.stream_pts_ns = access_unit.stream_pts_ns,
+						.bytes = access_unit.bytes,
+					};
 				});
 		}
 #endif
@@ -1266,6 +1292,7 @@ int main(int argc, char **argv) {
 
 		backend.SetOnError([&backend,
 							&config,
+							&exit_code,
 							playlist_controller = playlist_controller.get(),
 							&request_playlist_transition](int error_code, std::string_view message) {
 			if (error_code == backends::ERR_EOS) {
@@ -1297,6 +1324,9 @@ int main(int argc, char **argv) {
 					return;
 				}
 			} else {
+				if (error_code == backends::ERR_FATAL_CAMERA_RECOVERY) {
+					exit_code = static_cast<int>(ProcessExitCode::FatalCameraRecovery);
+				}
 				spdlog::error("backend({}): {}", error_code, message);
 			}
 			is_running.store(false, std::memory_order::relaxed);
@@ -1498,34 +1528,26 @@ int main(int argc, char **argv) {
 			 &map_control_error_code,
 			 playlist_controller = playlist_controller.get(),
 			 &switch_playlist_item]() -> cvmmap::ControlErrorCode {
-			std::lock_guard lock(backend_control_mutex);
-			if (playlist_controller->HasPlaylist() &&
-				playlist_controller->CurrentIndex() != 0) {
-				return map_control_error_code(switch_playlist_item(0, false));
-			}
-			return map_control_error_code(backend.ResetFrameCount());
-		};
-		nats_handlers.on_get_source_info = [&backend, &backend_control_mutex, &svo_recorder_provider]() {
-			std::lock_guard lock(backend_control_mutex);
-			auto info = backend.GetSourceInfo();
-			info.flags &= ~cvmmap::SOURCE_INFO_FLAG_CAN_RECORD;
-			if (svo_recorder_provider &&
-				svo_recorder_provider->is_available &&
-				svo_recorder_provider->is_available()) {
-				info.flags |= cvmmap::SOURCE_INFO_FLAG_CAN_RECORD;
-			}
-			return info;
+				std::lock_guard lock(backend_control_mutex);
+				if (playlist_controller->HasPlaylist() &&
+					playlist_controller->CurrentIndex() != 0) {
+					return map_control_error_code(switch_playlist_item(0, false));
+				}
+				return map_control_error_code(backend.ResetFrameCount());
+			};
+		nats_handlers.on_get_source_info = [&backend]() {
+			return backend.GetSourceInfo();
 		};
 		nats_handlers.on_seek_timestamp =
 			[&backend_control_mutex, &map_control_error_code, &seek_timestamp](uint64_t ts) {
-			std::lock_guard lock(backend_control_mutex);
-			auto result = seek_timestamp(ts);
-			if (!result) {
-				return cvmmap::expected<app::backends::seek_result_t, cvmmap::ControlErrorCode>(
-					cvmmap::unexpected(map_control_error_code(result.error())));
-			}
-			return cvmmap::expected<app::backends::seek_result_t, cvmmap::ControlErrorCode>(*result);
-		};
+				std::lock_guard lock(backend_control_mutex);
+				auto result = seek_timestamp(ts);
+				if (!result) {
+					return cvmmap::expected<app::backends::seek_result_t, cvmmap::ControlErrorCode>(
+						cvmmap::unexpected(map_control_error_code(result.error())));
+				}
+				return cvmmap::expected<app::backends::seek_result_t, cvmmap::ControlErrorCode>(*result);
+			};
 		nats_handlers.on_apply_playlist =
 			[&apply_resolved_playlist,
 			 &any_recording_active,
@@ -1533,35 +1555,34 @@ int main(int argc, char **argv) {
 			 playlist_controller = playlist_controller.get()](
 				const cvmmap::PlaylistRequest &request)
 			-> cvmmap::expected<cvmmap::PlaylistInfo, cvmmap::ControlError> {
-			std::lock_guard lock(backend_control_mutex);
-			if (!playlist_controller->SupportsRuntimeApply()) {
-				return cvmmap::unexpected(cvmmap::ControlError{
-					.code = cvmmap::ControlErrorCode::Unsupported,
-					.message = "playlist apply is only supported for MCAP and ZED SVO producers",
-				});
-			}
-			auto recording_active = any_recording_active();
-			if (!recording_active) {
-				return cvmmap::unexpected(recording_active.error());
-			}
-			if (*recording_active) {
-				return cvmmap::unexpected(cvmmap::ControlError{
-					.code = cvmmap::ControlErrorCode::Error,
-					.message = "cannot apply a playlist while recording is active",
-				});
-			}
-			auto resolved_playlist = playlist_controller->Resolve(request);
-			if (!resolved_playlist) {
-				return cvmmap::unexpected(resolved_playlist.error());
-			}
-			return apply_resolved_playlist(std::move(*resolved_playlist), true);
-		};
+				std::lock_guard lock(backend_control_mutex);
+				if (!playlist_controller->SupportsRuntimeApply()) {
+					return cvmmap::unexpected(cvmmap::ControlError{
+						.code = cvmmap::ControlErrorCode::Unsupported,
+						.message = "playlist apply is only supported for MCAP and ZED SVO producers",
+					});
+				}
+				auto recording_active = any_recording_active();
+				if (!recording_active) {
+					return cvmmap::unexpected(recording_active.error());
+				}
+				if (*recording_active) {
+					return cvmmap::unexpected(cvmmap::ControlError{
+						.code = cvmmap::ControlErrorCode::Error,
+						.message = "cannot apply a playlist while recording is active",
+					});
+				}
+				auto resolved_playlist = playlist_controller->Resolve(request);
+				if (!resolved_playlist) {
+					return cvmmap::unexpected(resolved_playlist.error());
+				}
+				return apply_resolved_playlist(std::move(*resolved_playlist), true);
+			};
 		nats_handlers.on_get_playlist_info =
-			[&backend_control_mutex, playlist_controller = playlist_controller.get()]()
+			[playlist_controller = playlist_controller.get()]()
 			-> cvmmap::expected<cvmmap::PlaylistInfo, cvmmap::ControlError> {
-			std::lock_guard lock(backend_control_mutex);
-			return playlist_controller->GetInfo();
-		};
+				return playlist_controller->GetInfo();
+			};
 		nats_handlers.on_get_svo_recording_capabilities =
 			[&backend_control_mutex, &svo_recorder_provider]() -> cvmmap::SvoRecordingCapabilities {
 				std::lock_guard lock(backend_control_mutex);
@@ -1649,7 +1670,9 @@ int main(int argc, char **argv) {
 			}
 			if (rc != backends::ERR_OK) {
 				spdlog::error("playlist transition failed: {}", rc);
-				is_running.store(false, std::memory_order::relaxed);
+				if (transition != PlaylistTransitionAction::ResetActiveSilent) {
+					is_running.store(false, std::memory_order::relaxed);
+				}
 			}
 			continue;
 		}
@@ -1662,6 +1685,10 @@ int main(int argc, char **argv) {
 		nats_service->Stop();
 	}
 
-	spdlog::info("normally exit");
-	return 0;
+	if (exit_code == static_cast<int>(ProcessExitCode::Success)) {
+		spdlog::info("normally exit");
+	} else {
+		spdlog::error("exiting with status {}", exit_code);
+	}
+	return exit_code;
 }
