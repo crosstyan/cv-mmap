@@ -34,8 +34,9 @@ url = "nats://localhost:4222"
 
 [video]
 backend = 'zed'
-use_finite_as_infinite_stream = false
-finite_stream_ending_behavior = 'loop' # stop | loop
+# stop | loop | loop_silent
+finite_stream_ending_behavior = 'loop' 
+
 [dummy]
 width = 1280
 height = 720
