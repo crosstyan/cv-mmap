@@ -644,6 +644,12 @@ struct ZedBackendImpl {
 		std::optional<cvmmap::body_tracking_frame_t> body_tracking{};
 	};
 
+	struct DirectPublishedFrame {
+		frame_metadata_t metadata{};
+		zed_frame_fill_fn_t fill_payload{};
+		std::optional<cvmmap::body_tracking_frame_t> body_tracking{};
+	};
+
 	ZedBackendOptions options;
 	sl::Camera camera;
 	sl::InitParameters init_parameters{};
@@ -671,9 +677,10 @@ struct ZedBackendImpl {
 	mutable std::mutex snapshot_mutex{};
 
 	on_metadata_fn_t _on_metadata{nullptr};
-	on_frame_fn_t _on_frame{nullptr};
-	on_body_tracking_fn_t _on_body_tracking{nullptr};
-	on_error_fn_t _on_error{nullptr};
+	 on_frame_fn_t _on_frame{nullptr};
+	 on_zed_frame_direct_fn_t _on_frame_direct{nullptr};
+	 on_body_tracking_fn_t _on_body_tracking{nullptr};
+	 on_error_fn_t _on_error{nullptr};
 
 	PublishedSnapshot published{};
 
@@ -721,6 +728,12 @@ struct ZedBackendImpl {
 	void on_frame(std::span<uint8_t> frame_buffer, const frame_metadata_t &m) {
 		if (_on_frame) {
 			_on_frame(frame_buffer, m);
+		}
+	}
+
+	void on_frame_direct(ZedDirectFrame frame) {
+		if (_on_frame_direct) {
+			_on_frame_direct(std::move(frame));
 		}
 	}
 
@@ -982,6 +995,7 @@ struct ZedBackendImpl {
 		init_parameters.camera_resolution = parse_resolution(options.zed_config.resolution);
 		init_parameters.camera_fps = options.zed_config.fps;
 		init_parameters.depth_mode = parse_depth_mode(options.zed_config.depth_mode);
+		init_parameters.depth_stabilization = options.zed_config.depth_stabilization;
 		depth_enabled = init_parameters.depth_mode != sl::DEPTH_MODE::NONE;
 		body_tracking_enabled =
 			options.zed_config.body_tracking.has_value() &&
@@ -1008,7 +1022,7 @@ struct ZedBackendImpl {
 				spdlog::error("ZED stream_mode='svo' requires svo_path");
 				return false;
 			}
-			init_parameters.svo_real_time_mode = true;
+			init_parameters.svo_real_time_mode = options.zed_config.svo_real_time_mode;
 			spdlog::info("opening ZED SVO playback '{}'", *options.zed_config.svo_path);
 			init_parameters.input.setFromSVOFile(sl::String(options.zed_config.svo_path->c_str()));
 		} else if (is_network_stream_mode(stream_mode)) {
@@ -1253,6 +1267,137 @@ struct ZedBackendImpl {
 		return frame;
 	}
 
+	std::optional<size_t> pack_frame_locked(std::span<uint8_t> payload, frame_info_t &info_out) {
+		const auto height = left_frame.getHeight();
+		const auto left_row_bytes = expected_row_bytes(left_frame);
+		if (!left_row_bytes || height <= 0) {
+			spdlog::error("invalid left frame geometry/type for compact packing");
+			return std::nullopt;
+		}
+
+		const auto packed_left_size = (*left_row_bytes) * static_cast<size_t>(height);
+		if (packed_left_size == 0) {
+			spdlog::error("left frame compact size is zero");
+			return std::nullopt;
+		}
+
+		size_t packed_depth_size = 0;
+		size_t packed_confidence_size = 0;
+		size_t depth_row_bytes = 0;
+		bool depth_plane_available = false;
+		bool confidence_plane_available = false;
+
+		if (depth_enabled) {
+			depth_row_bytes = static_cast<size_t>(left_frame.getWidth()) * sizeof(float);
+			const size_t depth_total_bytes = depth_row_bytes * static_cast<size_t>(height);
+			if (depth_total_bytes == 0) {
+				spdlog::error("depth plane compact size is zero while depth is enabled");
+				return std::nullopt;
+			}
+
+			packed_depth_size = depth_total_bytes;
+			const auto depth_result = camera.retrieveMeasure(
+				depth_frame,
+				sl::MEASURE::DEPTH,
+				sl::MEM::CPU,
+				sl::Resolution(left_frame.getWidth(), left_frame.getHeight()));
+
+			const auto depth_geometry_valid = depth_frame.getDataType() == sl::MAT_TYPE::F32_C1 &&
+				depth_frame.getWidth() == left_frame.getWidth() &&
+				depth_frame.getHeight() == left_frame.getHeight();
+			depth_plane_available = depth_result == sl::ERROR_CODE::SUCCESS && depth_geometry_valid;
+			if (!depth_plane_available) {
+				if (depth_result != sl::ERROR_CODE::SUCCESS) {
+					spdlog::warn("ZED retrieveMeasure(DEPTH) failed: code={}; using stable fallback depth bytes", static_cast<int>(depth_result));
+				} else if (!depth_geometry_valid) {
+					spdlog::warn(
+						"ZED depth plane shape/type mismatch (type={}, {}x{} vs left {}x{}); using stable fallback depth bytes",
+						static_cast<int>(depth_frame.getDataType()),
+						depth_frame.getWidth(),
+						depth_frame.getHeight(),
+						left_frame.getWidth(),
+						left_frame.getHeight());
+				}
+			}
+
+			if (options.zed_config.publish_confidence) {
+				const auto confidence_result = camera.retrieveMeasure(
+					confidence_frame,
+					sl::MEASURE::CONFIDENCE,
+					sl::MEM::CPU,
+					sl::Resolution(left_frame.getWidth(), left_frame.getHeight()));
+
+				const auto confidence_geometry_valid =
+					confidence_frame.getDataType() == sl::MAT_TYPE::F32_C1 &&
+					confidence_frame.getWidth() == left_frame.getWidth() &&
+					confidence_frame.getHeight() == left_frame.getHeight();
+				confidence_plane_available = confidence_result == sl::ERROR_CODE::SUCCESS && confidence_geometry_valid;
+				if (confidence_plane_available) {
+					packed_confidence_size = depth_total_bytes;
+				} else if (confidence_result != sl::ERROR_CODE::SUCCESS) {
+					spdlog::debug(
+						"ZED retrieveMeasure(CONFIDENCE) unavailable: code={}; publishing left/depth only",
+						static_cast<int>(confidence_result));
+				} else if (!confidence_geometry_valid) {
+					spdlog::warn(
+						"ZED confidence plane shape/type mismatch (type={}, {}x{} vs left {}x{}); publishing left/depth only",
+						static_cast<int>(confidence_frame.getDataType()),
+						confidence_frame.getWidth(),
+						confidence_frame.getHeight(),
+						left_frame.getWidth(),
+						left_frame.getHeight());
+				}
+			}
+		}
+
+		const auto packed_size = packed_left_size + packed_depth_size + packed_confidence_size;
+		if (packed_size == 0 || packed_size > std::numeric_limits<uint32_t>::max()) {
+			spdlog::error(
+				"invalid packed frame size: left={} depth={} confidence={} total={}",
+				packed_left_size,
+				packed_depth_size,
+				packed_confidence_size,
+				packed_size);
+			return std::nullopt;
+		}
+		if (payload.size() < packed_size) {
+			spdlog::error("packed output buffer too small: capacity={} required={}", payload.size(), packed_size);
+			return std::nullopt;
+		}
+
+		if (!copy_compact_plane(left_frame, *left_row_bytes, payload.subspan(0, packed_left_size))) {
+			spdlog::error("failed to compact/copy left plane into packed payload");
+			return std::nullopt;
+		}
+
+		if (depth_enabled) {
+			auto depth_payload = payload.subspan(packed_left_size, packed_depth_size);
+			if (depth_plane_available && copy_compact_plane(depth_frame, depth_row_bytes, depth_payload)) {
+				last_good_depth_plane.resize(packed_depth_size);
+				std::memcpy(last_good_depth_plane.data(), depth_payload.data(), packed_depth_size);
+			} else {
+				if (depth_plane_available) {
+					spdlog::warn("ZED depth plane compaction failed; using stable fallback depth bytes");
+				}
+				if (last_good_depth_plane.size() == packed_depth_size) {
+					std::memcpy(depth_payload.data(), last_good_depth_plane.data(), packed_depth_size);
+				} else {
+					std::fill(depth_payload.begin(), depth_payload.end(), 0);
+				}
+			}
+		}
+		if (packed_confidence_size > 0) {
+			auto confidence_payload = payload.subspan(packed_left_size + packed_depth_size, packed_confidence_size);
+			if (!copy_compact_plane(confidence_frame, depth_row_bytes, confidence_payload)) {
+				spdlog::warn("ZED confidence plane compaction failed; publishing left/depth only");
+				packed_confidence_size = 0;
+			}
+		}
+
+		info_out.buffer_size = static_cast<uint32_t>(packed_left_size + packed_depth_size + packed_confidence_size);
+		return static_cast<size_t>(info_out.buffer_size);
+	}
+
 	cvmmap::expected<CapturedFrame, sl::ERROR_CODE> capture_frame_locked(
 		const uint32_t frame_count) {
 		const auto grab_result = camera.grab(runtime_parameters);
@@ -1268,163 +1413,31 @@ struct ZedBackendImpl {
 		}
 
 		auto info = make_frame_info(left_frame);
-		const auto height = left_frame.getHeight();
-		const auto left_row_bytes = expected_row_bytes(left_frame);
-		if (!info || !left_row_bytes || height <= 0) {
+		if (!info) {
 			spdlog::error("invalid left frame geometry/type for compact packing");
-			return cvmmap::unexpected(sl::ERROR_CODE::FAILURE);
-		}
-
-		const auto packed_left_size = (*left_row_bytes) * static_cast<size_t>(height);
-		if (packed_left_size == 0) {
-			spdlog::error("left frame compact size is zero");
-			return cvmmap::unexpected(sl::ERROR_CODE::FAILURE);
-		}
-
-		size_t packed_depth_size = 0;
-		size_t packed_confidence_size = 0;
-		std::vector<uint8_t> depth_plane_payload;
-		std::vector<uint8_t> confidence_plane_payload;
-
-		if (depth_enabled) {
-			const size_t depth_row_bytes = static_cast<size_t>(left_frame.getWidth()) * sizeof(float);
-			const size_t depth_total_bytes = depth_row_bytes * static_cast<size_t>(height);
-			if (depth_total_bytes == 0) {
-				spdlog::error("depth plane compact size is zero while depth is enabled");
-				return cvmmap::unexpected(sl::ERROR_CODE::FAILURE);
-			}
-
-			packed_depth_size = depth_total_bytes;
-			depth_plane_payload.resize(depth_total_bytes);
-
-			const auto depth_result = camera.retrieveMeasure(
-				depth_frame,
-				sl::MEASURE::DEPTH,
-				sl::MEM::CPU,
-				sl::Resolution(left_frame.getWidth(), left_frame.getHeight()));
-
-			const auto depth_geometry_valid = depth_frame.getDataType() == sl::MAT_TYPE::F32_C1 &&
-				depth_frame.getWidth() == left_frame.getWidth() &&
-				depth_frame.getHeight() == left_frame.getHeight();
-			const auto depth_copy_ok = depth_result == sl::ERROR_CODE::SUCCESS &&
-				depth_geometry_valid &&
-				copy_compact_plane(depth_frame, depth_row_bytes, std::span<uint8_t>(depth_plane_payload));
-
-			if (depth_copy_ok) {
-				last_good_depth_plane = depth_plane_payload;
-			} else {
-				if (depth_result != sl::ERROR_CODE::SUCCESS) {
-					spdlog::warn("ZED retrieveMeasure(DEPTH) failed: code={}; using stable fallback depth bytes", static_cast<int>(depth_result));
-				} else if (!depth_geometry_valid) {
-					spdlog::warn(
-						"ZED depth plane shape/type mismatch (type={}, {}x{} vs left {}x{}); using stable fallback depth bytes",
-						static_cast<int>(depth_frame.getDataType()),
-						depth_frame.getWidth(),
-						depth_frame.getHeight(),
-						left_frame.getWidth(),
-						left_frame.getHeight());
-				} else {
-					spdlog::warn("ZED depth plane compaction failed; using stable fallback depth bytes");
-				}
-
-				if (last_good_depth_plane.size() == depth_total_bytes) {
-					depth_plane_payload = last_good_depth_plane;
-				} else {
-					std::fill(depth_plane_payload.begin(), depth_plane_payload.end(), 0);
-				}
-			}
-
-			confidence_plane_payload.resize(depth_total_bytes);
-			const auto confidence_result = camera.retrieveMeasure(
-				confidence_frame,
-				sl::MEASURE::CONFIDENCE,
-				sl::MEM::CPU,
-				sl::Resolution(left_frame.getWidth(), left_frame.getHeight()));
-
-			const auto confidence_geometry_valid =
-				confidence_frame.getDataType() == sl::MAT_TYPE::F32_C1 &&
-				confidence_frame.getWidth() == left_frame.getWidth() &&
-				confidence_frame.getHeight() == left_frame.getHeight();
-			const auto confidence_copy_ok =
-				confidence_result == sl::ERROR_CODE::SUCCESS &&
-				confidence_geometry_valid &&
-				copy_compact_plane(confidence_frame, depth_row_bytes, std::span<uint8_t>(confidence_plane_payload));
-
-			if (confidence_copy_ok) {
-				packed_confidence_size = depth_total_bytes;
-			} else if (confidence_result != sl::ERROR_CODE::SUCCESS) {
-				spdlog::debug(
-					"ZED retrieveMeasure(CONFIDENCE) unavailable: code={}; publishing left/depth only",
-					static_cast<int>(confidence_result));
-			} else if (!confidence_geometry_valid) {
-				spdlog::warn(
-					"ZED confidence plane shape/type mismatch (type={}, {}x{} vs left {}x{}); publishing left/depth only",
-					static_cast<int>(confidence_frame.getDataType()),
-					confidence_frame.getWidth(),
-					confidence_frame.getHeight(),
-					left_frame.getWidth(),
-					left_frame.getHeight());
-			} else {
-				spdlog::warn("ZED confidence plane compaction failed; publishing left/depth only");
-			}
-		}
-
-		const auto packed_size = packed_left_size + packed_depth_size + packed_confidence_size;
-		if (packed_size == 0 || packed_size > std::numeric_limits<uint32_t>::max()) {
-			spdlog::error(
-				"invalid packed frame size: left={} depth={} confidence={} total={}",
-				packed_left_size,
-				packed_depth_size,
-				packed_confidence_size,
-				packed_size);
 			return cvmmap::unexpected(sl::ERROR_CODE::FAILURE);
 		}
 
 		CapturedFrame captured{};
 		captured.info = *info;
+		const size_t depth_plane_bytes = static_cast<size_t>(captured.info.width) * static_cast<size_t>(captured.info.height) * sizeof(float);
+		size_t raw_capacity = captured.info.buffer_size;
+		if (depth_enabled) {
+			raw_capacity += depth_plane_bytes;
+			if (options.zed_config.publish_confidence) {
+				raw_capacity += depth_plane_bytes;
+			}
+		}
+		if (raw_capacity > std::numeric_limits<uint32_t>::max()) {
+			spdlog::error("invalid ZED packed frame capacity: {}", raw_capacity);
+			return cvmmap::unexpected(sl::ERROR_CODE::FAILURE);
+		}
+		captured.info.buffer_size = static_cast<uint32_t>(raw_capacity);
 		captured.timestamp_ns = effective_timestamp_ns_locked();
 		captured.source_info = make_source_info_locked();
-		captured.payload.resize(packed_size);
-		if (!copy_compact_plane(
-				left_frame,
-				*left_row_bytes,
-				std::span<uint8_t>(captured.payload.data(), packed_left_size))) {
-			spdlog::error("failed to compact/copy left plane into packed payload");
-			return cvmmap::unexpected(sl::ERROR_CODE::FAILURE);
-		}
-
-		if (depth_enabled) {
-			if (depth_plane_payload.size() != packed_depth_size) {
-				spdlog::error("depth payload size mismatch: got={} expected={}", depth_plane_payload.size(), packed_depth_size);
-				return cvmmap::unexpected(sl::ERROR_CODE::FAILURE);
-			}
-			std::memcpy(
-				captured.payload.data() + packed_left_size,
-				depth_plane_payload.data(),
-				packed_depth_size);
-		}
-		if (packed_confidence_size > 0) {
-			if (confidence_plane_payload.size() < packed_confidence_size) {
-				spdlog::error(
-					"confidence payload size mismatch: got={} expected={}",
-					confidence_plane_payload.size(),
-					packed_confidence_size);
-				return cvmmap::unexpected(sl::ERROR_CODE::FAILURE);
-			}
-			std::memcpy(
-				captured.payload.data() + packed_left_size + packed_depth_size,
-				confidence_plane_payload.data(),
-				packed_confidence_size);
-		}
-
-		if (captured.payload.empty()) {
-			return cvmmap::unexpected(sl::ERROR_CODE::FAILURE);
-		}
-
 		if (body_tracking_enabled) {
 			captured.body_tracking = capture_body_tracking_frame_locked(frame_count, captured.timestamp_ns);
 		}
-
 		return captured;
 	}
 
@@ -1474,15 +1487,58 @@ struct ZedBackendImpl {
 
 	PublishedFrame publish_captured_frame(
 		CapturedFrame captured,
+		std::vector<uint8_t> payload,
 		const uint32_t frame_count,
 		const bool log_publish_gap) {
 		PublishedFrame published_frame{};
 		published_frame.metadata.frame_count = frame_count;
 		published_frame.metadata.timestamp_ns = captured.timestamp_ns;
 		published_frame.metadata.info = captured.info;
-		published_frame.metadata.info.buffer_size = static_cast<uint32_t>(captured.payload.size());
-		published_frame.payload = std::move(captured.payload);
+		published_frame.metadata.info.buffer_size = static_cast<uint32_t>(payload.size());
+		published_frame.payload = std::move(payload);
 		published_frame.body_tracking = std::move(captured.body_tracking);
+
+		std::optional<int64_t> publish_gap_ms;
+		{
+			std::lock_guard lock(snapshot_mutex);
+			published.metadata = published_frame.metadata;
+			published.source_info = captured.source_info;
+			published.source_info.current_timestamp_ns = published_frame.metadata.timestamp_ns;
+			published.source_info.current_frame_count = published_frame.metadata.frame_count;
+			if (log_publish_gap && published.has_last_publish_at) {
+				const auto gap = std::chrono::steady_clock::now() - published.last_publish_at;
+				if (gap > publish_gap_warning_threshold()) {
+					publish_gap_ms = std::chrono::duration_cast<std::chrono::milliseconds>(gap).count();
+				}
+			}
+			published.last_publish_at = std::chrono::steady_clock::now();
+			published.has_last_publish_at = true;
+		}
+
+		if (publish_gap_ms) {
+			spdlog::warn(
+				"ZED publish gap detected: {}ms before frame {} timestamp {}",
+				*publish_gap_ms,
+				published_frame.metadata.frame_count,
+				published_frame.metadata.timestamp_ns);
+		}
+
+		return published_frame;
+	}
+
+	DirectPublishedFrame publish_captured_frame_direct(
+		CapturedFrame captured,
+		const uint32_t frame_count,
+		const bool log_publish_gap) {
+		DirectPublishedFrame published_frame{};
+		published_frame.metadata.frame_count = frame_count;
+		published_frame.metadata.timestamp_ns = captured.timestamp_ns;
+		published_frame.metadata.info = captured.info;
+		published_frame.body_tracking = std::move(captured.body_tracking);
+		published_frame.fill_payload = [this, info = published_frame.metadata.info](std::span<uint8_t> output_buffer) mutable -> std::optional<size_t> {
+			std::lock_guard lock(camera_mutex);
+			return pack_frame_locked(output_buffer, info);
+		};
 
 		std::optional<int64_t> publish_gap_ms;
 		{
@@ -1549,6 +1605,16 @@ struct ZedBackendImpl {
 		}
 	}
 
+	void emit_published_frame_direct(DirectPublishedFrame published_frame) {
+		on_frame_direct(ZedDirectFrame{
+			.metadata = published_frame.metadata,
+			.fill_payload = std::move(published_frame.fill_payload),
+		});
+		if (published_frame.body_tracking) {
+			on_body_tracking(*published_frame.body_tracking);
+		}
+	}
+
 	void Init() {
 		if (initialized.load(std::memory_order_relaxed)) {
 			return;
@@ -1581,19 +1647,41 @@ struct ZedBackendImpl {
 			}
 		}
 
-		auto initial_published = publish_captured_frame(std::move(*initial_capture), 0, false);
+		auto initial_direct = publish_captured_frame_direct(std::move(*initial_capture), 0, false);
 
 		spdlog::info("initial ZED frame info: {}x{}x{}; depth={}; bufferSize={}; pixelFormat={}; depthPlaneEnabled={}",
-					 initial_published.metadata.info.width,
-					 initial_published.metadata.info.height,
-					 initial_published.metadata.info.channels,
-					 app::to_str(initial_published.metadata.info.depth),
-					 initial_published.metadata.info.buffer_size,
-					 app::to_str(initial_published.metadata.info.pixel_format),
+					 initial_direct.metadata.info.width,
+					 initial_direct.metadata.info.height,
+					 initial_direct.metadata.info.channels,
+					 app::to_str(initial_direct.metadata.info.depth),
+					 initial_direct.metadata.info.buffer_size,
+					 app::to_str(initial_direct.metadata.info.pixel_format),
 					 depth_enabled);
 
-		on_metadata(initial_published.metadata);
-		emit_published_frame(initial_published);
+		on_metadata(initial_direct.metadata);
+		if (_on_frame_direct) {
+			emit_published_frame_direct(std::move(initial_direct));
+		} else {
+			std::vector<uint8_t> payload(initial_direct.metadata.info.buffer_size);
+			auto packed_size = initial_direct.fill_payload(std::span<uint8_t>(payload.data(), payload.size()));
+			if (!packed_size) {
+				spdlog::error("failed to pack initial ZED frame payload");
+				return;
+			}
+			payload.resize(*packed_size);
+			auto initial_published = publish_captured_frame(
+				CapturedFrame{
+					.info = initial_direct.metadata.info,
+					.source_info = initial_capture->source_info,
+					.payload = {},
+					.body_tracking = std::move(initial_direct.body_tracking),
+					.timestamp_ns = initial_direct.metadata.timestamp_ns,
+				},
+				std::move(payload),
+				0,
+				false);
+			emit_published_frame(initial_published);
+		}
 
 		initialized.store(true, std::memory_order_relaxed);
 		start_worker_thread();
@@ -1614,9 +1702,22 @@ struct ZedBackendImpl {
 
 			if (capture) {
 				consecutive_failures = 0;
-				auto published_frame = publish_captured_frame(std::move(*capture), frame_count, true);
-				emit_published_frame(published_frame);
-				spdlog::debug("frame@{}", published_frame.metadata.frame_count);
+				if (_on_frame_direct) {
+					auto published_frame = publish_captured_frame_direct(std::move(*capture), frame_count, true);
+					emit_published_frame_direct(std::move(published_frame));
+					spdlog::debug("frame@{}", frame_count);
+				} else {
+					std::vector<uint8_t> payload(capture->info.buffer_size);
+					auto packed_size = pack_frame_locked(std::span<uint8_t>(payload.data(), payload.size()), capture->info);
+					if (!packed_size) {
+						spdlog::error("failed to pack ZED frame payload");
+						continue;
+					}
+					payload.resize(*packed_size);
+					auto published_frame = publish_captured_frame(std::move(*capture), std::move(payload), frame_count, true);
+					emit_published_frame(published_frame);
+					spdlog::debug("frame@{}", published_frame.metadata.frame_count);
+				}
 				continue;
 			}
 
@@ -1649,6 +1750,10 @@ struct ZedBackendImpl {
 			}
 			consecutive_failures = 0;
 		}
+	}
+
+	void SetOnFrameDirect(on_zed_frame_direct_fn_t on_frame_direct_) {
+		_on_frame_direct = std::move(on_frame_direct_);
 	}
 
 	void Shutdown() {
@@ -1732,8 +1837,32 @@ struct ZedBackendImpl {
 				capture.error() == sl::ERROR_CODE::END_OF_SVOFILE_REACHED ? -ERANGE : -EIO);
 		}
 
-		auto published_frame = publish_captured_frame(std::move(*capture), 0, false);
-		emit_published_frame(published_frame);
+		auto published_frame = publish_captured_frame_direct(std::move(*capture), 0, false);
+		if (_on_frame_direct) {
+			emit_published_frame_direct(std::move(published_frame));
+		} else {
+			std::vector<uint8_t> payload(published_frame.metadata.info.buffer_size);
+			auto packed_size = published_frame.fill_payload(std::span<uint8_t>(payload.data(), payload.size()));
+			if (!packed_size) {
+				if (restart_worker) {
+					start_worker_thread();
+				}
+				return cvmmap::unexpected(-EIO);
+			}
+			payload.resize(*packed_size);
+			auto fallback = publish_captured_frame(
+				CapturedFrame{
+					.info = published_frame.metadata.info,
+					.source_info = capture->source_info,
+					.payload = {},
+					.body_tracking = std::move(published_frame.body_tracking),
+					.timestamp_ns = published_frame.metadata.timestamp_ns,
+				},
+				std::move(payload),
+				0,
+				false);
+			emit_published_frame(fallback);
+		}
 		if (restart_worker) {
 			start_worker_thread();
 		}
@@ -1776,8 +1905,29 @@ struct ZedBackendImpl {
 			return capture.error() == sl::ERROR_CODE::END_OF_SVOFILE_REACHED ? -ERANGE : -EIO;
 		}
 
-		auto published_frame = publish_captured_frame(std::move(*capture), 0, false);
-		emit_published_frame(published_frame);
+		auto published_frame = publish_captured_frame_direct(std::move(*capture), 0, false);
+		if (_on_frame_direct) {
+			emit_published_frame_direct(std::move(published_frame));
+		} else {
+			std::vector<uint8_t> payload(published_frame.metadata.info.buffer_size);
+			auto packed_size = published_frame.fill_payload(std::span<uint8_t>(payload.data(), payload.size()));
+			if (!packed_size) {
+				return -EIO;
+			}
+			payload.resize(*packed_size);
+			auto fallback = publish_captured_frame(
+				CapturedFrame{
+					.info = published_frame.metadata.info,
+					.source_info = make_source_info_locked(),
+					.payload = {},
+					.body_tracking = std::move(published_frame.body_tracking),
+					.timestamp_ns = published_frame.metadata.timestamp_ns,
+				},
+				std::move(payload),
+				0,
+				false);
+			emit_published_frame(fallback);
+		}
 		if (restart_worker) {
 			start_worker_thread();
 		}
@@ -2042,6 +2192,10 @@ void ZedBackend::SetOnFrame(on_frame_fn_t on_frame) {
 	impl->SetOnFrame(std::move(on_frame));
 }
 
+void ZedBackend::SetOnFrameDirect(on_zed_frame_direct_fn_t on_frame_direct) {
+	impl->SetOnFrameDirect(std::move(on_frame_direct));
+}
+
 void ZedBackend::SetOnBodyTracking(on_body_tracking_fn_t on_body_tracking) {
 	impl->SetOnBodyTracking(std::move(on_body_tracking));
 }
@@ -2140,6 +2294,10 @@ struct ZedBackendImpl {
 		_on_error = std::move(on_error_);
 	}
 
+	void SetOnFrameDirect(on_zed_frame_direct_fn_t on_frame_direct_) {
+		(void)on_frame_direct_;
+	}
+
 	source_info_t GetSourceInfo() {
 		source_info_t info{};
 		info.source_kind = cvmmap::SourceKind::Live;
@@ -2216,6 +2374,10 @@ void ZedBackend::SetOnBodyTracking(on_body_tracking_fn_t on_body_tracking) {
 
 void ZedBackend::SetOnError(on_error_fn_t on_error) {
 	impl->SetOnError(std::move(on_error));
+}
+
+void ZedBackend::SetOnFrameDirect(on_zed_frame_direct_fn_t on_frame_direct) {
+	impl->SetOnFrameDirect(std::move(on_frame_direct));
 }
 
 source_info_t ZedBackend::GetSourceInfo() {

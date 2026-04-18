@@ -678,7 +678,12 @@ int main(int argc, char **argv) {
 	std::unordered_map<uint64_t, pending_encoded_access_unit_t> pending_encoded_by_timestamp{};
 	auto undistort_pass = app::preprocess::make_undistort_pass(config.preprocess);
 	if (undistort_pass) {
-		spdlog::info("undistort preprocess pass is enabled");
+		if (config.video.backend == app::BackendType::ZED) {
+			spdlog::warn("ignoring preprocess.undistort for ZED backend; ZED direct-fill path publishes native frames without producer-side undistort");
+			undistort_pass.reset();
+		} else {
+			spdlog::info("undistort preprocess pass is enabled");
+		}
 	}
 
 	const auto to_u32 = [](size_t value) -> std::optional<uint32_t> {
@@ -1216,6 +1221,58 @@ int main(int argc, char **argv) {
 			sync_msg.emplace(config.name, 0);
 		});
 
+#ifdef WITH_BACKEND_ZED
+		if (auto *zed_backend = backend.get_if<app::backends::ZedBackend>(); zed_backend != nullptr) {
+			zed_backend->SetOnFrameDirect([&frame_state,
+									 &sync_msg,
+									 &sock,
+									 &shm_state,
+									 &build_v2_metadata](app::backends::ZedDirectFrame frame) {
+				if (not frame_state || not sync_msg) {
+					spdlog::error("[BUG] ZED direct frame callback invoked before metadata callback (should not happen)");
+					return;
+				}
+				auto &fs = *frame_state;
+				if (frame.metadata.info.buffer_size > fs.image_buffer().size()) {
+					const auto total_buffer_size = SHM_PAYLOAD_OFFSET + static_cast<size_t>(frame.metadata.info.buffer_size);
+					auto resized_frame_state = frame_state_t::open(shm_state.fd(), total_buffer_size);
+					if (!resized_frame_state) {
+						spdlog::error("resize shared memory for ZED direct frame payload failed; {}", resized_frame_state.error());
+						return;
+					}
+					frame_state = std::move(*resized_frame_state);
+				}
+				auto packed_size = frame.fill_payload(frame_state->image_buffer());
+				if (!packed_size || *packed_size == 0) {
+					spdlog::error("failed to fill ZED direct frame payload");
+					return;
+				}
+				frame.metadata.info.buffer_size = static_cast<uint32_t>(*packed_size);
+				auto metadata_v2 = build_v2_metadata(frame.metadata, *packed_size);
+				if (!metadata_v2) {
+					spdlog::error("build ABI v2 metadata failed for direct ZED frame@{}", frame.metadata.frame_count);
+					return;
+				}
+				if (metadata_v2->header.payload_size_bytes > frame_state->image_buffer().size()) {
+					spdlog::error("direct ZED frame payload ({}) exceeds shared memory payload capacity ({})",
+							  metadata_v2->header.payload_size_bytes,
+							  frame_state->image_buffer().size());
+					return;
+				}
+				frame_state->write_metadata(*metadata_v2);
+				try {
+					std::array<uint8_t, sync_message_t::size()> buffer;
+					sync_msg->set_frame_count(frame.metadata.frame_count);
+					sync_msg->set_timestamp_ns(frame.metadata.timestamp_ns);
+					std::copy(sync_msg->as_uint8s().begin(), sync_msg->as_uint8s().end(), buffer.begin());
+					sock.send(zmq::buffer(buffer), zmq::send_flags::none);
+				} catch (const zmq::error_t &e) {
+					spdlog::error("send synchronization message for direct ZED frame@{}; {}", frame.metadata.frame_count, e.what());
+				}
+			});
+		}
+		else
+		#endif
 		backend.SetOnFrame([&frame_state,
 							&sync_msg,
 							&sock,

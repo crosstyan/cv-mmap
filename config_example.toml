@@ -104,6 +104,12 @@ fps = 30
 # Aliases accepted for neural variants: "neural light"/"neural-light", "neural plus"/"neural-plus".
 # Deprecated legacy modes (PERFORMANCE/QUALITY/ULTRA) are rejected at config parse time.
 depth_mode = "neural"
+# When false, the backend skips ZED CONFIDENCE retrieval and publishes only left+depth planes.
+publish_confidence = true
+# Applies only to SVO playback: true paces playback to recorded timestamps, false reads as fast as possible.
+svo_real_time_mode = true
+# ZED SDK depth stabilization strength in [0, 100]; 0 disables stabilization, 30 matches the SDK default.
+depth_stabilization = 30
 # coordinate_system controls the native ZED 3D/body frame.
 # v1 supported values are IMAGE and RIGHT_HANDED_Y_UP.
 coordinate_system = "IMAGE"

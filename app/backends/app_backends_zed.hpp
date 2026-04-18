@@ -2,6 +2,9 @@
 #define CE5657DE_F3BD_4D12_B529_2DB6C5F4E72B
 
 #include <memory>
+#include <optional>
+#include <span>
+
 #include <cvmmap/compat/expected.hpp>
 #include "app_backends_facade.hpp"
 
@@ -11,6 +14,15 @@ struct ZedConfig;
 }
 
 namespace app::backends {
+
+using zed_frame_fill_fn_t = cvmmap::move_only_function<std::optional<size_t>(std::span<uint8_t> output_buffer)>;
+
+struct ZedDirectFrame {
+	frame_metadata_t metadata{};
+	zed_frame_fill_fn_t fill_payload{};
+};
+
+using on_zed_frame_direct_fn_t = cvmmap::move_only_function<void(ZedDirectFrame frame)>;
 
 struct ZedBackendImpl;
 
@@ -24,6 +36,7 @@ struct ZedBackend {
 	void Shutdown();
 	void SetOnMetadata(on_metadata_fn_t on_metadata);
 	void SetOnFrame(on_frame_fn_t on_frame);
+	void SetOnFrameDirect(on_zed_frame_direct_fn_t on_frame_direct);
 	void SetOnBodyTracking(on_body_tracking_fn_t on_body_tracking);
 	void SetOnError(on_error_fn_t on_error);
 	source_info_t GetSourceInfo();

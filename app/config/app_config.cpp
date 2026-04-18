@@ -435,6 +435,12 @@ void validate_zed_body_tracking_config(const app::ZedConfig::BodyTrackingConfig 
 void validate_zed_recording_config(const app::ZedConfig::RecordingConfig &cfg) {
 	(void)canonicalize_zed_recording_compression_mode(cfg.compression_mode);
 }
+
+void validate_zed_runtime_config(const app::ZedConfig &cfg) {
+	if (cfg.depth_stabilization < 0 || cfg.depth_stabilization > 100) {
+		throw std::invalid_argument("zed.depth_stabilization must be in [0, 100]");
+	}
+}
 std::filesystem::path normalize_config_path(const std::filesystem::path &path) {
 	return std::filesystem::weakly_canonical(std::filesystem::absolute(path));
 }
@@ -1040,6 +1046,23 @@ Config Config::from_toml(const std::filesystem::path &path) {
 			throw invalid_argument("zed.depth_mode is required when [zed] section exists");
 		}
 
+		zed_cfg.publish_confidence = parse_bool_field(
+			(*zed)["publish_confidence"],
+			"zed.publish_confidence",
+			true);
+		zed_cfg.svo_real_time_mode = parse_bool_field(
+			(*zed)["svo_real_time_mode"],
+			"zed.svo_real_time_mode",
+			true);
+
+		if (auto val = (*zed)["depth_stabilization"]; val) {
+			if (auto v = val.value<int>(); v) {
+				zed_cfg.depth_stabilization = *v;
+			} else {
+				throw invalid_argument("zed.depth_stabilization must be integer");
+			}
+		}
+
 		if (auto val = (*zed)["open_timeout_ms"]; val) {
 			if (auto v = val.value<int>(); v) {
 				zed_cfg.open_timeout_ms = *v;
@@ -1173,6 +1196,7 @@ Config Config::from_toml(const std::filesystem::path &path) {
 			zed_cfg.body_tracking = std::move(body_tracking_cfg);
 		}
 
+		validate_zed_runtime_config(zed_cfg);
 		validate_zed_recording_config(zed_cfg.recording);
 
 		if (zed_cfg.serial && zed_cfg.index) {
@@ -1377,6 +1401,9 @@ std::string Config::to_toml() const {
 		ss << "resolution = \"" << zed->resolution << "\"\n";
 		ss << "fps = " << zed->fps << "\n";
 		ss << "depth_mode = \"" << zed->depth_mode << "\"\n";
+		ss << "publish_confidence = " << (zed->publish_confidence ? "true" : "false") << "\n";
+		ss << "svo_real_time_mode = " << (zed->svo_real_time_mode ? "true" : "false") << "\n";
+		ss << "depth_stabilization = " << zed->depth_stabilization << "\n";
 		ss << "open_timeout_ms = " << zed->open_timeout_ms << "\n";
 		ss << "warmup_frames = " << zed->warmup_frames << "\n";
 		ss << "max_consecutive_failures = " << zed->max_consecutive_failures << "\n";

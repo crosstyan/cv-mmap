@@ -108,6 +108,9 @@ struct ZedConfig {
 	std::string resolution;
 	int fps{};
 	std::string depth_mode;
+	bool publish_confidence{true};
+	bool svo_real_time_mode{true};
+	int depth_stabilization{30};
 	int open_timeout_ms{10000};
 	int warmup_frames{15};
 	int max_consecutive_failures{30};

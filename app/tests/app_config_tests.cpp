@@ -90,6 +90,9 @@ index = 0
 resolution = "AUTO"
 fps = 30
 depth_mode = "NONE"
+publish_confidence = true
+svo_real_time_mode = true
+depth_stabilization = 30
 coordinate_system = "IMAGE"
 open_timeout_ms = 10000
 warmup_frames = 15
@@ -497,6 +500,74 @@ sort_by_recording_time = true
 	expect(config.zed->playlist->paths.size() == 2, "zed playlist should parse both paths");
 	expect(config.zed->playlist->sort_by_recording_time, "zed playlist should parse sort flag");
 	expect(!config.zed->svo_path.has_value(), "zed playlist config should not require zed.svo_path");
+	expect(config.zed->publish_confidence, "zed playlist config should default publish_confidence to true");
+	expect(config.zed->svo_real_time_mode, "zed playlist config should default svo_real_time_mode to true");
+	expect(config.zed->depth_stabilization == 30, "zed playlist config should default depth_stabilization to 30");
+}
+
+void test_zed_runtime_knobs_parse_and_round_trip() {
+	TempDir dir;
+	const auto path = dir.path() / "zed-runtime-knobs.toml";
+	write_file(
+		path,
+		R"(name = "zed-runtime-knobs"
+
+[ipc]
+namespace = "cvmmap"
+prefix = "/tmp"
+
+[video]
+backend = "zed"
+
+[zed]
+stream_mode = "svo"
+svo_path = "/data/example.svo2"
+resolution = "AUTO"
+fps = 30
+depth_mode = "NEURAL"
+publish_confidence = false
+svo_real_time_mode = false
+depth_stabilization = 0
+)");
+
+	const auto config = app::Config::from_toml(path);
+	expect(config.zed.has_value(), "zed runtime knob config should populate zed section");
+	expect(!config.zed->publish_confidence, "zed runtime knob config should parse publish_confidence");
+	expect(!config.zed->svo_real_time_mode, "zed runtime knob config should parse svo_real_time_mode");
+	expect(config.zed->depth_stabilization == 0, "zed runtime knob config should parse depth_stabilization");
+
+	const auto rendered = config.to_toml();
+	expect(rendered.find("publish_confidence = false") != std::string::npos, "zed publish_confidence should round-trip");
+	expect(rendered.find("svo_real_time_mode = false") != std::string::npos, "zed svo_real_time_mode should round-trip");
+	expect(rendered.find("depth_stabilization = 0") != std::string::npos, "zed depth_stabilization should round-trip");
+}
+
+void test_zed_rejects_out_of_range_depth_stabilization() {
+	TempDir dir;
+	const auto path = dir.path() / "zed-bad-depth-stabilization.toml";
+	write_file(
+		path,
+		R"(name = "zed-bad-depth-stabilization"
+
+[ipc]
+namespace = "cvmmap"
+prefix = "/tmp"
+
+[video]
+backend = "zed"
+
+[zed]
+stream_mode = "local"
+index = 0
+resolution = "AUTO"
+fps = 30
+depth_mode = "NONE"
+depth_stabilization = 101
+)");
+
+	expect_throws_contains(
+		[&] { (void)app::Config::from_toml(path); },
+		"zed.depth_stabilization must be in [0, 100]");
 }
 
 void test_zed_rejects_svo_path_and_playlist_together() {
@@ -562,6 +633,8 @@ int main() {
 	ok &= run_test("mcap_playlist_rejects_non_boolean_sort_flag", test_mcap_playlist_rejects_non_boolean_sort_flag);
 	ok &= run_test("zed_playlist_requires_svo_mode", test_zed_playlist_requires_svo_mode);
 	ok &= run_test("zed_playlist_parses_without_svo_path", test_zed_playlist_parses_without_svo_path);
+	ok &= run_test("zed_runtime_knobs_parse_and_round_trip", test_zed_runtime_knobs_parse_and_round_trip);
+	ok &= run_test("zed_rejects_out_of_range_depth_stabilization", test_zed_rejects_out_of_range_depth_stabilization);
 	ok &= run_test("zed_rejects_svo_path_and_playlist_together", test_zed_rejects_svo_path_and_playlist_together);
 	return ok ? 0 : 1;
 }
