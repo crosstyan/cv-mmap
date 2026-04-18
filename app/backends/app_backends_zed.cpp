@@ -665,6 +665,8 @@ struct ZedBackendImpl {
 	sl::Mat depth_frame;
 	sl::Mat confidence_frame;
 	std::vector<uint8_t> last_good_depth_plane;
+	const uint8_t *last_direct_depth_payload_ptr{nullptr};
+	size_t last_direct_depth_payload_size{0};
 	sl::REFERENCE_FRAME body_reference_frame{sl::REFERENCE_FRAME::CAMERA};
 	std::string active_recording_path{};
 	bool svo_mode{false};
@@ -757,6 +759,45 @@ struct ZedBackendImpl {
 	void set_recording_error(std::string message) {
 		std::lock_guard lock(snapshot_mutex);
 		published.last_recording_error = std::move(message);
+	}
+
+	void invalidate_direct_depth_tracking_locked() {
+		last_direct_depth_payload_ptr = nullptr;
+		last_direct_depth_payload_size = 0;
+	}
+
+	void reset_depth_fallback_locked() {
+		last_good_depth_plane.clear();
+		invalidate_direct_depth_tracking_locked();
+	}
+
+	void snapshot_last_direct_depth_plane_locked(std::span<const uint8_t> output_buffer) {
+		if (!depth_enabled) {
+			invalidate_direct_depth_tracking_locked();
+			return;
+		}
+		if (last_direct_depth_payload_ptr == nullptr || last_direct_depth_payload_size == 0) {
+			invalidate_direct_depth_tracking_locked();
+			return;
+		}
+		const auto *buffer_begin = output_buffer.data();
+		if (buffer_begin == nullptr || output_buffer.empty()) {
+			invalidate_direct_depth_tracking_locked();
+			return;
+		}
+		const auto *buffer_end = buffer_begin + output_buffer.size();
+		const auto *depth_begin = last_direct_depth_payload_ptr;
+		const auto *depth_end = depth_begin + last_direct_depth_payload_size;
+		if (depth_begin >= buffer_begin && depth_end <= buffer_end) {
+			last_good_depth_plane.resize(last_direct_depth_payload_size);
+			std::memcpy(last_good_depth_plane.data(), depth_begin, last_direct_depth_payload_size);
+		}
+		invalidate_direct_depth_tracking_locked();
+	}
+
+	void OnDirectOutputBufferWillReset(std::span<const uint8_t> output_buffer) {
+		std::lock_guard lock(camera_mutex);
+		snapshot_last_direct_depth_plane_locked(output_buffer);
 	}
 
 	std::string GetLastRecordingError() {
@@ -1267,7 +1308,7 @@ struct ZedBackendImpl {
 		return frame;
 	}
 
-	std::optional<size_t> pack_frame_locked(std::span<uint8_t> payload, frame_info_t &info_out) {
+	std::optional<size_t> pack_frame_locked(std::span<uint8_t> payload, frame_info_t &info_out, const bool direct_output) {
 		const auto height = left_frame.getHeight();
 		const auto left_row_bytes = expected_row_bytes(left_frame);
 		if (!left_row_bytes || height <= 0) {
@@ -1373,16 +1414,29 @@ struct ZedBackendImpl {
 		if (depth_enabled) {
 			auto depth_payload = payload.subspan(packed_left_size, packed_depth_size);
 			if (depth_plane_available && copy_compact_plane(depth_frame, depth_row_bytes, depth_payload)) {
-				last_good_depth_plane.resize(packed_depth_size);
-				std::memcpy(last_good_depth_plane.data(), depth_payload.data(), packed_depth_size);
+				if (direct_output) {
+					last_direct_depth_payload_ptr = depth_payload.data();
+					last_direct_depth_payload_size = packed_depth_size;
+				} else {
+					last_good_depth_plane.resize(packed_depth_size);
+					std::memcpy(last_good_depth_plane.data(), depth_payload.data(), packed_depth_size);
+					invalidate_direct_depth_tracking_locked();
+				}
 			} else {
 				if (depth_plane_available) {
 					spdlog::warn("ZED depth plane compaction failed; using stable fallback depth bytes");
 				}
-				if (last_good_depth_plane.size() == packed_depth_size) {
-					std::memcpy(depth_payload.data(), last_good_depth_plane.data(), packed_depth_size);
-				} else {
-					std::fill(depth_payload.begin(), depth_payload.end(), 0);
+				const bool can_reuse_direct_depth =
+					direct_output &&
+					depth_payload.data() == last_direct_depth_payload_ptr &&
+					packed_depth_size == last_direct_depth_payload_size;
+				if (!can_reuse_direct_depth) {
+					if (last_good_depth_plane.size() == packed_depth_size) {
+						std::memcpy(depth_payload.data(), last_good_depth_plane.data(), packed_depth_size);
+					} else {
+						std::fill(depth_payload.begin(), depth_payload.end(), 0);
+					}
+					invalidate_direct_depth_tracking_locked();
 				}
 			}
 		}
@@ -1537,7 +1591,7 @@ struct ZedBackendImpl {
 		published_frame.body_tracking = std::move(captured.body_tracking);
 		published_frame.fill_payload = [this, info = published_frame.metadata.info](std::span<uint8_t> output_buffer) mutable -> std::optional<size_t> {
 			std::lock_guard lock(camera_mutex);
-			return pack_frame_locked(output_buffer, info);
+			return pack_frame_locked(output_buffer, info, true);
 		};
 
 		std::optional<int64_t> publish_gap_ms;
@@ -1663,7 +1717,11 @@ struct ZedBackendImpl {
 			emit_published_frame_direct(std::move(initial_direct));
 		} else {
 			std::vector<uint8_t> payload(initial_direct.metadata.info.buffer_size);
-			auto packed_size = initial_direct.fill_payload(std::span<uint8_t>(payload.data(), payload.size()));
+			std::optional<size_t> packed_size;
+			{
+				std::lock_guard lock(camera_mutex);
+				packed_size = pack_frame_locked(std::span<uint8_t>(payload.data(), payload.size()), initial_direct.metadata.info, false);
+			}
 			if (!packed_size) {
 				spdlog::error("failed to pack initial ZED frame payload");
 				return;
@@ -1708,7 +1766,7 @@ struct ZedBackendImpl {
 					spdlog::debug("frame@{}", frame_count);
 				} else {
 					std::vector<uint8_t> payload(capture->info.buffer_size);
-					auto packed_size = pack_frame_locked(std::span<uint8_t>(payload.data(), payload.size()), capture->info);
+					auto packed_size = pack_frame_locked(std::span<uint8_t>(payload.data(), payload.size()), capture->info, false);
 					if (!packed_size) {
 						spdlog::error("failed to pack ZED frame payload");
 						continue;
@@ -1822,7 +1880,7 @@ struct ZedBackendImpl {
 			}
 
 			camera.setSVOPosition(target_position);
-			last_good_depth_plane.clear();
+			reset_depth_fallback_locked();
 			capture = capture_frame_locked(0);
 			if (capture) {
 				landed_timestamp_ns = capture->timestamp_ns;
@@ -1842,7 +1900,11 @@ struct ZedBackendImpl {
 			emit_published_frame_direct(std::move(published_frame));
 		} else {
 			std::vector<uint8_t> payload(published_frame.metadata.info.buffer_size);
-			auto packed_size = published_frame.fill_payload(std::span<uint8_t>(payload.data(), payload.size()));
+			std::optional<size_t> packed_size;
+			{
+				std::lock_guard lock(camera_mutex);
+				packed_size = pack_frame_locked(std::span<uint8_t>(payload.data(), payload.size()), published_frame.metadata.info, false);
+			}
 			if (!packed_size) {
 				if (restart_worker) {
 					start_worker_thread();
@@ -1897,7 +1959,7 @@ struct ZedBackendImpl {
 			}
 
 			camera.setSVOPosition(0);
-			last_good_depth_plane.clear();
+			reset_depth_fallback_locked();
 			capture = capture_frame_locked(0);
 		}
 
@@ -1910,7 +1972,11 @@ struct ZedBackendImpl {
 			emit_published_frame_direct(std::move(published_frame));
 		} else {
 			std::vector<uint8_t> payload(published_frame.metadata.info.buffer_size);
-			auto packed_size = published_frame.fill_payload(std::span<uint8_t>(payload.data(), payload.size()));
+			std::optional<size_t> packed_size;
+			{
+				std::lock_guard lock(camera_mutex);
+				packed_size = pack_frame_locked(std::span<uint8_t>(payload.data(), payload.size()), published_frame.metadata.info, false);
+			}
 			if (!packed_size) {
 				return -EIO;
 			}
@@ -2196,6 +2262,10 @@ void ZedBackend::SetOnFrameDirect(on_zed_frame_direct_fn_t on_frame_direct) {
 	impl->SetOnFrameDirect(std::move(on_frame_direct));
 }
 
+void ZedBackend::OnDirectOutputBufferWillReset(std::span<const uint8_t> output_buffer) {
+	impl->OnDirectOutputBufferWillReset(output_buffer);
+}
+
 void ZedBackend::SetOnBodyTracking(on_body_tracking_fn_t on_body_tracking) {
 	impl->SetOnBodyTracking(std::move(on_body_tracking));
 }
@@ -2298,6 +2368,8 @@ struct ZedBackendImpl {
 		(void)on_frame_direct_;
 	}
 
+	void OnDirectOutputBufferWillReset(std::span<const uint8_t>) {}
+
 	source_info_t GetSourceInfo() {
 		source_info_t info{};
 		info.source_kind = cvmmap::SourceKind::Live;
@@ -2378,6 +2450,10 @@ void ZedBackend::SetOnError(on_error_fn_t on_error) {
 
 void ZedBackend::SetOnFrameDirect(on_zed_frame_direct_fn_t on_frame_direct) {
 	impl->SetOnFrameDirect(std::move(on_frame_direct));
+}
+
+void ZedBackend::OnDirectOutputBufferWillReset(std::span<const uint8_t> output_buffer) {
+	impl->OnDirectOutputBufferWillReset(output_buffer);
 }
 
 source_info_t ZedBackend::GetSourceInfo() {

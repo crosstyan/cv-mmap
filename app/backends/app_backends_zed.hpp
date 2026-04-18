@@ -37,6 +37,7 @@ struct ZedBackend {
 	void SetOnMetadata(on_metadata_fn_t on_metadata);
 	void SetOnFrame(on_frame_fn_t on_frame);
 	void SetOnFrameDirect(on_zed_frame_direct_fn_t on_frame_direct);
+	void OnDirectOutputBufferWillReset(std::span<const uint8_t> output_buffer);
 	void SetOnBodyTracking(on_body_tracking_fn_t on_body_tracking);
 	void SetOnError(on_error_fn_t on_error);
 	source_info_t GetSourceInfo();

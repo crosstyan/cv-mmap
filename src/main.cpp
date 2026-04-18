@@ -1194,7 +1194,7 @@ int main(int argc, char **argv) {
 	};
 
 	const auto bind_backend_callbacks = [&]() {
-		backend.SetOnMetadata([&shm_state, &frame_state, &sync_msg, &config, &build_v2_metadata, &now_ns](const frame_metadata_t &metadata) {
+		backend.SetOnMetadata([&backend, &shm_state, &frame_state, &sync_msg, &config, &build_v2_metadata, &now_ns](const frame_metadata_t &metadata) {
 			const auto picture_buffer_size = metadata.info.buffer_size;
 			if (picture_buffer_size == 0) {
 				spdlog::error("received zero-sized picture buffer in metadata callback");
@@ -1202,6 +1202,9 @@ int main(int argc, char **argv) {
 			}
 			const auto total_buffer_size = SHM_PAYLOAD_OFFSET + picture_buffer_size;
 
+			if (auto *zed_backend = backend.get_if<app::backends::ZedBackend>(); zed_backend != nullptr && frame_state) {
+				zed_backend->OnDirectOutputBufferWillReset(frame_state->image_buffer());
+			}
 			auto fs = frame_state_t::open(shm_state.fd(), total_buffer_size);
 			if (not fs) {
 				spdlog::error("open frame state; {}", fs.error());
@@ -1227,13 +1230,15 @@ int main(int argc, char **argv) {
 									 &sync_msg,
 									 &sock,
 									 &shm_state,
-									 &build_v2_metadata](app::backends::ZedDirectFrame frame) {
+									 &build_v2_metadata,
+									 zed_backend](app::backends::ZedDirectFrame frame) {
 				if (not frame_state || not sync_msg) {
 					spdlog::error("[BUG] ZED direct frame callback invoked before metadata callback (should not happen)");
 					return;
 				}
 				auto &fs = *frame_state;
 				if (frame.metadata.info.buffer_size > fs.image_buffer().size()) {
+					zed_backend->OnDirectOutputBufferWillReset(fs.image_buffer());
 					const auto total_buffer_size = SHM_PAYLOAD_OFFSET + static_cast<size_t>(frame.metadata.info.buffer_size);
 					auto resized_frame_state = frame_state_t::open(shm_state.fd(), total_buffer_size);
 					if (!resized_frame_state) {
