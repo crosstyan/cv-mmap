@@ -38,7 +38,8 @@ Downstream impact:
 - Kaitai parsers can validate the new request/response payloads
 
 Compatibility:
-- this is a compatible extension of control v1, not a version bump
+- at the time, this was a compatible extension of the since-removed control v1
+  wire format, not a version bump
 - backends that do not implement recording return `UNSUPPORTED`
 
 ## Control Wire Source Info And Timestamp Seek
@@ -84,7 +85,8 @@ Downstream impact:
   envelope size instead of host ABI padding
 
 Compatibility:
-- this is a compatible extension of control v1, not a version bump
+- at the time, this was a compatible extension of the since-removed control v1
+  wire format, not a version bump
 - old consumers that only send `RESET_FRAME_COUNT` continue to work
 - new consumers must treat non-`OK` response codes as having either no payload or
   command-specific future payloads
