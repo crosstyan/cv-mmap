@@ -81,7 +81,9 @@ stream_mode = "local"
 # SVO playlist example (use instead of svo_path):
 # [zed.playlist]
 # paths = ["/data/part1.svo2", "/data/part2.svo2"]
-# sort_by_recording_time = true
+# Prefer pre-sorting with ../zed-offline-tools/scripts/generate_playlist_config.py --sort-by-recording-time
+# and keep runtime sorting disabled so cv-mmap does not reopen each SVO during startup.
+# sort_by_recording_time = false
 
 # Network mode example (uncomment to use):
 # stream_mode = "ethernet"
