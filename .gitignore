@@ -213,3 +213,6 @@ generated/
 .sisyphus/boulder.json
 .idea
 .ruff_cache
+out/
+
+tools/portable_bundle/ansible/inventory/jetson.ini

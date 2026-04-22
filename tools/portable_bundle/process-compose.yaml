@@ -1,0 +1,59 @@
+version: "0.5"
+is_strict: true
+processes:
+  nats:
+    namespace: bundle
+    description: bundled nats-server
+    command: "../../bin/run-nats -js"
+    working_dir: .
+    availability:
+      restart: on_failure
+      backoff_seconds: 2
+
+  zed1:
+    namespace: cameras
+    description: cv-mmap producer for config_zed_1.toml
+    command: "../../bin/run-cv-mmap --config ./config_zed_1.toml"
+    working_dir: .
+    depends_on:
+      nats:
+        condition: process_started
+    availability:
+      restart: on_failure
+      backoff_seconds: 2
+
+  zed2:
+    namespace: cameras
+    description: cv-mmap producer for config_zed_2.toml
+    command: "../../bin/run-cv-mmap --config ./config_zed_2.toml"
+    working_dir: .
+    depends_on:
+      nats:
+        condition: process_started
+    availability:
+      restart: on_failure
+      backoff_seconds: 2
+
+  zed3:
+    namespace: cameras
+    description: cv-mmap producer for config_zed_3.toml
+    command: "../../bin/run-cv-mmap --config ./config_zed_3.toml"
+    working_dir: .
+    depends_on:
+      nats:
+        condition: process_started
+    availability:
+      restart: on_failure
+      backoff_seconds: 2
+
+  zed4:
+    namespace: cameras
+    description: cv-mmap producer for config_zed_4.toml
+    command: "../../bin/run-cv-mmap --config ./config_zed_4.toml"
+    working_dir: .
+    depends_on:
+      nats:
+        condition: process_started
+    availability:
+      restart: on_failure
+      backoff_seconds: 2

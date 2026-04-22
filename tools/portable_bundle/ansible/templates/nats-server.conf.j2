@@ -1,0 +1,7 @@
+{% set shared_dir = cvmmap_root ~ '/shared' %}
+listen: 0.0.0.0:4222
+{% if cvmmap_nats_http_port is not none and (cvmmap_nats_http_port | string | trim | length) > 0 %}http_port: {{ cvmmap_nats_http_port }}
+{% endif %}
+jetstream {
+  store_dir: "{{ shared_dir }}/nats/jetstream"
+}

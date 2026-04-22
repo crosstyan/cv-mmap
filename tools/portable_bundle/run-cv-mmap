@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly SCRIPT_NAME="${0##*/}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  run-cv-mmap [cv-mmap args...]
+
+Launch the bundled cv-mmap executable from any working directory.
+
+Behavior:
+  - resolves the bundle root from this launcher location
+  - prepends bundle lib/ to LD_LIBRARY_PATH
+  - uses CVMMAP_CONFIG when set, otherwise defaults to
+    share/cvmmap-bundle/config/config_zed_1.toml if no --config/-c is passed
+EOF
+}
+
+die() {
+  printf '%s: %s\n' "$SCRIPT_NAME" "$*" >&2
+  exit 1
+}
+
+script_dir="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+readonly script_dir
+bundle_root="$(cd -- "$script_dir/.." && pwd -P)"
+readonly bundle_root
+binary="$bundle_root/bin/cv-mmap"
+default_config="$bundle_root/share/cvmmap-bundle/config/config_zed_1.toml"
+
+[[ -x "$binary" ]] || die "bundled executable not found: $binary"
+
+if [[ ! -d "$bundle_root/lib" ]]; then
+  die "bundled library directory not found: $bundle_root/lib"
+fi
+
+export LD_LIBRARY_PATH="$bundle_root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+if [[ "${1-}" == "--help" || "${1-}" == "-h" ]]; then
+  usage
+fi
+
+config_arg=()
+has_explicit_config=0
+expect_config_value=0
+for arg in "$@"; do
+  if ((expect_config_value)); then
+    expect_config_value=0
+    has_explicit_config=1
+    continue
+  fi
+  case "$arg" in
+    --config|-c)
+      expect_config_value=1
+      ;;
+    --config=*|-c=*)
+      has_explicit_config=1
+      ;;
+  esac
+done
+
+if ((expect_config_value)); then
+  die "option requires a value: --config/-c"
+fi
+
+if (( ! has_explicit_config )); then
+  selected_config="${CVMMAP_CONFIG:-$default_config}"
+  [[ -f "$selected_config" ]] || die "config file not found: $selected_config"
+  config_arg=(--config "$selected_config")
+fi
+
+exec "$binary" "${config_arg[@]}" "$@"

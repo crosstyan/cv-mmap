@@ -1,0 +1,20 @@
+{% set current_dir = cvmmap_root ~ '/current' %}
+{% set shared_config_dir = cvmmap_root ~ '/shared/config' %}
+[Unit]
+Description=CVMMAP bundled NATS server
+Documentation=https://nats.io/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ cvmmap_deploy_user }}
+Group={{ cvmmap_deploy_user }}
+WorkingDirectory={{ cvmmap_root }}
+ExecStart={{ current_dir }}/bin/run-nats -c {{ shared_config_dir }}/nats-server.conf
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly SCRIPT_NAME="${0##*/}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  run-cvmmap-streamer [cvmmap-streamer args...]
+
+Launch the bundled cvmmap-streamer executable from any working directory.
+EOF
+}
+
+die() {
+  printf '%s: %s\n' "$SCRIPT_NAME" "$*" >&2
+  exit 1
+}
+
+script_dir="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+readonly script_dir
+bundle_root="$(cd -- "$script_dir/.." && pwd -P)"
+readonly bundle_root
+binary="$bundle_root/bin/cvmmap_streamer"
+
+[[ -x "$binary" ]] || die "bundled executable not found: $binary"
+[[ -d "$bundle_root/lib" ]] || die "bundled library directory not found: $bundle_root/lib"
+
+export LD_LIBRARY_PATH="$bundle_root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+if [[ "${1-}" == "--help" || "${1-}" == "-h" ]]; then
+  usage
+fi
+
+exec "$binary" "$@"

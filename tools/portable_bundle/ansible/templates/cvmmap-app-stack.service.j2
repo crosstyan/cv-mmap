@@ -1,0 +1,23 @@
+{% set current_dir = cvmmap_root ~ '/current' %}
+{% set shared_dir = cvmmap_root ~ '/shared' %}
+{% set shared_config_dir = shared_dir ~ '/config' %}
+{% set shared_process_compose_dir = shared_dir ~ '/process-compose' %}
+[Unit]
+Description=CVMMAP application stack (process-compose)
+After=network-online.target nats.service srs.service
+Wants=network-online.target
+Requires=nats.service srs.service
+
+[Service]
+Type=simple
+User={{ cvmmap_deploy_user }}
+Group={{ cvmmap_deploy_user }}
+WorkingDirectory={{ shared_process_compose_dir }}
+Environment=XDG_STATE_HOME={{ shared_dir }}/state
+Environment=XDG_CONFIG_HOME={{ shared_config_dir }}/xdg
+ExecStart={{ current_dir }}/tools/process-compose -f {{ shared_process_compose_dir }}/process-compose.yaml up --tui=false --no-server
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

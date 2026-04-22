@@ -1,0 +1,59 @@
+{% set current_dir = cvmmap_root ~ '/current' %}
+{% set shared_dir = cvmmap_root ~ '/shared' %}
+{% set shared_config_dir = shared_dir ~ '/config' %}
+{% set shared_process_compose_dir = shared_dir ~ '/process-compose' %}
+version: "0.5"
+is_strict: true
+log_location: {{ shared_dir }}/log/process-compose.log
+shell:
+  shell_command: "bash"
+  shell_argument: "-lc"
+
+processes:
+  zed1:
+    namespace: cameras
+    description: cv-mmap producer for config_zed_1.toml
+    command: "{{ current_dir }}/bin/run-cv-mmap --config {{ shared_config_dir }}/config_zed_1.toml"
+    working_dir: "{{ shared_process_compose_dir }}"
+    availability:
+      restart: on_failure
+      backoff_seconds: 2
+
+  zed2:
+    namespace: cameras
+    description: cv-mmap producer for config_zed_2.toml
+    command: "{{ current_dir }}/bin/run-cv-mmap --config {{ shared_config_dir }}/config_zed_2.toml"
+    working_dir: "{{ shared_process_compose_dir }}"
+    availability:
+      restart: on_failure
+      backoff_seconds: 2
+
+  zed3:
+    namespace: cameras
+    description: cv-mmap producer for config_zed_3.toml
+    command: "{{ current_dir }}/bin/run-cv-mmap --config {{ shared_config_dir }}/config_zed_3.toml"
+    working_dir: "{{ shared_process_compose_dir }}"
+    availability:
+      restart: on_failure
+      backoff_seconds: 2
+
+  zed4:
+    namespace: cameras
+    description: cv-mmap producer for config_zed_4.toml
+    command: "{{ current_dir }}/bin/run-cv-mmap --config {{ shared_config_dir }}/config_zed_4.toml"
+    working_dir: "{{ shared_process_compose_dir }}"
+    availability:
+      restart: on_failure
+      backoff_seconds: 2
+{% if cvmmap_streamer_args is defined and ((cvmmap_streamer_args is string and cvmmap_streamer_args | trim | length > 0) or (cvmmap_streamer_args is sequence and cvmmap_streamer_args is not string and cvmmap_streamer_args | length > 0)) %}
+
+  cvmmap-streamer:
+    namespace: streaming
+    description: cvmmap-streamer with explicit deploy-time arguments
+    command: |
+      exec {{ current_dir }}/bin/run-cvmmap-streamer{% if cvmmap_streamer_args is string %} {{ cvmmap_streamer_args | trim }}{% else %}{% for arg in cvmmap_streamer_args %} {{ arg | quote }}{% endfor %}{% endif %}
+    working_dir: "{{ shared_process_compose_dir }}"
+    availability:
+      restart: on_failure
+      backoff_seconds: 2
+{% endif %}

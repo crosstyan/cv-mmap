@@ -1,0 +1,296 @@
+---
+- name: Deploy cvmmap portable bundle to Jetson
+  hosts: all
+  gather_facts: true
+  vars:
+    cvmmap_effective_release_id: >-
+      {{
+        cvmmap_release_id
+        | default(
+            (cvmmap_bundle_artifact | basename)
+            | regex_replace('\\.tar\\.gz$', '')
+            | regex_replace('\\.tgz$', '')
+          )
+      }}
+    cvmmap_release_dir: "{{ cvmmap_root }}/releases/{{ cvmmap_effective_release_id }}"
+    cvmmap_current_dir: "{{ cvmmap_root }}/current"
+    cvmmap_shared_dir: "{{ cvmmap_root }}/shared"
+    cvmmap_shared_config_dir: "{{ cvmmap_shared_dir }}/config"
+    cvmmap_process_compose_dir: "{{ cvmmap_shared_dir }}/process-compose"
+    cvmmap_log_dir: "{{ cvmmap_shared_dir }}/log"
+    cvmmap_state_dir: "{{ cvmmap_shared_dir }}/state"
+    cvmmap_nats_state_dir: "{{ cvmmap_shared_dir }}/nats/jetstream"
+    cvmmap_remote_staging_tarball: "/tmp/{{ cvmmap_bundle_artifact | basename }}"
+    cvmmap_seed_config_files:
+      - config_zed_base.toml
+      - config_zed_1.toml
+      - config_zed_2.toml
+      - config_zed_3.toml
+      - config_zed_4.toml
+    cvmmap_srs_source_root: "{{ cvmmap_current_dir }}/share/cvmmap-bundle/srs"
+    cvmmap_srs_source_conf_dir: "{{ cvmmap_srs_source_root }}/usr/local/srs/conf"
+    cvmmap_srs_source_binary: "{{ cvmmap_srs_source_root }}/usr/local/srs/objs/srs"
+    cvmmap_srs_source_unit: "{{ cvmmap_srs_source_root }}/usr/lib/systemd/system/srs.service"
+    cvmmap_srs_install_root: /usr/local/srs
+    cvmmap_srs_conf_dir: /usr/local/srs/conf
+    cvmmap_srs_binary_path: /usr/local/srs/objs/srs
+    cvmmap_srs_unit_path: /usr/lib/systemd/system/srs.service
+    cvmmap_nats_unit_path: /etc/systemd/system/nats.service
+    cvmmap_app_stack_unit_path: /etc/systemd/system/cvmmap-app-stack.service
+
+  pre_tasks:
+    - name: Assert required variables are set
+      ansible.builtin.assert:
+        that:
+          - cvmmap_bundle_artifact is defined
+          - (cvmmap_bundle_artifact | string | length) > 0
+        fail_msg: cvmmap_bundle_artifact must point to an already-built local bundle tarball.
+
+    - name: Validate artifact exists on control machine
+      ansible.builtin.stat:
+        path: "{{ cvmmap_bundle_artifact }}"
+      delegate_to: localhost
+      become: false
+      register: cvmmap_artifact_stat
+
+    - name: Assert artifact path is a local file
+      ansible.builtin.assert:
+        that:
+          - cvmmap_artifact_stat.stat.exists
+          - cvmmap_artifact_stat.stat.isreg
+        fail_msg: "Bundle artifact not found on control machine: {{ cvmmap_bundle_artifact }}"
+
+    - name: Assert release id resolves from artifact name or override
+      ansible.builtin.assert:
+        that:
+          - (cvmmap_effective_release_id | length) > 0
+          - cvmmap_effective_release_id != (cvmmap_bundle_artifact | basename)
+        fail_msg: >-
+          Could not derive a release id from {{ cvmmap_bundle_artifact }}.
+          Supply cvmmap_release_id or use a .tar.gz/.tgz artifact name.
+
+  tasks:
+    - name: Create deployment root directories
+      become: true
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner | default(cvmmap_deploy_user) }}"
+        group: "{{ item.group | default(cvmmap_deploy_user) }}"
+        mode: "{{ item.mode | default('0755') }}"
+      loop:
+        - path: "{{ cvmmap_root }}"
+          owner: root
+          group: root
+          mode: '0755'
+        - path: "{{ cvmmap_root }}/releases"
+        - path: "{{ cvmmap_shared_dir }}"
+        - path: "{{ cvmmap_shared_config_dir }}"
+        - path: "{{ cvmmap_shared_config_dir }}/xdg"
+        - path: "{{ cvmmap_process_compose_dir }}"
+        - path: "{{ cvmmap_log_dir }}"
+        - path: "{{ cvmmap_state_dir }}"
+        - path: "{{ cvmmap_nats_state_dir }}"
+
+    - name: Create release directory
+      become: true
+      ansible.builtin.file:
+        path: "{{ cvmmap_release_dir }}"
+        state: directory
+        owner: "{{ cvmmap_deploy_user }}"
+        group: "{{ cvmmap_deploy_user }}"
+        mode: '0755'
+
+    - name: Upload bundle tarball to target staging path
+      become: true
+      ansible.builtin.copy:
+        src: "{{ cvmmap_bundle_artifact }}"
+        dest: "{{ cvmmap_remote_staging_tarball }}"
+        owner: "{{ cvmmap_deploy_user }}"
+        group: "{{ cvmmap_deploy_user }}"
+        mode: '0644'
+
+    - name: Extract bundle release
+      become: true
+      ansible.builtin.unarchive:
+        src: "{{ cvmmap_remote_staging_tarball }}"
+        dest: "{{ cvmmap_release_dir }}"
+        remote_src: true
+        owner: "{{ cvmmap_deploy_user }}"
+        group: "{{ cvmmap_deploy_user }}"
+        extra_opts:
+          - --strip-components=1
+
+    - name: Point current symlink at deployed release
+      become: true
+      ansible.builtin.file:
+        src: "{{ cvmmap_release_dir }}"
+        dest: "{{ cvmmap_current_dir }}"
+        state: link
+        owner: "{{ cvmmap_deploy_user }}"
+        group: "{{ cvmmap_deploy_user }}"
+        force: true
+
+    - name: Seed shared app configs from current release
+      become: true
+      ansible.builtin.copy:
+        src: "{{ cvmmap_current_dir }}/share/cvmmap-bundle/config/{{ item }}"
+        dest: "{{ cvmmap_shared_config_dir }}/{{ item }}"
+        remote_src: true
+        owner: "{{ cvmmap_deploy_user }}"
+        group: "{{ cvmmap_deploy_user }}"
+        mode: '0644'
+        force: "{{ cvmmap_force_shared_config_refresh }}"
+      loop: "{{ cvmmap_seed_config_files }}"
+
+    - name: Verify bundled runtime dependencies
+      become: true
+      ansible.builtin.command:
+        argv:
+          - "{{ cvmmap_current_dir }}/bin/install-runtime-deps"
+          - --verify
+      register: cvmmap_runtime_deps_verify
+      changed_when: false
+      failed_when: false
+
+    - name: Install bundled runtime dependencies when verification fails
+      become: true
+      ansible.builtin.command:
+        argv:
+          - "{{ cvmmap_current_dir }}/bin/install-runtime-deps"
+          - --install
+      when: cvmmap_runtime_deps_verify.rc != 0
+      register: cvmmap_runtime_deps_install
+      changed_when: cvmmap_runtime_deps_install.rc == 0
+
+    - name: Render NATS config
+      become: true
+      ansible.builtin.template:
+        src: templates/nats-server.conf.j2
+        dest: "{{ cvmmap_shared_config_dir }}/nats-server.conf"
+        owner: "{{ cvmmap_deploy_user }}"
+        group: "{{ cvmmap_deploy_user }}"
+        mode: '0644'
+      notify: Reload systemd
+
+    - name: Install NATS systemd unit
+      become: true
+      ansible.builtin.template:
+        src: templates/nats.service.j2
+        dest: "{{ cvmmap_nats_unit_path }}"
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Reload systemd
+
+    - name: Manage NATS service
+      become: true
+      ansible.builtin.systemd:
+        name: nats
+        enabled: "{{ cvmmap_start_nats }}"
+        state: "{{ 'started' if cvmmap_start_nats else 'stopped' }}"
+        daemon_reload: true
+
+    - name: Ensure SRS directories exist
+      become: true
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      loop:
+        - "{{ cvmmap_srs_install_root }}"
+        - "{{ cvmmap_srs_install_root }}/objs"
+        - "{{ cvmmap_srs_conf_dir }}"
+
+    - name: Install SRS binary from bundled release
+      become: true
+      ansible.builtin.copy:
+        src: "{{ cvmmap_srs_source_binary }}"
+        dest: "{{ cvmmap_srs_binary_path }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Discover bundled SRS config files
+      become: true
+      ansible.builtin.find:
+        paths: "{{ cvmmap_srs_source_conf_dir }}"
+        file_type: file
+      register: cvmmap_srs_conf_files
+
+    - name: Seed or refresh SRS config files
+      become: true
+      ansible.builtin.copy:
+        src: "{{ item.path }}"
+        dest: "{{ cvmmap_srs_conf_dir }}/{{ item.path | basename }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: '0644'
+        force: "{{ cvmmap_force_srs_conf_sync }}"
+      loop: "{{ cvmmap_srs_conf_files.files | sort(attribute='path') }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+
+    - name: Install SRS systemd unit
+      become: true
+      ansible.builtin.copy:
+        src: "{{ cvmmap_srs_source_unit }}"
+        dest: "{{ cvmmap_srs_unit_path }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Reload systemd
+
+    - name: Manage SRS service
+      become: true
+      ansible.builtin.systemd:
+        name: srs
+        enabled: "{{ cvmmap_start_srs }}"
+        state: "{{ 'started' if cvmmap_start_srs else 'stopped' }}"
+        daemon_reload: true
+
+    - name: Render deployment process-compose file
+      become: true
+      ansible.builtin.template:
+        src: templates/process-compose.yaml.j2
+        dest: "{{ cvmmap_process_compose_dir }}/process-compose.yaml"
+        owner: "{{ cvmmap_deploy_user }}"
+        group: "{{ cvmmap_deploy_user }}"
+        mode: '0644'
+
+    - name: Install app stack systemd unit
+      become: true
+      ansible.builtin.template:
+        src: templates/cvmmap-app-stack.service.j2
+        dest: "{{ cvmmap_app_stack_unit_path }}"
+        owner: root
+        group: root
+        mode: '0644'
+      when: cvmmap_install_app_stack_unit
+      notify: Reload systemd
+
+    - name: Manage app stack service
+      become: true
+      ansible.builtin.systemd:
+        name: cvmmap-app-stack
+        enabled: "{{ cvmmap_start_app_stack }}"
+        state: "{{ 'started' if cvmmap_start_app_stack else 'stopped' }}"
+        daemon_reload: true
+      when: cvmmap_install_app_stack_unit
+
+    - name: Remove remote staging tarball
+      become: true
+      ansible.builtin.file:
+        path: "{{ cvmmap_remote_staging_tarball }}"
+        state: absent
+
+  handlers:
+    - name: Reload systemd
+      become: true
+      ansible.builtin.systemd:
+        daemon_reload: true

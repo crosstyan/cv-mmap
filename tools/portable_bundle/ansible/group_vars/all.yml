@@ -1,0 +1,11 @@
+---
+cvmmap_root: /opt/cvmmap-bundle
+cvmmap_deploy_user: "{{ ansible_user | default(ansible_user_id) }}"
+cvmmap_start_nats: true
+cvmmap_start_srs: true
+cvmmap_install_app_stack_unit: true
+cvmmap_start_app_stack: false
+cvmmap_streamer_args: ''
+cvmmap_force_srs_conf_sync: false
+cvmmap_force_shared_config_refresh: false
+cvmmap_nats_http_port: null

@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly SCRIPT_NAME="${0##*/}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  run-cv-mmap-gui [cv-mmap-gui args...]
+
+Launch the bundled cv-mmap-gui executable from any working directory.
+
+Behavior:
+  - resolves the bundle root from this launcher location
+  - prepends bundle lib/ to LD_LIBRARY_PATH
+  - redirects ImGui state into a writable per-user directory
+EOF
+}
+
+die() {
+  printf '%s: %s\n' "$SCRIPT_NAME" "$*" >&2
+  exit 1
+}
+
+script_dir="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+readonly script_dir
+bundle_root="$(cd -- "$script_dir/.." && pwd -P)"
+readonly bundle_root
+binary="$bundle_root/bin/cv_mmap_gui"
+
+[[ -x "$binary" ]] || die "bundled executable not found: $binary"
+[[ -d "$bundle_root/lib" ]] || die "bundled library directory not found: $bundle_root/lib"
+
+export LD_LIBRARY_PATH="$bundle_root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+state_root="${XDG_STATE_HOME:-${HOME:-}/.local/state}"
+config_root="${XDG_CONFIG_HOME:-${HOME:-}/.config}"
+if [[ -z "$state_root" || -z "$config_root" ]]; then
+  die "HOME or XDG_* must be set so GUI state can be written outside the bundle"
+fi
+
+gui_state_dir="$state_root/cvmmap-bundle/imgui"
+gui_config_dir="$config_root/cvmmap-bundle"
+mkdir -p "$gui_state_dir" "$gui_config_dir"
+
+export XDG_STATE_HOME="$state_root"
+export XDG_CONFIG_HOME="$gui_config_dir"
+
+if [[ "${1-}" == "--help" || "${1-}" == "-h" ]]; then
+  usage
+fi
+
+cd "$gui_state_dir"
+exec "$binary" "$@"
