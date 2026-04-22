@@ -676,6 +676,7 @@ struct ZedBackendImpl {
 	uint32_t depth_publish_period_frames{1};
 	uint32_t frames_since_last_depth_request{0};
 	bool force_depth_on_next_capture{true};
+	sl::ERROR_CODE last_grab_error{sl::ERROR_CODE::SUCCESS};
 	uint64_t timeline_start_ns{0};
 	uint64_t timeline_end_ns{0};
 	std::jthread worker_thread;
@@ -886,70 +887,83 @@ struct ZedBackendImpl {
 		return published.last_recording_error;
 	}
 
- 	error_t camera_control_availability_error_locked() const {
- 		if (svo_mode) {
- 			return -EOPNOTSUPP;
- 		}
- 		if (!initialized.load(std::memory_order_relaxed) || !camera.isOpened()) {
- 			return -ENODEV;
- 		}
- 		return ERR_OK;
- 	}
+	error_t camera_control_availability_error_locked() const {
+		if (svo_mode) {
+			return -EOPNOTSUPP;
+		}
+		if (!initialized.load(std::memory_order_relaxed) || !camera.isOpened()) {
+			return -ENODEV;
+		}
+		return ERR_OK;
+	}
 
- 	static error_t map_camera_control_operation_error(
- 		sl::ERROR_CODE code,
- 		error_t invalid_parameters_error) {
- 		switch (code) {
- 		case sl::ERROR_CODE::SUCCESS:
- 			return ERR_OK;
- 		case sl::ERROR_CODE::CAMERA_NOT_DETECTED:
- 			return -ENODEV;
- 		case sl::ERROR_CODE::INVALID_FUNCTION_CALL:
- 			return -EOPNOTSUPP;
- 		case sl::ERROR_CODE::INVALID_FUNCTION_PARAMETERS:
- 			return invalid_parameters_error;
- 		default:
- 			return -EIO;
- 		}
- 	}
+	static error_t map_camera_control_operation_error(
+		sl::ERROR_CODE code,
+		error_t invalid_parameters_error) {
+		switch (code) {
+		case sl::ERROR_CODE::SUCCESS:
+			return ERR_OK;
+		case sl::ERROR_CODE::CAMERA_NOT_DETECTED:
+			return -ENODEV;
+		case sl::ERROR_CODE::INVALID_FUNCTION_CALL:
+			return -EOPNOTSUPP;
+		case sl::ERROR_CODE::INVALID_FUNCTION_PARAMETERS:
+			return invalid_parameters_error;
+		default:
+			return -EIO;
+		}
+	}
 
- 	bool can_read_camera_control_locked(const ZedCameraControlDescriptor &descriptor) {
- 		if (descriptor.kind == cvmmap::CameraControlValueKind::Single) {
- 			int value = 0;
- 			return camera.getCameraSettings(descriptor.zed_setting, value) == sl::ERROR_CODE::SUCCESS;
- 		}
+	bool can_read_camera_control_locked(const ZedCameraControlDescriptor &descriptor) {
+		if (descriptor.kind == cvmmap::CameraControlValueKind::Single) {
+			int value = 0;
+			return camera.getCameraSettings(descriptor.zed_setting, value) == sl::ERROR_CODE::SUCCESS;
+		}
 
- 		int min_value = 0;
- 		int max_value = 0;
- 		return camera.getCameraSettings(descriptor.zed_setting, min_value, max_value) == sl::ERROR_CODE::SUCCESS;
- 	}
+		int min_value = 0;
+		int max_value = 0;
+		return camera.getCameraSettings(descriptor.zed_setting, min_value, max_value) == sl::ERROR_CODE::SUCCESS;
+	}
 
- 	cvmmap::expected<camera_control_state_t, error_t> get_camera_control_locked(
- 		const ZedCameraControlDescriptor &descriptor) {
- 		camera_control_state_t state{};
- 		state.setting = descriptor.setting;
- 		state.kind = descriptor.kind;
+	cvmmap::expected<camera_control_state_t, error_t> get_camera_control_locked(
+		const ZedCameraControlDescriptor &descriptor) {
+		camera_control_state_t state{};
+		state.setting = descriptor.setting;
+		state.kind = descriptor.kind;
 
- 		if (descriptor.kind == cvmmap::CameraControlValueKind::Single) {
- 			int value = 0;
- 			const auto result = camera.getCameraSettings(descriptor.zed_setting, value);
- 			if (result != sl::ERROR_CODE::SUCCESS) {
- 				return cvmmap::unexpected(map_camera_control_operation_error(result, -EIO));
- 			}
- 			state.value = value;
- 			return state;
- 		}
+		if (descriptor.kind == cvmmap::CameraControlValueKind::Single) {
+			int value = 0;
+			const auto result = camera.getCameraSettings(descriptor.zed_setting, value);
+			if (result != sl::ERROR_CODE::SUCCESS) {
+				return cvmmap::unexpected(map_camera_control_operation_error(result, -EIO));
+			}
+			state.value = value;
+			return state;
+		}
 
- 		int min_value = 0;
- 		int max_value = 0;
- 		const auto result = camera.getCameraSettings(descriptor.zed_setting, min_value, max_value);
- 		if (result != sl::ERROR_CODE::SUCCESS) {
- 			return cvmmap::unexpected(map_camera_control_operation_error(result, -EIO));
- 		}
- 		state.min_value = min_value;
- 		state.max_value = max_value;
- 		return state;
- 	}
+		int min_value = 0;
+		int max_value = 0;
+		const auto result = camera.getCameraSettings(descriptor.zed_setting, min_value, max_value);
+		if (result != sl::ERROR_CODE::SUCCESS) {
+			return cvmmap::unexpected(map_camera_control_operation_error(result, -EIO));
+		}
+		state.min_value = min_value;
+		state.max_value = max_value;
+		return state;
+	}
+
+	[[nodiscard]]
+	std::string format_svo_skip_message(const std::string_view prefix) const {
+		const auto path = options.zed_config.svo_path.value_or("<unknown>");
+		if (last_grab_error != sl::ERROR_CODE::SUCCESS) {
+			return cvmmap::format(
+				"{} '{}': {}",
+				prefix,
+				path,
+				sl::toString(last_grab_error).get());
+		}
+		return cvmmap::format("{} '{}'", prefix, path);
+	}
 
 	uint64_t effective_timestamp_ns_locked() {
 		return svo_mode ? zed_image_timestamp_ns(camera) : now_ns();
@@ -1205,7 +1219,7 @@ struct ZedBackendImpl {
 					auto positional_result =
 						camera.enablePositionalTracking(positional_tracking_parameters);
 					if (positional_result != sl::ERROR_CODE::SUCCESS) {
-						spdlog::error("failed to enable ZED positional tracking: code={}", static_cast<int>(positional_result));
+						spdlog::error("bad ZED positional tracking setup: code={}", static_cast<int>(positional_result));
 						camera.close();
 						return false;
 					}
@@ -1234,7 +1248,7 @@ struct ZedBackendImpl {
 					auto body_tracking_result =
 						camera.enableBodyTracking(body_tracking_parameters);
 					if (body_tracking_result != sl::ERROR_CODE::SUCCESS) {
-						spdlog::error("failed to enable ZED body tracking: code={}", static_cast<int>(body_tracking_result));
+						spdlog::error("bad ZED body tracking setup: code={}", static_cast<int>(body_tracking_result));
 						camera.disablePositionalTracking();
 						camera.close();
 						return false;
@@ -1246,7 +1260,7 @@ struct ZedBackendImpl {
 					if (camera.isOpened()) {
 						camera.close();
 					}
-					spdlog::error("failed to initialize ZED SVO timeline");
+					spdlog::error("bad ZED SVO timeline initialization");
 					return false;
 				}
 				return true;
@@ -1265,7 +1279,7 @@ struct ZedBackendImpl {
 			std::this_thread::sleep_for(std::chrono::milliseconds(200));
 		}
 
-		spdlog::error("failed to open ZED camera within {}ms: code={}", timeout_ms, static_cast<int>(open_result));
+		spdlog::error("bad ZED camera open after {}ms timeout: code={}", timeout_ms, static_cast<int>(open_result));
 		return false;
 	}
 
@@ -1551,10 +1565,12 @@ struct ZedBackendImpl {
 		const bool depth_requested = should_request_depth_for_grab_locked(force_depth_request);
 		runtime_parameters.enable_depth = depth_requested;
 		const auto grab_result = camera.grab(runtime_parameters);
+		last_grab_error = grab_result;
 		if (grab_result != sl::ERROR_CODE::SUCCESS) {
 			spdlog::debug("ZED grab failed: code={}", static_cast<int>(grab_result));
 			return cvmmap::unexpected(grab_result);
 		}
+		last_grab_error = sl::ERROR_CODE::SUCCESS;
 		commit_depth_request_for_grab_locked(depth_requested);
 
 		const auto retrieve_result = camera.retrieveImage(left_frame, left_view, sl::MEM::CPU);
@@ -1776,7 +1792,11 @@ struct ZedBackendImpl {
 		{
 			std::lock_guard lock(camera_mutex);
 			if (!open_camera_locked()) {
-				on_error(-ENODEV, "Failed to open ZED camera");
+				if (svo_mode) {
+					on_error(ERR_SKIP_PLAYLIST_ITEM, format_svo_skip_message("bad ZED SVO open"));
+				} else {
+					on_error(-ENODEV, "Failed to open ZED camera");
+				}
 				return;
 			}
 
@@ -1784,9 +1804,11 @@ struct ZedBackendImpl {
 			initial_capture = capture_frame_locked(0, true);
 			if (!initial_capture) {
 				spdlog::error("failed to capture first frame from ZED");
-				if (const auto fatal_capture_message =
-						fatal_capture_error_message(initial_capture.error());
-					fatal_capture_message) {
+				if (svo_mode) {
+					on_error(ERR_SKIP_PLAYLIST_ITEM, format_svo_skip_message("bad first-frame read from ZED SVO"));
+				} else if (const auto fatal_capture_message =
+						   fatal_capture_error_message(initial_capture.error());
+					   fatal_capture_message) {
 					on_error(ERR_FATAL_CAMERA_RECOVERY, *fatal_capture_message);
 				} else {
 					const auto message = cvmmap::format(
@@ -1893,7 +1915,12 @@ struct ZedBackendImpl {
 				continue;
 			}
 
-			spdlog::error("ZED capture failed {} consecutive times", consecutive_failures);
+			spdlog::error("bad ZED capture streak: {} consecutive attempts", consecutive_failures);
+			if (svo_mode) {
+				const auto message = format_svo_skip_message("corrupted or unreadable ZED SVO segment");
+				on_error(ERR_SKIP_PLAYLIST_ITEM, message);
+				break;
+			}
 			if (!options.zed_config.reconnect) {
 				on_error(-EIO, "ZED capture failure");
 				break;

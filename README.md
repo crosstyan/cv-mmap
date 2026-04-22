@@ -64,7 +64,8 @@ Playback notes:
 - seeking is available through the existing source control API unless `video.finite_stream_ending_behavior = "loop_silent"`
 - `zed.resolution` and `zed.fps` are accepted in config for compatibility but ignored at runtime for SVO input
 - SDK-side SVO recording controls are disabled while the backend is reading from an SVO file
-- SVO playlists can be configured with `[zed.playlist] paths = [...]`; use `sort_by_recording_time = true` to sort by the first frame timestamp before playback
+- SVO playlists can be configured with `[zed.playlist] paths = [...]`; runtime `sort_by_recording_time = true` is still supported, but discouraged because `cv-mmap` opens each SVO serially and can make startup or playlist apply slow
+- Prefer pre-sorting ZED playlists offline with `../zed-offline-tools/scripts/generate_playlist_config.py --sort-by-recording-time`, which writes the sorted `paths` and keeps runtime sorting disabled
 
 Minimal SVO playlist example:
 
@@ -79,7 +80,7 @@ depth_mode = "neural"
 
 [zed.playlist]
 paths = ["/data/part1.svo2", "/data/part2.svo2"]
-sort_by_recording_time = true
+sort_by_recording_time = false
 ```
 
 MCAP playlists use the same shape:
@@ -98,22 +99,25 @@ sort_by_recording_time = true
 
 Playlist config helper:
 
-- `tools/generate_playlist_config.py` discovers `.mcap` or `.svo2` files with `pathlib` glob/rglob and writes a playlist TOML file
+- the helper now lives in the sibling repo `../zed-offline-tools` as `scripts/generate_playlist_config.py`
+- it discovers `.mcap`, `.svo`, or `.svo2` files with `pathlib` glob/rglob and writes a playlist TOML file
 - run it with `uv`; the script carries its own `click` dependency metadata
-- mixed `.mcap` and `.svo2` matches fail clearly instead of guessing a backend
-- `sort_by_recording_time` is off by default; pass `--sort-by-recording-time` to emit it
+- mixed MCAP and ZED matches fail clearly instead of guessing a backend
+- `--sort-by-recording-time` is backend-specific:
+- for MCAP playlists it emits `sort_by_recording_time = true`
+- for ZED playlists it probes SVO files with `pyzed`, writes `paths` in timestamp order, and emits `sort_by_recording_time = false`
 
 Snippet example:
 
 ```bash
-uv run tools/generate_playlist_config.py rglob /mnt/hddl/data/kindergarten "*.mcap" \
+uv run ../zed-offline-tools/scripts/generate_playlist_config.py rglob /mnt/hddl/data/kindergarten "*.mcap" \
   --output generated/kindergarten_mcap_playlist.toml
 ```
 
 Derived config example:
 
 ```bash
-uv run tools/generate_playlist_config.py rglob /mnt/hddl/data/kindergarten "*.svo2" \
+uv run ../zed-offline-tools/scripts/generate_playlist_config.py rglob /mnt/hddl/data/kindergarten "*.svo2" \
   --output generated/kindergarten_zed_overlay.toml \
   --base-config path/to/neutral_zed_playlist_base.toml \
   --name kindergarten-zed \
@@ -124,12 +128,13 @@ Notes:
 
 - without `--base-config`, the helper writes a snippet/overlay file intended to be pasted into or merged with an existing config
 - with `--base-config`, it writes a new TOML file using `extends = ...`
+- if you still enable ZED runtime sorting manually, `cv-mmap` logs a copy-paste-ready sorted `[zed.playlist]` snippet after the expensive probe completes
 - derived-config mode is intentionally strict and fails if the base config already defines conflicting source-selection keys such as `mcap.path`, `zed.svo_path`, `zed.index`, or an existing playlist
 - the checked-in `config_zed_base.toml` is a live-camera base config, so it is not a valid `--base-config` input for SVO playlist overlays
 - run the helper tests with:
 
 ```bash
-uv run --with click python -m unittest discover -s tools -p 'test_*.py'
+cd ../zed-offline-tools && uv run python -m unittest discover -s tests -p 'test_*.py'
 ```
 
 ## ABI Policy

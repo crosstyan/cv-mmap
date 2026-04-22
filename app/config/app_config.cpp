@@ -505,7 +505,7 @@ toml::table load_toml_with_extends(
 	try {
 		current = toml::parse_file(normalized_path.string());
 	} catch (const toml::parse_error &e) {
-		spdlog::error("failed to parse config file `{}`: {}", normalized_path.string(), e.what());
+		spdlog::error("bad config file parse for `{}`: {}", normalized_path.string(), e.what());
 		throw;
 	}
 

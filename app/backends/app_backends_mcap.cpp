@@ -878,7 +878,7 @@ struct McapBackendImpl {
 			static_cast<size_t>(std::distance(video_samples.begin(), it));
 		auto packet = seek_to_index_locked(target_index, 0);
 		if (!packet) {
-			spdlog::error("mcap seek decode failed: {}", packet.error());
+			spdlog::error("bad MCAP seek decode: {}", packet.error());
 			return cvmmap::unexpected(-EIO);
 		}
 
@@ -1044,7 +1044,7 @@ struct McapBackendImpl {
 			std::lock_guard lock(state_mutex);
 			auto result = seek_to_index_locked(0, 0);
 			if (!result) {
-				spdlog::error("reset MCAP replay failed: {}", result.error());
+				spdlog::error("bad MCAP replay reset: {}", result.error());
 				return -EIO;
 			}
 			packet           = std::move(*result);

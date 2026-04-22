@@ -271,7 +271,7 @@ struct OpenCVBackendImpl {
 					// Live source - track consecutive empty frames
 					consecutive_empty_frames++;
 					if (consecutive_empty_frames >= MAX_CONSECUTIVE_EMPTY_FRAMES) {
-						spdlog::error("live source: {} consecutive empty frames, treating as device error",
+						spdlog::error("live source: {} consecutive empty frames, treating as bad device state",
 									  consecutive_empty_frames);
 						on_error(-EIO, "Device disconnected or capture failure");
 						break;
