@@ -265,6 +265,7 @@ endif()
 add_library(app_video_backends STATIC)
 target_include_directories(app_video_backends PUBLIC backends)
 target_sources(app_video_backends PRIVATE backends/app_backends_dummy.cpp)
+target_sources(app_video_backends PRIVATE backends/app_backends_playlist.cpp)
 target_link_libraries(app_video_backends PRIVATE cvmmap_stb_truetype_headers)
 target_link_libraries(app_video_backends PUBLIC msft_proxy4::proxy)
 target_compile_definitions(app_video_backends
