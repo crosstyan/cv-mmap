@@ -92,6 +92,7 @@ fps = 30
 depth_mode = "NONE"
 publish_confidence = true
 svo_real_time_mode = true
+depth_max_fps = 0
 depth_stabilization = 30
 coordinate_system = "IMAGE"
 open_timeout_ms = 10000
@@ -527,6 +528,7 @@ fps = 30
 depth_mode = "NEURAL"
 publish_confidence = false
 svo_real_time_mode = false
+depth_max_fps = 12
 depth_stabilization = 0
 )");
 
@@ -534,12 +536,101 @@ depth_stabilization = 0
 	expect(config.zed.has_value(), "zed runtime knob config should populate zed section");
 	expect(!config.zed->publish_confidence, "zed runtime knob config should parse publish_confidence");
 	expect(!config.zed->svo_real_time_mode, "zed runtime knob config should parse svo_real_time_mode");
+	expect(config.zed->depth_max_fps == 12, "zed runtime knob config should parse depth_max_fps");
 	expect(config.zed->depth_stabilization == 0, "zed runtime knob config should parse depth_stabilization");
 
 	const auto rendered = config.to_toml();
 	expect(rendered.find("publish_confidence = false") != std::string::npos, "zed publish_confidence should round-trip");
 	expect(rendered.find("svo_real_time_mode = false") != std::string::npos, "zed svo_real_time_mode should round-trip");
+	expect(rendered.find("depth_max_fps = 12") != std::string::npos, "zed depth_max_fps should round-trip");
 	expect(rendered.find("depth_stabilization = 0") != std::string::npos, "zed depth_stabilization should round-trip");
+}
+
+void test_zed_rejects_negative_depth_max_fps() {
+	TempDir dir;
+	const auto path = dir.path() / "zed-negative-depth-max-fps.toml";
+	write_file(
+		path,
+		R"(name = "zed-negative-depth-max-fps"
+
+[ipc]
+namespace = "cvmmap"
+prefix = "/tmp"
+
+[video]
+backend = "zed"
+
+[zed]
+stream_mode = "local"
+index = 0
+resolution = "AUTO"
+fps = 30
+depth_mode = "NONE"
+depth_max_fps = -1
+)");
+
+	expect_throws_contains(
+		[&] { (void)app::Config::from_toml(path); },
+		"zed.depth_max_fps must be non-negative");
+}
+
+void test_zed_rejects_non_integer_depth_max_fps() {
+	TempDir dir;
+	const auto path = dir.path() / "zed-non-integer-depth-max-fps.toml";
+	write_file(
+		path,
+		R"(name = "zed-non-integer-depth-max-fps"
+
+[ipc]
+namespace = "cvmmap"
+prefix = "/tmp"
+
+[video]
+backend = "zed"
+
+[zed]
+stream_mode = "local"
+index = 0
+resolution = "AUTO"
+fps = 30
+depth_mode = "NONE"
+depth_max_fps = "fast"
+)");
+
+	expect_throws_contains(
+		[&] { (void)app::Config::from_toml(path); },
+		"zed.depth_max_fps must be integer");
+}
+
+void test_zed_rejects_depth_max_fps_with_body_tracking_enabled() {
+	TempDir dir;
+	const auto path = dir.path() / "zed-depth-max-fps-body-tracking.toml";
+	write_file(
+		path,
+		R"(name = "zed-depth-max-fps-body-tracking"
+
+[ipc]
+namespace = "cvmmap"
+prefix = "/tmp"
+
+[video]
+backend = "zed"
+
+[zed]
+stream_mode = "local"
+index = 0
+resolution = "AUTO"
+fps = 30
+depth_mode = "NEURAL"
+depth_max_fps = 10
+
+[zed.body_tracking]
+enabled = true
+)");
+
+	expect_throws_contains(
+		[&] { (void)app::Config::from_toml(path); },
+		"zed.depth_max_fps requires zed.body_tracking.enabled = false");
 }
 
 void test_zed_rejects_out_of_range_depth_stabilization() {
@@ -634,6 +725,9 @@ int main() {
 	ok &= run_test("zed_playlist_requires_svo_mode", test_zed_playlist_requires_svo_mode);
 	ok &= run_test("zed_playlist_parses_without_svo_path", test_zed_playlist_parses_without_svo_path);
 	ok &= run_test("zed_runtime_knobs_parse_and_round_trip", test_zed_runtime_knobs_parse_and_round_trip);
+	ok &= run_test("zed_rejects_negative_depth_max_fps", test_zed_rejects_negative_depth_max_fps);
+	ok &= run_test("zed_rejects_non_integer_depth_max_fps", test_zed_rejects_non_integer_depth_max_fps);
+	ok &= run_test("zed_rejects_depth_max_fps_with_body_tracking_enabled", test_zed_rejects_depth_max_fps_with_body_tracking_enabled);
 	ok &= run_test("zed_rejects_out_of_range_depth_stabilization", test_zed_rejects_out_of_range_depth_stabilization);
 	ok &= run_test("zed_rejects_svo_path_and_playlist_together", test_zed_rejects_svo_path_and_playlist_together);
 	return ok ? 0 : 1;

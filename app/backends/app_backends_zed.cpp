@@ -628,6 +628,7 @@ struct ZedBackendImpl {
 		std::vector<uint8_t> payload{};
 		std::optional<cvmmap::body_tracking_frame_t> body_tracking{};
 		uint64_t timestamp_ns{0};
+		bool depth_requested{false};
 	};
 
 	struct PublishedSnapshot {
@@ -671,6 +672,10 @@ struct ZedBackendImpl {
 	std::string active_recording_path{};
 	bool svo_mode{false};
 	int total_svo_frames{0};
+	double effective_source_fps{0.0};
+	uint32_t depth_publish_period_frames{1};
+	uint32_t frames_since_last_depth_request{0};
+	bool force_depth_on_next_capture{true};
 	uint64_t timeline_start_ns{0};
 	uint64_t timeline_end_ns{0};
 	std::jthread worker_thread;
@@ -769,6 +774,82 @@ struct ZedBackendImpl {
 	void reset_depth_fallback_locked() {
 		last_good_depth_plane.clear();
 		invalidate_direct_depth_tracking_locked();
+	}
+
+	void reset_depth_publish_cadence_locked() {
+		frames_since_last_depth_request = 0;
+		force_depth_on_next_capture = true;
+		runtime_parameters.enable_depth = depth_enabled;
+	}
+
+	void configure_depth_publish_cadence_locked() {
+		reset_depth_publish_cadence_locked();
+		effective_source_fps = 0.0;
+		depth_publish_period_frames = 1;
+
+		if (!depth_enabled) {
+			spdlog::info("ZED depth cadence disabled (depth_mode=NONE)");
+			return;
+		}
+
+		const auto reported_source_fps = camera.getCameraInformation().camera_configuration.fps;
+		if (reported_source_fps > 0) {
+			effective_source_fps = static_cast<double>(reported_source_fps);
+		} else if (options.zed_config.fps > 0) {
+			effective_source_fps = static_cast<double>(options.zed_config.fps);
+			spdlog::warn(
+				"ZED reported invalid source FPS {}; falling back to configured FPS {} for depth cadence",
+				reported_source_fps,
+				options.zed_config.fps);
+		} else {
+			effective_source_fps = 1.0;
+			spdlog::warn(
+				"ZED reported invalid source FPS {}; falling back to 1 FPS for deterministic depth cadence",
+				reported_source_fps);
+		}
+
+		const auto configured_depth_max_fps = std::max(0, options.zed_config.depth_max_fps);
+		if (configured_depth_max_fps > 0) {
+			depth_publish_period_frames = std::max<uint32_t>(
+				1u,
+				static_cast<uint32_t>(std::ceil(
+					effective_source_fps / static_cast<double>(configured_depth_max_fps))));
+		}
+
+		spdlog::info(
+			"ZED depth cadence configured: depthMaxFps={} sourceFps={} periodFrames={} depthMode={}",
+			configured_depth_max_fps,
+			effective_source_fps,
+			depth_publish_period_frames,
+			options.zed_config.depth_mode);
+	}
+
+	bool should_request_depth_for_grab_locked(const bool force_depth_request = false) const {
+		if (!depth_enabled) {
+			return false;
+		}
+		if (force_depth_request || force_depth_on_next_capture) {
+			return true;
+		}
+		if (options.zed_config.depth_max_fps <= 0) {
+			return true;
+		}
+		return frames_since_last_depth_request + 1 >= depth_publish_period_frames;
+	}
+
+	void commit_depth_request_for_grab_locked(const bool depth_requested) {
+		if (!depth_enabled) {
+			runtime_parameters.enable_depth = false;
+			return;
+		}
+		force_depth_on_next_capture = false;
+		if (depth_requested) {
+			frames_since_last_depth_request = 0;
+			return;
+		}
+		if (frames_since_last_depth_request < std::numeric_limits<uint32_t>::max()) {
+			frames_since_last_depth_request += 1;
+		}
 	}
 
 	void snapshot_last_direct_depth_plane_locked(std::span<const uint8_t> output_buffer) {
@@ -1047,6 +1128,11 @@ struct ZedBackendImpl {
 			init_parameters.enable_image_validity_check = 1;
 		}
 
+		if (body_tracking_enabled && options.zed_config.depth_max_fps > 0) {
+			spdlog::error("ZED body tracking requires depth on every frame; zed.depth_max_fps={} is unsupported", options.zed_config.depth_max_fps);
+			return false;
+		}
+
 		if (body_tracking_enabled) {
 			init_parameters.coordinate_units = sl::UNIT::METER;
 			init_parameters.coordinate_system =
@@ -1155,6 +1241,7 @@ struct ZedBackendImpl {
 					}
 				}
 				spdlog::info("ZED camera opened");
+				configure_depth_publish_cadence_locked();
 				if (!initialize_svo_timeline_locked()) {
 					if (camera.isOpened()) {
 						camera.close();
@@ -1308,7 +1395,8 @@ struct ZedBackendImpl {
 		return frame;
 	}
 
-	std::optional<size_t> pack_frame_locked(std::span<uint8_t> payload, frame_info_t &info_out, const bool direct_output) {
+	std::optional<size_t> pack_frame_locked(
+		std::span<uint8_t> payload, frame_info_t &info_out, const bool direct_output, const bool depth_requested) {
 		const auto height = left_frame.getHeight();
 		const auto left_row_bytes = expected_row_bytes(left_frame);
 		if (!left_row_bytes || height <= 0) {
@@ -1322,13 +1410,18 @@ struct ZedBackendImpl {
 			return std::nullopt;
 		}
 
+		const bool has_depth_payload = depth_enabled && depth_requested;
+		if (!has_depth_payload && direct_output) {
+			invalidate_direct_depth_tracking_locked();
+		}
+
 		size_t packed_depth_size = 0;
 		size_t packed_confidence_size = 0;
 		size_t depth_row_bytes = 0;
 		bool depth_plane_available = false;
 		bool confidence_plane_available = false;
 
-		if (depth_enabled) {
+		if (has_depth_payload) {
 			depth_row_bytes = static_cast<size_t>(left_frame.getWidth()) * sizeof(float);
 			const size_t depth_total_bytes = depth_row_bytes * static_cast<size_t>(height);
 			if (depth_total_bytes == 0) {
@@ -1411,7 +1504,7 @@ struct ZedBackendImpl {
 			return std::nullopt;
 		}
 
-		if (depth_enabled) {
+		if (has_depth_payload) {
 			auto depth_payload = payload.subspan(packed_left_size, packed_depth_size);
 			if (depth_plane_available && copy_compact_plane(depth_frame, depth_row_bytes, depth_payload)) {
 				if (direct_output) {
@@ -1453,12 +1546,16 @@ struct ZedBackendImpl {
 	}
 
 	cvmmap::expected<CapturedFrame, sl::ERROR_CODE> capture_frame_locked(
-		const uint32_t frame_count) {
+		const uint32_t frame_count,
+		const bool force_depth_request = false) {
+		const bool depth_requested = should_request_depth_for_grab_locked(force_depth_request);
+		runtime_parameters.enable_depth = depth_requested;
 		const auto grab_result = camera.grab(runtime_parameters);
 		if (grab_result != sl::ERROR_CODE::SUCCESS) {
 			spdlog::debug("ZED grab failed: code={}", static_cast<int>(grab_result));
 			return cvmmap::unexpected(grab_result);
 		}
+		commit_depth_request_for_grab_locked(depth_requested);
 
 		const auto retrieve_result = camera.retrieveImage(left_frame, left_view, sl::MEM::CPU);
 		if (retrieve_result != sl::ERROR_CODE::SUCCESS) {
@@ -1474,9 +1571,10 @@ struct ZedBackendImpl {
 
 		CapturedFrame captured{};
 		captured.info = *info;
+		captured.depth_requested = depth_requested;
 		const size_t depth_plane_bytes = static_cast<size_t>(captured.info.width) * static_cast<size_t>(captured.info.height) * sizeof(float);
 		size_t raw_capacity = captured.info.buffer_size;
-		if (depth_enabled) {
+		if (depth_requested) {
 			raw_capacity += depth_plane_bytes;
 			if (options.zed_config.publish_confidence) {
 				raw_capacity += depth_plane_bytes;
@@ -1589,9 +1687,9 @@ struct ZedBackendImpl {
 		published_frame.metadata.timestamp_ns = captured.timestamp_ns;
 		published_frame.metadata.info = captured.info;
 		published_frame.body_tracking = std::move(captured.body_tracking);
-		published_frame.fill_payload = [this, info = published_frame.metadata.info](std::span<uint8_t> output_buffer) mutable -> std::optional<size_t> {
+		published_frame.fill_payload = [this, info = published_frame.metadata.info, depth_requested = captured.depth_requested](std::span<uint8_t> output_buffer) mutable -> std::optional<size_t> {
 			std::lock_guard lock(camera_mutex);
-			return pack_frame_locked(output_buffer, info, true);
+			return pack_frame_locked(output_buffer, info, true, depth_requested);
 		};
 
 		std::optional<int64_t> publish_gap_ms;
@@ -1683,7 +1781,7 @@ struct ZedBackendImpl {
 			}
 
 			warmup_camera_locked();
-			initial_capture = capture_frame_locked(0);
+			initial_capture = capture_frame_locked(0, true);
 			if (!initial_capture) {
 				spdlog::error("failed to capture first frame from ZED");
 				if (const auto fatal_capture_message =
@@ -1720,7 +1818,7 @@ struct ZedBackendImpl {
 			std::optional<size_t> packed_size;
 			{
 				std::lock_guard lock(camera_mutex);
-				packed_size = pack_frame_locked(std::span<uint8_t>(payload.data(), payload.size()), initial_direct.metadata.info, false);
+				packed_size = pack_frame_locked(std::span<uint8_t>(payload.data(), payload.size()), initial_direct.metadata.info, false, initial_capture->depth_requested);
 			}
 			if (!packed_size) {
 				spdlog::error("failed to pack initial ZED frame payload");
@@ -1766,7 +1864,7 @@ struct ZedBackendImpl {
 					spdlog::debug("frame@{}", frame_count);
 				} else {
 					std::vector<uint8_t> payload(capture->info.buffer_size);
-					auto packed_size = pack_frame_locked(std::span<uint8_t>(payload.data(), payload.size()), capture->info, false);
+					auto packed_size = pack_frame_locked(std::span<uint8_t>(payload.data(), payload.size()), capture->info, false, capture->depth_requested);
 					if (!packed_size) {
 						spdlog::error("failed to pack ZED frame payload");
 						continue;
@@ -1881,7 +1979,7 @@ struct ZedBackendImpl {
 
 			camera.setSVOPosition(target_position);
 			reset_depth_fallback_locked();
-			capture = capture_frame_locked(0);
+			capture = capture_frame_locked(0, true);
 			if (capture) {
 				landed_timestamp_ns = capture->timestamp_ns;
 			}
@@ -1903,7 +2001,7 @@ struct ZedBackendImpl {
 			std::optional<size_t> packed_size;
 			{
 				std::lock_guard lock(camera_mutex);
-				packed_size = pack_frame_locked(std::span<uint8_t>(payload.data(), payload.size()), published_frame.metadata.info, false);
+				packed_size = pack_frame_locked(std::span<uint8_t>(payload.data(), payload.size()), published_frame.metadata.info, false, capture->depth_requested);
 			}
 			if (!packed_size) {
 				if (restart_worker) {
@@ -1960,7 +2058,7 @@ struct ZedBackendImpl {
 
 			camera.setSVOPosition(0);
 			reset_depth_fallback_locked();
-			capture = capture_frame_locked(0);
+			capture = capture_frame_locked(0, true);
 		}
 
 		if (!capture) {
@@ -1975,7 +2073,7 @@ struct ZedBackendImpl {
 			std::optional<size_t> packed_size;
 			{
 				std::lock_guard lock(camera_mutex);
-				packed_size = pack_frame_locked(std::span<uint8_t>(payload.data(), payload.size()), published_frame.metadata.info, false);
+				packed_size = pack_frame_locked(std::span<uint8_t>(payload.data(), payload.size()), published_frame.metadata.info, false, capture->depth_requested);
 			}
 			if (!packed_size) {
 				return -EIO;

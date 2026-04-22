@@ -437,8 +437,15 @@ void validate_zed_recording_config(const app::ZedConfig::RecordingConfig &cfg) {
 }
 
 void validate_zed_runtime_config(const app::ZedConfig &cfg) {
+	if (cfg.depth_max_fps < 0) {
+		throw std::invalid_argument("zed.depth_max_fps must be non-negative");
+	}
 	if (cfg.depth_stabilization < 0 || cfg.depth_stabilization > 100) {
 		throw std::invalid_argument("zed.depth_stabilization must be in [0, 100]");
+	}
+	if (cfg.depth_max_fps > 0 && cfg.body_tracking && cfg.body_tracking->enabled) {
+		throw std::invalid_argument(
+			"zed.depth_max_fps requires zed.body_tracking.enabled = false");
 	}
 }
 std::filesystem::path normalize_config_path(const std::filesystem::path &path) {
@@ -1055,6 +1062,14 @@ Config Config::from_toml(const std::filesystem::path &path) {
 			"zed.svo_real_time_mode",
 			true);
 
+		if (auto val = (*zed)["depth_max_fps"]; val) {
+			if (auto v = val.value<int>(); v) {
+				zed_cfg.depth_max_fps = *v;
+			} else {
+				throw invalid_argument("zed.depth_max_fps must be integer");
+			}
+		}
+
 		if (auto val = (*zed)["depth_stabilization"]; val) {
 			if (auto v = val.value<int>(); v) {
 				zed_cfg.depth_stabilization = *v;
@@ -1403,6 +1418,7 @@ std::string Config::to_toml() const {
 		ss << "depth_mode = \"" << zed->depth_mode << "\"\n";
 		ss << "publish_confidence = " << (zed->publish_confidence ? "true" : "false") << "\n";
 		ss << "svo_real_time_mode = " << (zed->svo_real_time_mode ? "true" : "false") << "\n";
+		ss << "depth_max_fps = " << zed->depth_max_fps << "\n";
 		ss << "depth_stabilization = " << zed->depth_stabilization << "\n";
 		ss << "open_timeout_ms = " << zed->open_timeout_ms << "\n";
 		ss << "warmup_frames = " << zed->warmup_frames << "\n";

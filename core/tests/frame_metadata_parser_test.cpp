@@ -15,15 +15,17 @@ constexpr uint32_t kLeftSizeBytes = kLeftStrideBytes * kHeight;
 constexpr uint32_t kAuxStrideBytes = 8;
 constexpr uint32_t kAuxSizeBytes = kAuxStrideBytes * kHeight;
 
-std::vector<uint8_t> make_payload(const bool include_confidence) {
+std::vector<uint8_t> make_payload(const bool include_depth, const bool include_confidence) {
 	std::vector<uint8_t> payload;
-	payload.reserve(kLeftSizeBytes + kAuxSizeBytes + (include_confidence ? kAuxSizeBytes : 0));
+	payload.reserve(kLeftSizeBytes + (include_depth ? kAuxSizeBytes : 0) + (include_confidence ? kAuxSizeBytes : 0));
 
 	for (uint8_t i = 0; i < kLeftSizeBytes; ++i) {
 		payload.push_back(static_cast<uint8_t>(0x10 + i));
 	}
-	for (uint8_t i = 0; i < kAuxSizeBytes; ++i) {
-		payload.push_back(static_cast<uint8_t>(0x40 + i));
+	if (include_depth) {
+		for (uint8_t i = 0; i < kAuxSizeBytes; ++i) {
+			payload.push_back(static_cast<uint8_t>(0x40 + i));
+		}
 	}
 	if (include_confidence) {
 		for (uint8_t i = 0; i < kAuxSizeBytes; ++i) {
@@ -60,6 +62,7 @@ std::vector<uint8_t> make_payload_with_encoded(const bool include_depth, const b
 }
 
 cvmmap::frame_metadata_v2_t make_metadata_v2(
+	const bool include_depth,
 	const bool include_confidence,
 	const cvmmap::DepthUnit depth_unit = cvmmap::DepthUnit::Unknown) {
 	cvmmap::frame_metadata_v2_t metadata{};
@@ -72,13 +75,12 @@ cvmmap::frame_metadata_v2_t make_metadata_v2(
 	metadata.header.frame_id = 7;
 	metadata.header.capture_ts_ns = 123456789u;
 	metadata.header.publish_seq = 7;
-	metadata.header.plane_count = include_confidence ? 3 : 2;
-	metadata.header.plane_presence_mask = include_confidence ? 0x07 : 0x03;
+	metadata.header.plane_count = static_cast<uint8_t>(1 + (include_depth ? 1 : 0) + (include_confidence ? 1 : 0));
+	metadata.header.plane_presence_mask = static_cast<uint8_t>(0x01 | (include_depth ? 0x02 : 0x00) | (include_confidence ? 0x04 : 0x00));
 	metadata.header.plane_descriptors_offset = 64;
 	metadata.header.plane_descriptor_size = 24;
 	metadata.header.plane_descriptor_capacity = 4;
-	metadata.header.payload_size_bytes =
-		kLeftSizeBytes + kAuxSizeBytes + (include_confidence ? kAuxSizeBytes : 0);
+	metadata.header.payload_size_bytes = kLeftSizeBytes + (include_depth ? kAuxSizeBytes : 0) + (include_confidence ? kAuxSizeBytes : 0);
 	metadata.header.depth_unit = depth_unit;
 
 	auto &left = metadata.descriptors[0];
@@ -91,25 +93,27 @@ cvmmap::frame_metadata_v2_t make_metadata_v2(
 	left.offset_bytes = 0;
 	left.size_bytes = kLeftSizeBytes;
 
-	auto &depth = metadata.descriptors[1];
-	depth.plane_type = cvmmap::FramePlaneType::Depth;
-	depth.pixel_format = cvmmap::PixelFormat::GRAY;
-	depth.depth = cvmmap::Depth::F32;
-	depth.width = kWidth;
-	depth.height = kHeight;
-	depth.stride_bytes = kAuxStrideBytes;
-	depth.offset_bytes = kLeftSizeBytes;
-	depth.size_bytes = kAuxSizeBytes;
+	if (include_depth) {
+		auto &depth = metadata.descriptors[1];
+		depth.plane_type = cvmmap::FramePlaneType::Depth;
+		depth.pixel_format = cvmmap::PixelFormat::GRAY;
+		depth.depth = cvmmap::Depth::F32;
+		depth.width = kWidth;
+		depth.height = kHeight;
+		depth.stride_bytes = kAuxStrideBytes;
+		depth.offset_bytes = kLeftSizeBytes;
+		depth.size_bytes = kAuxSizeBytes;
+	}
 
 	if (include_confidence) {
-		auto &confidence = metadata.descriptors[2];
+		auto &confidence = metadata.descriptors[include_depth ? 2 : 1];
 		confidence.plane_type = cvmmap::FramePlaneType::Confidence;
 		confidence.pixel_format = cvmmap::PixelFormat::GRAY;
 		confidence.depth = cvmmap::Depth::F32;
 		confidence.width = kWidth;
 		confidence.height = kHeight;
 		confidence.stride_bytes = kAuxStrideBytes;
-		confidence.offset_bytes = kLeftSizeBytes + kAuxSizeBytes;
+		confidence.offset_bytes = kLeftSizeBytes + (include_depth ? kAuxSizeBytes : 0);
 		confidence.size_bytes = kAuxSizeBytes;
 	}
 
@@ -120,7 +124,7 @@ cvmmap::frame_metadata_v2_t make_metadata_v2_with_encoded(
 	const bool include_depth,
 	const bool include_confidence,
 	const cvmmap::EncodedCodec encoded_codec = cvmmap::EncodedCodec::H265) {
-	auto metadata = make_metadata_v2(include_confidence, cvmmap::DepthUnit::Millimeter);
+	auto metadata = make_metadata_v2(include_depth, include_confidence, cvmmap::DepthUnit::Millimeter);
 	metadata.header.versions_minor = cvmmap::FRAME_METADATA_V2_MINOR_ENCODED_AU;
 	metadata.header.plane_presence_mask = static_cast<uint8_t>(
 		0x01 |
@@ -165,9 +169,31 @@ cvmmap::frame_metadata_v2_t make_metadata_v2_with_encoded(
 	return metadata;
 }
 
+bool test_v2_left_only_parse() {
+	const auto metadata = make_metadata_v2(false, false);
+	const auto payload = make_payload(false, false);
+	std::array<uint8_t, cvmmap::SHM_PAYLOAD_OFFSET> metadata_region{};
+	std::memcpy(metadata_region.data(), &metadata, sizeof(metadata));
+
+	const auto parsed = cvmmap::parse_frame_metadata_regions(metadata_region, payload);
+	if (!parsed) {
+		std::cerr << "expected valid left-only packet, got error: " << parsed.error() << '\n';
+		return false;
+	}
+
+	return parsed->normalized_metadata.versions_major == cvmmap::FRAME_METADATA_V2_MAJOR &&
+		parsed->left_plane.size() == kLeftSizeBytes &&
+		parsed->left_plane[0] == 0x10 &&
+		parsed->depth_unit == cvmmap::DepthUnit::Unknown &&
+		!parsed->depth_info.has_value() &&
+		parsed->depth_plane.empty() &&
+		!parsed->confidence_info.has_value() &&
+		parsed->confidence_plane.empty();
+}
+
 bool test_v2_left_and_depth_parse() {
-	const auto metadata = make_metadata_v2(false);
-	const auto payload = make_payload(false);
+	const auto metadata = make_metadata_v2(true, false);
+	const auto payload = make_payload(true, false);
 	std::array<uint8_t, cvmmap::SHM_PAYLOAD_OFFSET> metadata_region{};
 	std::memcpy(metadata_region.data(), &metadata, sizeof(metadata));
 
@@ -190,8 +216,8 @@ bool test_v2_left_and_depth_parse() {
 }
 
 bool test_v2_left_depth_and_confidence_parse() {
-	const auto metadata = make_metadata_v2(true, cvmmap::DepthUnit::Millimeter);
-	const auto payload = make_payload(true);
+	const auto metadata = make_metadata_v2(true, true, cvmmap::DepthUnit::Millimeter);
+	const auto payload = make_payload(true, true);
 	std::array<uint8_t, cvmmap::SHM_PAYLOAD_OFFSET> metadata_region{};
 	std::memcpy(metadata_region.data(), &metadata, sizeof(metadata));
 
@@ -212,8 +238,8 @@ bool test_v2_left_depth_and_confidence_parse() {
 }
 
 bool test_v2_depth_unit_meter_parse() {
-	const auto metadata = make_metadata_v2(false, cvmmap::DepthUnit::Meter);
-	const auto payload = make_payload(false);
+	const auto metadata = make_metadata_v2(true, false, cvmmap::DepthUnit::Meter);
+	const auto payload = make_payload(true, false);
 	std::array<uint8_t, cvmmap::SHM_PAYLOAD_OFFSET> metadata_region{};
 	std::memcpy(metadata_region.data(), &metadata, sizeof(metadata));
 
@@ -270,6 +296,10 @@ bool test_v2_1_left_and_h264_encoded_parse() {
 } // namespace
 
 int main() {
+	if (!test_v2_left_only_parse()) {
+		std::cerr << "v2 left-only parse test failed\n";
+		return 1;
+	}
 	if (!test_v2_left_and_depth_parse()) {
 		std::cerr << "v2 left+depth parse test failed\n";
 		return 1;

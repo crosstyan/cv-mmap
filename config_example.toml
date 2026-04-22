@@ -108,6 +108,8 @@ depth_mode = "neural"
 publish_confidence = true
 # Applies only to SVO playback: true paces playback to recorded timestamps, false reads as fast as possible.
 svo_real_time_mode = true
+# Caps depth publication cadence without changing the shared-memory ABI: 0 = depth on every frame; >0 = publish depth no faster than this FPS.
+depth_max_fps = 0
 # ZED SDK depth stabilization strength in [0, 100]; 0 disables stabilization, 30 matches the SDK default.
 depth_stabilization = 30
 # coordinate_system controls the native ZED 3D/body frame.
@@ -129,6 +131,7 @@ target_framerate = 0
 transcode_streaming_input = false
 
 [zed.body_tracking]
+# Must remain false when zed.depth_max_fps > 0 because cadence-skipped grabs publish left-only frames.
 enabled = false
 detection_model = "HUMAN_BODY_ACCURATE"
 body_format = "BODY_18"
