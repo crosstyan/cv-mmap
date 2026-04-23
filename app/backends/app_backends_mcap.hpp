@@ -4,6 +4,7 @@
 #include <memory>
 
 #include <cvmmap/compat/expected.hpp>
+
 #include "app_backends_facade.hpp"
 
 namespace app {
@@ -27,7 +28,6 @@ struct McapBackend {
 	void SetOnBodyTracking(on_body_tracking_fn_t on_body_tracking);
 	void SetOnError(on_error_fn_t on_error);
 	source_info_t GetSourceInfo();
-	cvmmap::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns);
 	error_t ResetFrameCount();
 };
 

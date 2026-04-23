@@ -385,9 +385,6 @@ struct DummyBackendImpl {
 			info.duration_ns =
 				static_cast<uint64_t>(options.dummy_config.frames) *
 				frame_interval_ns_for(options.dummy_config);
-			if (options.video_config.finite_source_can_seek()) {
-				info.flags |= cvmmap::SOURCE_INFO_FLAG_CAN_SEEK;
-			}
 			if (options.video_config.finite_source_auto_loops()) {
 				info.flags |= cvmmap::SOURCE_INFO_FLAG_AUTO_LOOP;
 			}
@@ -398,43 +395,6 @@ struct DummyBackendImpl {
 		info.current_timestamp_ns = metadata.timestamp_ns;
 		info.current_frame_count  = metadata.frame_count;
 		return info;
-	}
-
-	cvmmap::expected<seek_result_t, error_t> SeekTimestampNs(
-		uint64_t timestamp_ns) {
-		if (!is_finite_source() ||
-			!options.video_config.finite_source_can_seek()) {
-			return cvmmap::unexpected(-EOPNOTSUPP);
-		}
-
-		const auto interval_ns = frame_interval_ns_for(options.dummy_config);
-		const auto max_timestamp_ns =
-			static_cast<uint64_t>(std::max<uint32_t>(
-				options.dummy_config.frames - 1, 0u)) *
-			interval_ns;
-		if (timestamp_ns > max_timestamp_ns) {
-			return cvmmap::unexpected(-ERANGE);
-		}
-
-		const auto frame_index = static_cast<uint32_t>(timestamp_ns / interval_ns);
-
-		frame_metadata_t metadata_snapshot{};
-		{
-			std::lock_guard lock(state_mutex);
-			metadata.frame_count  = 0;
-			metadata.timestamp_ns = frame_index * interval_ns;
-			emitted_frames        = frame_index + 1;
-			source_frame_index    = frame_index;
-			render_current_frame_locked();
-			metadata_snapshot = metadata;
-		}
-		on_frame(frame_buffer, metadata_snapshot);
-		return seek_result_t{
-			.requested_timestamp_ns = timestamp_ns,
-			.landed_timestamp_ns    = metadata_snapshot.timestamp_ns,
-			.landed_frame_count     = metadata_snapshot.frame_count,
-			.exact_match            = (timestamp_ns % interval_ns) == 0,
-		};
 	}
 
 	void Init() {
@@ -599,11 +559,6 @@ void DummyBackend::SetOnError(on_error_fn_t on_error) {
 source_info_t DummyBackend::GetSourceInfo() {
 	return impl->GetSourceInfo();
 }
-
-cvmmap::expected<seek_result_t, error_t> DummyBackend::SeekTimestampNs(uint64_t timestamp_ns) {
-	return impl->SeekTimestampNs(timestamp_ns);
-}
-
 error_t DummyBackend::ResetFrameCount() {
 	return impl->ResetFrameCount();
 }

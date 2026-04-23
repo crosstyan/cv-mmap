@@ -657,30 +657,6 @@ cvmmap::expected<SourceInfo, ControlErrorCode> NatsControlClient::GetSourceInfo(
 	};
 }
 
-cvmmap::expected<SeekResult, ControlErrorCode> NatsControlClient::SeekTimestampNs(
-	const uint64_t timestamp_ns,
-	const std::chrono::milliseconds timeout) {
-	pb::SeekTimestampRequest request;
-	request.set_target_timestamp_ns(timestamp_ns);
-	auto response =
-		pimpl_->request<pb::SeekTimestampRequest, pb::SeekTimestampResponse>(
-			nats::subject_producer_source_seek(pimpl_->target_key),
-			request,
-			timeout);
-	if (!response) {
-		return cvmmap::unexpected(response.error());
-	}
-	if (response->error() != pb::ERROR_CODE_OK) {
-		return cvmmap::unexpected(from_proto_error_code(response->error()));
-	}
-	return SeekResult{
-		.requested_timestamp_ns = response->requested_timestamp_ns(),
-		.landed_timestamp_ns = response->landed_timestamp_ns(),
-		.landed_frame_count = response->landed_frame_count(),
-		.exact_match = response->exact_match(),
-	};
-}
-
 cvmmap::expected<PlaylistInfo, ControlError> NatsControlClient::ApplyPlaylist(
 	const PlaylistRequest &request,
 	const std::chrono::milliseconds timeout) {
@@ -823,28 +799,6 @@ cvmmap::expected<PlaylistInfo, ControlError> NatsControlClient::GetPlaylistInfo(
 			response->error_message()));
 	}
 	return to_playlist_info(response->playlist_info());
-}
-
-cvmmap::expected<SourceControlCapabilities, ControlError>
-NatsControlClient::GetSourceCapabilities(
-	const std::chrono::milliseconds timeout) {
-	pb::CapabilitiesRequest request;
-	auto response =
-		pimpl_->request<pb::CapabilitiesRequest, pb::CapabilitiesResponse>(
-			nats::subject_producer_source_capabilities(pimpl_->target_key),
-			request,
-			timeout);
-	if (!response) {
-		return cvmmap::unexpected(response_error(response.error()));
-	}
-	if (response->error() != pb::ERROR_CODE_OK) {
-		return cvmmap::unexpected(response_error(
-			from_proto_error_code(response->error())));
-	}
-
-	return SourceControlCapabilities{
-		.can_seek = response->can_seek(),
-	};
 }
 
 cvmmap::expected<SvoRecordingCapabilities, ControlError>

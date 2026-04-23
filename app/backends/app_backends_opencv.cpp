@@ -89,12 +89,6 @@ struct OpenCVBackendImpl {
 	}
 
 	[[nodiscard]]
-	bool effective_can_seek() const {
-		return finite_source_info.has_value() &&
-			   options.video_config.finite_source_can_seek();
-	}
-
-	[[nodiscard]]
 	source_info_t GetSourceInfo() {
 		std::lock_guard lock(state_mutex);
 		source_info_t info{};
@@ -108,9 +102,6 @@ struct OpenCVBackendImpl {
 			info.duration_ns =
 				static_cast<uint64_t>(finite_source_info->frame_count) *
 				finite_frame_interval_ns();
-			if (options.video_config.finite_source_can_seek()) {
-				info.flags |= cvmmap::SOURCE_INFO_FLAG_CAN_SEEK;
-			}
 			if (options.video_config.finite_source_auto_loops()) {
 				info.flags |= cvmmap::SOURCE_INFO_FLAG_AUTO_LOOP;
 			}
@@ -179,12 +170,11 @@ struct OpenCVBackendImpl {
 		// Check for finite source
 		finite_source_info = check_finite_source();
 		if (finite_source_info) {
-			spdlog::info("detected finite source; fps={} ({}ms), frame_count={}, auto_loops={}, can_seek={}",
+			spdlog::info("detected finite source; fps={} ({}ms), frame_count={}, auto_loops={}",
 						 finite_source_info->fps,
 						 finite_source_info->frame_interval().count(),
 						 finite_source_info->frame_count,
-						 options.video_config.finite_source_auto_loops(),
-						 options.video_config.finite_source_can_seek());
+						 options.video_config.finite_source_auto_loops());
 		} else {
 			spdlog::info("infinite source detected (live stream)");
 		}
@@ -331,40 +321,6 @@ struct OpenCVBackendImpl {
 		_on_error = std::move(on_error_);
 	}
 
-	cvmmap::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns) {
-		if (!finite_source_info) {
-			return cvmmap::unexpected(-EOPNOTSUPP);
-		}
-		if (!effective_can_seek()) {
-			return cvmmap::unexpected(-EOPNOTSUPP);
-		}
-		const auto interval_ns = finite_frame_interval_ns();
-		const auto max_timestamp_ns =
-			static_cast<uint64_t>(finite_source_info->frame_count - 1) *
-			interval_ns;
-		if (timestamp_ns > max_timestamp_ns) {
-			return cvmmap::unexpected(-ERANGE);
-		}
-
-		const auto frame_index = static_cast<uint32_t>(
-			(timestamp_ns + interval_ns - 1) / interval_ns);
-		std::lock_guard lock(state_mutex);
-		bool success =
-			cap.set(cv::CAP_PROP_POS_FRAMES, static_cast<double>(frame_index));
-		if (!success) {
-			return cvmmap::unexpected(-EIO);
-		}
-		source_frame_index    = frame_index;
-		metadata.frame_count  = 0;
-		metadata.timestamp_ns = timestamp_for_source_frame(source_frame_index);
-		return seek_result_t{
-			.requested_timestamp_ns = timestamp_ns,
-			.landed_timestamp_ns    = metadata.timestamp_ns,
-			.landed_frame_count     = metadata.frame_count,
-			.exact_match            = (metadata.timestamp_ns == timestamp_ns),
-		};
-	}
-
 	error_t ResetFrameCount() {
 		std::lock_guard lock(state_mutex);
 		if (finite_source_info && options.video_config.finite_source_can_seek()) {
@@ -414,10 +370,6 @@ void OpenCVBackend::SetOnError(on_error_fn_t on_error) {
 
 source_info_t OpenCVBackend::GetSourceInfo() {
 	return impl->GetSourceInfo();
-}
-
-cvmmap::expected<seek_result_t, error_t> OpenCVBackend::SeekTimestampNs(uint64_t timestamp_ns) {
-	return impl->SeekTimestampNs(timestamp_ns);
 }
 
 error_t OpenCVBackend::ResetFrameCount() {

@@ -559,12 +559,6 @@ source_info_t UdpRtpBackend::GetSourceInfo() {
 	info.current_frame_count  = impl->last_metadata.frame_count;
 	return info;
 }
-
-cvmmap::expected<seek_result_t, error_t> UdpRtpBackend::SeekTimestampNs(uint64_t timestamp_ns) {
-	(void)timestamp_ns;
-	return cvmmap::unexpected(-ENOTSUP);
-}
-
 error_t UdpRtpBackend::ResetFrameCount() {
 	return -ENOTSUP;
 }

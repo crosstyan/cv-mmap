@@ -99,7 +99,7 @@ endif()
 add_subdirectory(third_party)
 add_subdirectory(core)
 
-add_executable(cv-mmap src/main.cpp)
+add_executable(cv-mmap src/main.cpp src/frame_publisher.cpp)
 target_include_directories(cv-mmap PRIVATE src/inc)
 target_link_libraries(cv-mmap PRIVATE cppzmq)
 target_link_options(cv-mmap PRIVATE "LINKER:--copy-dt-needed-entries")

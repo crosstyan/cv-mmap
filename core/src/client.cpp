@@ -601,15 +601,6 @@ CvMmapClient::GetSourceInfo(std::chrono::milliseconds timeout) {
   return pimpl_->nats_client->GetSourceInfo(timeout);
 }
 
-cvmmap::expected<SeekResult, ControlErrorCode>
-CvMmapClient::SeekTimestampNs(uint64_t timestamp_ns,
-                              std::chrono::milliseconds timeout) {
-  if (!pimpl_->nats_client) {
-    return cvmmap::unexpected(ControlErrorCode::Unsupported);
-  }
-  return pimpl_->nats_client->SeekTimestampNs(timestamp_ns, timeout);
-}
-
 cvmmap::expected<PlaylistInfo, ControlError>
 CvMmapClient::ApplyPlaylist(const PlaylistRequest &request,
                             std::chrono::milliseconds timeout) {
@@ -625,14 +616,6 @@ CvMmapClient::GetPlaylistInfo(std::chrono::milliseconds timeout) {
     return cvmmap::unexpected(make_nats_disabled_error());
   }
   return pimpl_->nats_client->GetPlaylistInfo(timeout);
-}
-
-cvmmap::expected<SourceControlCapabilities, ControlError>
-CvMmapClient::GetSourceCapabilities(std::chrono::milliseconds timeout) {
-  if (!pimpl_->nats_client) {
-    return cvmmap::unexpected(make_nats_disabled_error());
-  }
-  return pimpl_->nats_client->GetSourceCapabilities(timeout);
 }
 
 cvmmap::expected<CameraControlCapabilities, ControlError>

@@ -1,151 +1,46 @@
-#include <cstdint>
-#include <utility>
-
-#include "app_backends_handle.hpp"
+#include "app_backend_factory.hpp"
 #include "app_config.hpp"
 
 namespace {
 
-using app::BackendType;
-using app::DummyConfig;
-using app::VideoConfig;
-using app::backends::BackendHandle;
-using app::backends::DummyBackend;
-using app::backends::camera_control_range_request_t;
-using app::backends::camera_control_request_t;
-using app::backends::on_body_tracking_fn_t;
-using app::backends::svo_recording_request_t;
+[[nodiscard]]
+int test_dummy_backend_has_no_capability_proxies() {
+	app::Config cfg = app::Config::Default();
+	cfg.video.backend = app::BackendType::Dummy;
 
-template <typename Backend>
-concept HasBodyTrackingSetter = requires(Backend &backend, on_body_tracking_fn_t callback) {
-	backend.SetOnBodyTracking(std::move(callback));
-};
-
-template <typename Backend>
-concept HasCameraControlMethods = requires(
-	Backend &backend,
-	cvmmap::CameraControlSetting setting,
-	const camera_control_request_t &request,
-	const camera_control_range_request_t &range_request) {
-	backend.GetCameraControlCapabilities();
-	backend.GetCameraControl(setting);
-	backend.SetCameraControl(request);
-	backend.SetCameraControlRange(range_request);
-};
-
-template <typename Backend>
-concept HasSvoRecordingMethods = requires(Backend &backend, const svo_recording_request_t &request) {
-	backend.StartRecording(request);
-	backend.StopRecording();
-	backend.GetRecordingStatus();
-	backend.GetLastRecordingError();
-};
-
-static_assert(!HasBodyTrackingSetter<DummyBackend>);
-static_assert(!HasCameraControlMethods<DummyBackend>);
-static_assert(!HasSvoRecordingMethods<DummyBackend>);
-
-#ifdef WITH_BACKEND_OPENCV
-static_assert(!HasBodyTrackingSetter<app::backends::OpenCVBackend>);
-static_assert(!HasCameraControlMethods<app::backends::OpenCVBackend>);
-static_assert(!HasSvoRecordingMethods<app::backends::OpenCVBackend>);
-#endif
-
-#ifdef WITH_BACKEND_GSTREAMER
-static_assert(!HasBodyTrackingSetter<app::backends::GStreamerBackend>);
-static_assert(!HasBodyTrackingSetter<app::backends::UdpRtpBackend>);
-static_assert(!HasCameraControlMethods<app::backends::GStreamerBackend>);
-static_assert(!HasCameraControlMethods<app::backends::UdpRtpBackend>);
-static_assert(!HasSvoRecordingMethods<app::backends::GStreamerBackend>);
-static_assert(!HasSvoRecordingMethods<app::backends::UdpRtpBackend>);
-#endif
-
-#ifdef WITH_BACKEND_MCAP
-static_assert(HasBodyTrackingSetter<app::backends::McapBackend>);
-static_assert(!HasCameraControlMethods<app::backends::McapBackend>);
-static_assert(!HasSvoRecordingMethods<app::backends::McapBackend>);
-#endif
-
-#ifdef WITH_BACKEND_ZED
-static_assert(HasBodyTrackingSetter<app::backends::ZedBackend>);
-static_assert(HasCameraControlMethods<app::backends::ZedBackend>);
-static_assert(HasSvoRecordingMethods<app::backends::ZedBackend>);
-#endif
-
-int test_backend_handle_rejects_body_tracking_for_dummy() {
-	DummyConfig dummy_cfg{};
-	VideoConfig video_cfg{};
-	video_cfg.backend = BackendType::Dummy;
-
-	BackendHandle backend;
-	backend.emplace<DummyBackend>(dummy_cfg, video_cfg);
-
-	bool registered = false;
-	try {
-		registered = backend.TrySetOnBodyTracking([](const cvmmap::body_tracking_frame_t &) {});
-	} catch (...) {
-		return 2;
-	}
-	return registered ? 1 : 0;
-}
-
-int test_backend_handle_rejects_svo_recording_for_dummy() {
-	DummyConfig dummy_cfg{};
-	VideoConfig video_cfg{};
-	video_cfg.backend = BackendType::Dummy;
-
-	BackendHandle backend;
-	backend.emplace<DummyBackend>(dummy_cfg, video_cfg);
-
-	bool visited   = false;
-	bool supported = false;
-	try {
-		supported = backend.TryVisitSvoRecordable([&](auto &) {
-			visited = true;
-		});
-	} catch (...) {
-		return 2;
-	}
-	if (supported) {
+	auto assembly = app::backends::MakeBackendAssembly(cfg);
+	if (!assembly.has_value()) {
 		return 1;
 	}
-	return visited ? 3 : 0;
-}
 
-int test_backend_handle_rejects_camera_control_for_dummy() {
-	DummyConfig dummy_cfg{};
-	VideoConfig video_cfg{};
-	video_cfg.backend = BackendType::Dummy;
-
-	BackendHandle backend;
-	backend.emplace<DummyBackend>(dummy_cfg, video_cfg);
-
-	bool visited   = false;
-	bool supported = false;
-	try {
-		supported = backend.TryVisitCameraControllable([&](auto &) {
-			visited = true;
-		});
-	} catch (...) {
+	const auto &backend_assembly = assembly.value();
+	if (!backend_assembly.backend) {
 		return 2;
 	}
-	if (supported) {
-		return 1;
+
+	if (backend_assembly.body_tracking.has_value()) {
+		return 3;
 	}
-	return visited ? 3 : 0;
+	if (backend_assembly.camera_control.has_value()) {
+		return 4;
+	}
+	if (backend_assembly.svo_recordable.has_value()) {
+		return 5;
+	}
+	if (backend_assembly.direct_frame.has_value()) {
+		return 6;
+	}
+	if (backend_assembly.encoded_access_unit.has_value()) {
+		return 7;
+	}
+	return 0;
 }
 
 } // namespace
 
 int main() {
-	if (const auto rc = test_backend_handle_rejects_body_tracking_for_dummy(); rc != 0) {
+	if (const auto rc = test_dummy_backend_has_no_capability_proxies(); rc != 0) {
 		return 10 + rc;
-	}
-	if (const auto rc = test_backend_handle_rejects_camera_control_for_dummy(); rc != 0) {
-		return 20 + rc;
-	}
-	if (const auto rc = test_backend_handle_rejects_svo_recording_for_dummy(); rc != 0) {
-		return 30 + rc;
 	}
 	return 0;
 }

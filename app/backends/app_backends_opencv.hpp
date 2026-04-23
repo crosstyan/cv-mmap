@@ -1,8 +1,11 @@
 #ifndef D85CE6BB_6714_4CC0_871D_EB7629F6E811
 #define D85CE6BB_6714_4CC0_871D_EB7629F6E811
+
 #include <memory>
 #include <variant>
+
 #include <cvmmap/compat/expected.hpp>
+
 #include "app_backends_facade.hpp"
 #include "app_enum_models.hpp"
 
@@ -28,7 +31,6 @@ struct OpenCVBackend {
 	void SetOnFrame(on_frame_fn_t on_frame);
 	void SetOnError(on_error_fn_t on_error);
 	source_info_t GetSourceInfo();
-	cvmmap::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns);
 	/**
 	 * @brief Reset frame count to zero
 	 * @return 0 on success, -EIO on I/O error
@@ -38,6 +40,6 @@ struct OpenCVBackend {
 	 */
 	error_t ResetFrameCount();
 };
-}
+} // namespace app::backends
 
 #endif /* D85CE6BB_6714_4CC0_871D_EB7629F6E811 */

@@ -1,11 +1,13 @@
 #ifndef CE5657DE_F3BD_4D12_B529_2DB6C5F4E72B
 #define CE5657DE_F3BD_4D12_B529_2DB6C5F4E72B
 
+#include <cstdint>
 #include <memory>
-#include <optional>
 #include <span>
+#include <string>
 
 #include <cvmmap/compat/expected.hpp>
+
 #include "app_backends_facade.hpp"
 
 namespace app {
@@ -14,15 +16,6 @@ struct ZedConfig;
 }
 
 namespace app::backends {
-
-using zed_frame_fill_fn_t = cvmmap::move_only_function<std::optional<size_t>(std::span<uint8_t> output_buffer)>;
-
-struct ZedDirectFrame {
-	frame_metadata_t metadata{};
-	zed_frame_fill_fn_t fill_payload{};
-};
-
-using on_zed_frame_direct_fn_t = cvmmap::move_only_function<void(ZedDirectFrame frame)>;
 
 struct ZedBackendImpl;
 
@@ -36,12 +29,11 @@ struct ZedBackend {
 	void Shutdown();
 	void SetOnMetadata(on_metadata_fn_t on_metadata);
 	void SetOnFrame(on_frame_fn_t on_frame);
-	void SetOnFrameDirect(on_zed_frame_direct_fn_t on_frame_direct);
+	void SetOnDirectFrame(on_direct_frame_fn_t on_direct_frame);
 	void OnDirectOutputBufferWillReset(std::span<const uint8_t> output_buffer);
 	void SetOnBodyTracking(on_body_tracking_fn_t on_body_tracking);
 	void SetOnError(on_error_fn_t on_error);
 	source_info_t GetSourceInfo();
-	cvmmap::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns);
 	error_t ResetFrameCount();
 	camera_control_capabilities_t GetCameraControlCapabilities();
 	cvmmap::expected<camera_control_state_t, error_t> GetCameraControl(cvmmap::CameraControlSetting setting);
@@ -55,6 +47,6 @@ struct ZedBackend {
 
 cvmmap::expected<uint64_t, std::string> ProbeZedSvoStartTimestampNs(const app::ZedConfig &zed_config);
 
-}
+} // namespace app::backends
 
 #endif

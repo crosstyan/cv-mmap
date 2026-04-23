@@ -377,9 +377,6 @@ struct McapBackendImpl {
 		source_info_t info{};
 		info.source_kind      = cvmmap::SourceKind::Finite;
 		info.timestamp_domain = mcap_config.timestamp_domain;
-		if (video_config.finite_source_can_seek()) {
-			info.flags |= cvmmap::SOURCE_INFO_FLAG_CAN_SEEK;
-		}
 		if (video_config.finite_source_auto_loops()) {
 			info.flags |= cvmmap::SOURCE_INFO_FLAG_AUTO_LOOP;
 		}
@@ -848,54 +845,6 @@ struct McapBackendImpl {
 		return packet;
 	}
 
-	cvmmap::expected<seek_result_t, error_t> seek_timestamp_locked(
-		const uint64_t timestamp_ns,
-		const bool notify_worker,
-		PublishPacket *packet_out) {
-		if (!video_config.finite_source_can_seek()) {
-			return cvmmap::unexpected(-EOPNOTSUPP);
-		}
-		if (video_samples.empty()) {
-			return cvmmap::unexpected(-EINVAL);
-		}
-		if (timestamp_ns < video_samples.front().timestamp_ns ||
-			timestamp_ns > video_samples.back().timestamp_ns) {
-			return cvmmap::unexpected(-ERANGE);
-		}
-
-		const auto it = std::lower_bound(
-			video_samples.begin(),
-			video_samples.end(),
-			timestamp_ns,
-			[](const VideoSample &sample, const uint64_t ts) {
-				return sample.timestamp_ns < ts;
-			});
-		if (it == video_samples.end()) {
-			return cvmmap::unexpected(-ERANGE);
-		}
-
-		const auto target_index =
-			static_cast<size_t>(std::distance(video_samples.begin(), it));
-		auto packet = seek_to_index_locked(target_index, 0);
-		if (!packet) {
-			spdlog::error("bad MCAP seek decode: {}", packet.error());
-			return cvmmap::unexpected(-EIO);
-		}
-
-		if (notify_worker) {
-			position_changed = true;
-		}
-		if (packet_out != nullptr) {
-			*packet_out = std::move(*packet);
-		}
-		return seek_result_t{
-			.requested_timestamp_ns = timestamp_ns,
-			.landed_timestamp_ns    = packet->metadata.timestamp_ns,
-			.landed_frame_count     = packet->metadata.frame_count,
-			.exact_match            = (packet->metadata.timestamp_ns == timestamp_ns),
-		};
-	}
-
 	void Init() {
 		auto loaded = load_file();
 		if (!loaded) {
@@ -1024,20 +973,6 @@ struct McapBackendImpl {
 		_on_error = std::move(on_error_);
 	}
 
-	cvmmap::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns) {
-		PublishPacket packet{};
-		cvmmap::expected<seek_result_t, error_t> result = cvmmap::unexpected(-EIO);
-		{
-			std::lock_guard lock(state_mutex);
-			result = seek_timestamp_locked(timestamp_ns, true, &packet);
-		}
-		if (result) {
-			publish_packet(packet);
-			state_cv.notify_all();
-		}
-		return result;
-	}
-
 	error_t ResetFrameCount() {
 		PublishPacket packet{};
 		{
@@ -1089,11 +1024,6 @@ void McapBackend::SetOnError(on_error_fn_t on_error) {
 
 source_info_t McapBackend::GetSourceInfo() {
 	return impl->GetSourceInfo();
-}
-
-cvmmap::expected<seek_result_t, error_t> McapBackend::SeekTimestampNs(
-	uint64_t timestamp_ns) {
-	return impl->SeekTimestampNs(timestamp_ns);
 }
 
 error_t McapBackend::ResetFrameCount() {

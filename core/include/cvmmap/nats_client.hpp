@@ -32,18 +32,12 @@ public:
 	cvmmap::expected<SourceInfo, ControlErrorCode>
 	GetSourceInfo(std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
-	cvmmap::expected<SeekResult, ControlErrorCode>
-	SeekTimestampNs(uint64_t ts, std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
-
 	cvmmap::expected<PlaylistInfo, ControlError>
 	ApplyPlaylist(const PlaylistRequest &request,
 				  std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
 	cvmmap::expected<PlaylistInfo, ControlError>
 	GetPlaylistInfo(std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
-
-	cvmmap::expected<SourceControlCapabilities, ControlError>
-	GetSourceCapabilities(std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
 	cvmmap::expected<CameraControlCapabilities, ControlError>
 	GetCameraControlCapabilities(

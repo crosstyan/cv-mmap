@@ -22,13 +22,6 @@ inline std::string subject_producer_source_info(std::string_view target_key) {
 	return subject_producer_prefix(target_key) + ".source.info";
 }
 
-inline std::string subject_producer_source_seek(std::string_view target_key) {
-	return subject_producer_prefix(target_key) + ".source.seek";
-}
-
-inline std::string subject_producer_source_capabilities(std::string_view target_key) {
-	return subject_producer_prefix(target_key) + ".source.capabilities";
-}
 
 inline std::string subject_producer_source_playlist_apply(std::string_view target_key) {
 	return subject_producer_prefix(target_key) + ".source.playlist.apply";

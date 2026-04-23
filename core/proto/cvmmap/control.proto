@@ -83,15 +83,6 @@ message GetSourceInfoResponse {
   uint32           current_frame_count  = 9;
 }
 
-// -- SeekTimestamp --
-message SeekTimestampRequest { uint64 target_timestamp_ns = 1; }
-message SeekTimestampResponse {
-  ErrorCode error                  = 1;
-  uint64    requested_timestamp_ns = 2;
-  uint64    landed_timestamp_ns    = 3;
-  uint32    landed_frame_count     = 4;
-  bool      exact_match            = 5;
-}
 
 // -- Playlist --
 message PlaylistInfo {
@@ -125,8 +116,7 @@ message GetPlaylistInfoResponse {
 message CapabilitiesRequest {}
 message CapabilitiesResponse {
   ErrorCode error = 1;
-  bool can_seek = 2;
-  repeated RecordingFormat available_recording_formats = 3;
+  repeated RecordingFormat available_recording_formats = 2;
 }
 
 // -- Camera Control --

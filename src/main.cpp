@@ -35,9 +35,9 @@
 #include "config/app_config.hpp"
 #include "models/app_metadata_models.hpp"
 #include "app_utils.hpp"
-#include "backends/app_backends_handle.hpp"
+#include "backends/app_backend_factory.hpp"
 #include "backends/app_backends_playlist.hpp"
-#include "app_preprocess_undistort.hpp"
+#include "frame_publisher.hpp"
 #include <cvmmap/nats_service.hpp>
 
 #if defined(__APPLE__) && defined(__MACH__)
@@ -203,469 +203,6 @@ int main(int argc, char **argv) {
 	};
 	std::signal(SIGINT, sigint_handler);
 
-	/**
-	 * @brief a simple RAII wrapper for shared memory
-	 */
-	struct shm_state_t {
-		shm_state_t(const std::string &name, int shm_fd) : _name(name), _shm_fd(shm_fd) {}
-		~shm_state_t() {
-			if (_shm_fd != -1) {
-				spdlog::debug("closing shared memory `{}` (fd={})", _name, _shm_fd);
-				close(_shm_fd);
-				shm_unlink(_name.c_str());
-			}
-		}
-		shm_state_t(const shm_state_t &)            = delete;
-		shm_state_t &operator=(const shm_state_t &) = delete;
-		shm_state_t(shm_state_t &&other) noexcept : _name(std::move(other._name)), _shm_fd(other._shm_fd) {
-			other._shm_fd = -1;
-		}
-		shm_state_t &operator=(shm_state_t &&other) noexcept {
-			if (this != &other) {
-				// close current if valid
-				if (_shm_fd != -1) {
-					close(_shm_fd);
-					shm_unlink(_name.c_str());
-				}
-				_name         = std::move(other._name);
-				_shm_fd       = other._shm_fd;
-				other._shm_fd = -1;
-			}
-			return *this;
-		}
-
-		static cvmmap::expected<shm_state_t, int> open(const std::string &name) {
-			spdlog::debug("opening shared memory `{}`", name);
-			// mode=0666
-			// shouldn't be 777. It's generally not needed unless you're putting
-			// an ELF binary in the shared memory.
-			// which is not the case here.
-			int shm_fd = shm_open(name.c_str(), O_CREAT | O_RDWR, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
-			if (shm_fd == -1) {
-				// `ipcrm -M <name>` could be used to remove the shared memory as well
-				if (errno == EACCES || errno == EEXIST) {
-					auto err = shm_unlink(name.c_str());
-					if (err == -1) {
-						spdlog::error("unlinking shared memory `{}`. reason: {}", name, strerror(errno));
-						return cvmmap::unexpected(errno);
-					} else {
-						spdlog::warn("unlinked shared memory `{}`", name);
-						return shm_state_t::open(name);
-					}
-				}
-				return cvmmap::unexpected(errno);
-			}
-			spdlog::debug("opened shared memory `{}` (fd={})", name, shm_fd);
-			return shm_state_t(name, shm_fd);
-		}
-
-		int fd() const {
-			return _shm_fd;
-		}
-
-		const std::string_view name() const {
-			return _name;
-		}
-
-	private:
-		std::string _name;
-		int _shm_fd;
-	};
-
-	auto shm_state_ = shm_state_t::open(config.shm_name());
-	if (not shm_state_) {
-		spdlog::error("opening shared memory `{}`. reason: {}", config.shm_name(), shm_state_.error());
-		return 1;
-	}
-	auto shm_state = std::move(*shm_state_);
-	spdlog::debug("created shared memory `{}` (fd={})", config.shm_name(), shm_state.fd());
-
-	/**
-	 * @brief a simple RAII wrapper for memory mapped frame state
-	 */
-	struct frame_state_t {
-		frame_state_t(std::span<uint8_t> buf) : _mmap_ptr(buf.data()),
-												_metadata_buffer(buf.subspan(0, SHM_PAYLOAD_OFFSET)),
-												_image_buffer(buf.subspan(SHM_PAYLOAD_OFFSET, buf.size() - SHM_PAYLOAD_OFFSET)) {
-			assert(total_buffer_size() == buf.size());
-			std::fill(_metadata_buffer.begin(), _metadata_buffer.end(), 0);
-			metadata().header.ensure_magic();
-		}
-		~frame_state_t() {
-			if (_mmap_ptr) {
-				spdlog::debug("closing frame state (mmap_ptr={})", static_cast<void *>(_mmap_ptr));
-				munmap(_mmap_ptr, total_buffer_size());
-			}
-		}
-		frame_state_t(const frame_state_t &)            = delete;
-		frame_state_t &operator=(const frame_state_t &) = delete;
-		frame_state_t(frame_state_t &&other) noexcept : _mmap_ptr(other._mmap_ptr), _metadata_buffer(other._metadata_buffer), _image_buffer(other._image_buffer) {
-			other._mmap_ptr        = {};
-			other._metadata_buffer = {};
-			other._image_buffer    = {};
-		}
-		frame_state_t &operator=(frame_state_t &&other) noexcept {
-			if (this != &other) {
-				if (_mmap_ptr) {
-					munmap(_mmap_ptr, total_buffer_size());
-				}
-				_mmap_ptr              = other._mmap_ptr;
-				_metadata_buffer       = other._metadata_buffer;
-				_image_buffer          = other._image_buffer;
-				other._mmap_ptr        = {};
-				other._metadata_buffer = {};
-				other._image_buffer    = {};
-			}
-			return *this;
-		}
-
-		const std::span<uint8_t> metadata_buffer() const {
-			return _metadata_buffer;
-		}
-		const std::span<uint8_t> image_buffer() const {
-			return _image_buffer;
-		}
-
-		size_t total_buffer_size() const {
-			return _metadata_buffer.size() + _image_buffer.size();
-		}
-
-		frame_metadata_v2_t &metadata() {
-			return *reinterpret_cast<frame_metadata_v2_t *>(_metadata_buffer.data());
-		}
-
-		void write_metadata(const frame_metadata_v2_t &metadata) {
-			std::memcpy(_metadata_buffer.data(), &metadata, sizeof(metadata));
-		}
-
-		static cvmmap::expected<frame_state_t, int> open(int shm_fd, size_t size) {
-			// https://www.deepanseeralan.com/tech/playing-with-shared-memory/
-			// ftruncate first, then mmap
-			if (ftruncate(shm_fd, size) == -1) {
-				spdlog::error("truncate shared memory; fd={}, errno={} ({})", shm_fd, errno, strerror(errno));
-				return cvmmap::unexpected(errno);
-			}
-			auto ptr = static_cast<uint8_t *>(mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0));
-			if (ptr == MAP_FAILED) {
-				// https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/mmap.2.html
-				spdlog::error("mmap shared memory; fd={}, errno={} ({})", shm_fd, errno, strerror(errno));
-				return cvmmap::unexpected(errno);
-			}
-			return frame_state_t(std::span<uint8_t>(ptr, size));
-		}
-
-	private:
-		uint8_t *_mmap_ptr;
-		/** [0, SHM_PAYLOAD_OFFSET) (metadata) */
-		std::span<uint8_t> _metadata_buffer;
-		/** [SHM_PAYLOAD_OFFSET, total_buffer_size) */
-		std::span<uint8_t> _image_buffer;
-	};
-
-	// Frame state will be initialized by on_metadata callback
-	std::optional<frame_state_t> frame_state;
-	std::optional<sync_message_t> sync_msg;
-	std::mutex pending_encoded_mutex{};
-	struct pending_encoded_access_unit_t {
-		cvmmap::EncodedCodec codec{cvmmap::EncodedCodec::Unknown};
-		cvmmap::EncodedBitstreamFormat bitstream_format{cvmmap::EncodedBitstreamFormat::Unknown};
-		uint16_t flags{0};
-		uint16_t frame_rate_num{0};
-		uint16_t frame_rate_den{0};
-		uint64_t source_timestamp_ns{0};
-		uint64_t stream_pts_ns{0};
-		std::vector<uint8_t> bytes{};
-	};
-	std::unordered_map<uint64_t, pending_encoded_access_unit_t> pending_encoded_by_timestamp{};
-	auto undistort_pass = app::preprocess::make_undistort_pass(config.preprocess);
-	if (undistort_pass) {
-		if (config.video.backend == app::BackendType::ZED) {
-			spdlog::warn("ignoring preprocess.undistort for ZED backend; ZED direct-fill path publishes native frames without producer-side undistort");
-			undistort_pass.reset();
-		} else {
-			spdlog::info("undistort preprocess pass is enabled");
-		}
-	}
-
-	const auto to_u32 = [](size_t value) -> std::optional<uint32_t> {
-		if (value > std::numeric_limits<uint32_t>::max()) {
-			return std::nullopt;
-		}
-		return static_cast<uint32_t>(value);
-	};
-
-	const auto now_ns = []() -> uint64_t {
-		return static_cast<uint64_t>(
-			std::chrono::duration_cast<std::chrono::nanoseconds>(
-				std::chrono::system_clock::now().time_since_epoch())
-				.count());
-	};
-
-	const auto serialize_body_tracking_frame = [&config](const cvmmap::body_tracking_frame_t &frame) -> std::vector<uint8_t> {
-		auto header           = frame.header;
-		header._magic         = cvmmap::BODY_TRACKING_MAGIC;
-		header.versions_major = VERSION_MAJOR;
-		header.versions_minor = VERSION_MINOR;
-		std::memset(header._label, 0, sizeof(header._label));
-		std::memcpy(
-			header._label,
-			config.name.data(),
-			std::min(sizeof(header._label), config.name.size()));
-		header.body_count         = static_cast<uint16_t>(frame.bodies.size());
-		header.body_record_size   = sizeof(cvmmap::body_tracking_body_t);
-		header.payload_size_bytes = static_cast<uint32_t>(
-			frame.bodies.size() * sizeof(cvmmap::body_tracking_body_t));
-
-		std::vector<uint8_t> bytes(
-			sizeof(cvmmap::body_tracking_message_header_t) + header.payload_size_bytes);
-		std::memcpy(bytes.data(), &header, sizeof(header));
-		if (!frame.bodies.empty()) {
-			std::memcpy(
-				bytes.data() + sizeof(header),
-				frame.bodies.data(),
-				header.payload_size_bytes);
-		}
-		return bytes;
-	};
-
-	const auto determine_depth_unit = [&config]() -> DepthUnit {
-		if (config.video.backend != app::BackendType::ZED || !config.zed.has_value()) {
-			return DepthUnit::Unknown;
-		}
-		const auto &zed = *config.zed;
-		const bool body_tracking_uses_meters =
-			zed.body_tracking.has_value() && zed.body_tracking->enabled;
-		return body_tracking_uses_meters ? DepthUnit::Meter : DepthUnit::Millimeter;
-	};
-
-	struct encoded_plane_view_t {
-		cvmmap::EncodedCodec codec{cvmmap::EncodedCodec::Unknown};
-		cvmmap::EncodedBitstreamFormat bitstream_format{cvmmap::EncodedBitstreamFormat::Unknown};
-		uint16_t flags{0};
-		uint16_t frame_rate_num{0};
-		uint16_t frame_rate_den{0};
-		uint64_t stream_pts_ns{0};
-		std::span<const uint8_t> bytes{};
-	};
-
-	const auto build_v2_metadata = [&to_u32, &determine_depth_unit](
-									   const frame_metadata_t &source_metadata,
-									   size_t raw_payload_size,
-									   const std::optional<encoded_plane_view_t> &encoded_plane = std::nullopt) -> std::optional<frame_metadata_v2_t> {
-		if (raw_payload_size == 0 || source_metadata.info.width == 0 || source_metadata.info.height == 0 || source_metadata.info.channels == 0) {
-			return std::nullopt;
-		}
-
-		const size_t encoded_payload_size = encoded_plane ? encoded_plane->bytes.size() : 0;
-		auto payload_size_u32             = to_u32(raw_payload_size + encoded_payload_size);
-		if (!payload_size_u32) {
-			return std::nullopt;
-		}
-
-		auto make_stride = [&to_u32](size_t plane_size, uint32_t height, size_t expected_min_stride) -> std::optional<uint32_t> {
-			if (height == 0) {
-				return std::nullopt;
-			}
-			size_t stride = expected_min_stride;
-			if (plane_size % height == 0) {
-				stride = std::max(expected_min_stride, plane_size / height);
-			}
-			return to_u32(stride);
-		};
-
-		frame_metadata_v2_t metadata_v2;
-		std::memset(&metadata_v2, 0, sizeof(metadata_v2));
-		metadata_v2.header.ensure_magic();
-		metadata_v2.header.versions_major            = frame_metadata_v2_header_t::VERSION_MAJOR_V2;
-		metadata_v2.header.versions_minor            = VERSION_MINOR;
-		metadata_v2.header.frame_id                  = source_metadata.frame_count;
-		metadata_v2.header.capture_ts_ns             = source_metadata.timestamp_ns;
-		metadata_v2.header.publish_seq               = source_metadata.frame_count;
-		metadata_v2.header.plane_count               = 1;
-		metadata_v2.header.plane_presence_mask       = 0x01;
-		metadata_v2.header.plane_descriptors_offset  = frame_metadata_v2_header_t::PLANE_DESCRIPTORS_OFFSET;
-		metadata_v2.header.plane_descriptor_size     = frame_metadata_v2_header_t::PLANE_DESCRIPTOR_SIZE;
-		metadata_v2.header.plane_descriptor_capacity = frame_metadata_v2_header_t::PLANE_DESCRIPTOR_CAPACITY;
-		metadata_v2.header.payload_size_bytes        = *payload_size_u32;
-		metadata_v2.header.depth_unit                = DepthUnit::Unknown;
-
-		const size_t left_expected_stride =
-			static_cast<size_t>(source_metadata.info.width) *
-			static_cast<size_t>(source_metadata.info.channels) *
-			static_cast<size_t>(size_of(source_metadata.info.depth));
-
-		const size_t left_compact_size =
-			left_expected_stride * static_cast<size_t>(source_metadata.info.height);
-
-		size_t left_size             = raw_payload_size;
-		size_t depth_size            = 0;
-		size_t confidence_size       = 0;
-		bool depth_plane_active      = false;
-		bool confidence_plane_active = false;
-
-		const size_t depth_expected_stride =
-			static_cast<size_t>(source_metadata.info.width) * sizeof(float);
-		const size_t depth_compact_size =
-			depth_expected_stride * static_cast<size_t>(source_metadata.info.height);
-
-		const size_t packed_extra_size =
-			raw_payload_size >= left_compact_size ? (raw_payload_size - left_compact_size) : 0;
-		const bool has_exact_depth_tail =
-			left_compact_size > 0 &&
-			depth_compact_size > 0 &&
-			raw_payload_size >= left_compact_size &&
-			packed_extra_size == depth_compact_size;
-		const bool has_exact_depth_and_confidence_tail =
-			left_compact_size > 0 &&
-			depth_compact_size > 0 &&
-			raw_payload_size >= left_compact_size &&
-			packed_extra_size == (depth_compact_size * 2);
-
-		// The ZED backend emits compact payloads as:
-		// left | depth | optional confidence
-		if (has_exact_depth_and_confidence_tail) {
-			left_size               = left_compact_size;
-			depth_size              = depth_compact_size;
-			confidence_size         = depth_compact_size;
-			depth_plane_active      = true;
-			confidence_plane_active = true;
-		} else if (has_exact_depth_tail) {
-			left_size          = left_compact_size;
-			depth_size         = depth_compact_size;
-			depth_plane_active = true;
-		}
-
-		auto left_size_u32 = to_u32(left_size);
-		if (!left_size_u32) {
-			return std::nullopt;
-		}
-
-		auto left_stride_u32 = make_stride(left_size, source_metadata.info.height, left_expected_stride);
-		if (!left_stride_u32) {
-			return std::nullopt;
-		}
-
-		auto &left_descriptor        = metadata_v2.plane_descriptors[0];
-		left_descriptor.plane_type   = FramePlaneType::LEFT;
-		left_descriptor.pixel_format = source_metadata.info.pixel_format;
-		left_descriptor.depth        = source_metadata.info.depth;
-		left_descriptor.width        = source_metadata.info.width;
-		left_descriptor.height       = source_metadata.info.height;
-		left_descriptor.stride_bytes = *left_stride_u32;
-		left_descriptor.offset_bytes = 0;
-		left_descriptor.size_bytes   = *left_size_u32;
-
-		if (depth_plane_active) {
-			auto depth_size_u32   = to_u32(depth_size);
-			auto depth_offset_u32 = to_u32(left_size);
-			if (!depth_size_u32 || !depth_offset_u32) {
-				return std::nullopt;
-			}
-
-			auto depth_stride_u32 = make_stride(depth_size, source_metadata.info.height, depth_expected_stride);
-			if (!depth_stride_u32) {
-				return std::nullopt;
-			}
-
-			auto &depth_descriptor        = metadata_v2.plane_descriptors[1];
-			depth_descriptor.plane_type   = FramePlaneType::DEPTH;
-			depth_descriptor.pixel_format = PixelFormat::GRAY;
-			depth_descriptor.depth        = Depth::F32;
-			depth_descriptor.width        = source_metadata.info.width;
-			depth_descriptor.height       = source_metadata.info.height;
-			depth_descriptor.stride_bytes = *depth_stride_u32;
-			depth_descriptor.offset_bytes = *depth_offset_u32;
-			depth_descriptor.size_bytes   = *depth_size_u32;
-
-			metadata_v2.header.plane_count         = 2;
-			metadata_v2.header.plane_presence_mask = 0x03;
-			metadata_v2.header.depth_unit          = determine_depth_unit();
-		}
-
-		if (confidence_plane_active) {
-			auto confidence_size_u32   = to_u32(confidence_size);
-			auto confidence_offset_u32 = to_u32(left_size + depth_size);
-			if (!confidence_size_u32 || !confidence_offset_u32) {
-				return std::nullopt;
-			}
-
-			auto confidence_stride_u32 =
-				make_stride(confidence_size, source_metadata.info.height, depth_expected_stride);
-			if (!confidence_stride_u32) {
-				return std::nullopt;
-			}
-
-			auto &confidence_descriptor        = metadata_v2.plane_descriptors[2];
-			confidence_descriptor.plane_type   = FramePlaneType::CONFIDENCE;
-			confidence_descriptor.pixel_format = PixelFormat::GRAY;
-			confidence_descriptor.depth        = Depth::F32;
-			confidence_descriptor.width        = source_metadata.info.width;
-			confidence_descriptor.height       = source_metadata.info.height;
-			confidence_descriptor.stride_bytes = *confidence_stride_u32;
-			confidence_descriptor.offset_bytes = *confidence_offset_u32;
-			confidence_descriptor.size_bytes   = *confidence_size_u32;
-
-			metadata_v2.header.plane_count         = 3;
-			metadata_v2.header.plane_presence_mask = 0x07;
-		}
-
-		if (encoded_plane && !encoded_plane->bytes.empty()) {
-			auto encoded_offset_u32 = to_u32(left_size + depth_size + confidence_size);
-			auto encoded_size_u32   = to_u32(encoded_plane->bytes.size());
-			if (!encoded_offset_u32 || !encoded_size_u32) {
-				return std::nullopt;
-			}
-
-			auto &encoded_descriptor        = metadata_v2.plane_descriptors[3];
-			encoded_descriptor.plane_type   = FramePlaneType::ENCODED_ACCESS_UNIT;
-			encoded_descriptor.pixel_format = PixelFormat::GRAY;
-			encoded_descriptor.depth        = Depth::U8;
-			encoded_descriptor.width        = *encoded_size_u32;
-			encoded_descriptor.height       = 1;
-			encoded_descriptor.stride_bytes = *encoded_size_u32;
-			encoded_descriptor.offset_bytes = *encoded_offset_u32;
-			encoded_descriptor.size_bytes   = *encoded_size_u32;
-
-			metadata_v2.header.versions_minor = frame_metadata_v2_header_t::VERSION_MINOR_V2_ENCODED_AU;
-			metadata_v2.header.plane_presence_mask |= 0x08;
-			metadata_v2.header.plane_count = static_cast<uint8_t>(
-				((metadata_v2.header.plane_presence_mask & 0x01) ? 1 : 0) +
-				((metadata_v2.header.plane_presence_mask & 0x02) ? 1 : 0) +
-				((metadata_v2.header.plane_presence_mask & 0x04) ? 1 : 0) +
-				1);
-
-			frame_metadata_v2_encoded_extension_t encoded_extension{};
-			switch (encoded_plane->codec) {
-			case cvmmap::EncodedCodec::H264:
-				encoded_extension.encoded_codec = EncodedCodec::H264;
-				break;
-			case cvmmap::EncodedCodec::H265:
-				encoded_extension.encoded_codec = EncodedCodec::H265;
-				break;
-			case cvmmap::EncodedCodec::Unknown:
-			default:
-				encoded_extension.encoded_codec = EncodedCodec::UNKNOWN;
-				break;
-			}
-			switch (encoded_plane->bitstream_format) {
-			case cvmmap::EncodedBitstreamFormat::AnnexB:
-				encoded_extension.encoded_bitstream_format = EncodedBitstreamFormat::ANNEXB;
-				break;
-			case cvmmap::EncodedBitstreamFormat::Unknown:
-			default:
-				encoded_extension.encoded_bitstream_format = EncodedBitstreamFormat::UNKNOWN;
-				break;
-			}
-			encoded_extension.encoded_flags          = encoded_plane->flags;
-			encoded_extension.encoded_frame_rate_num = encoded_plane->frame_rate_num;
-			encoded_extension.encoded_frame_rate_den = encoded_plane->frame_rate_den;
-			encoded_extension.encoded_stream_pts_ns  = encoded_plane->stream_pts_ns;
-			std::memcpy(metadata_v2.header.reserved_0, &encoded_extension, sizeof(encoded_extension));
-		}
-
-		return metadata_v2;
-	};
-
 	const auto map_control_error_code = [](const int error_code) {
 		switch (error_code) {
 		case 0:
@@ -681,15 +218,17 @@ int main(int argc, char **argv) {
 		}
 	};
 
-	const auto map_recording_error = [&map_control_error_code](const int error_code,
-										std::string message = {}) {
+	const auto map_recording_error = [&map_control_error_code](
+		const int error_code,
+		std::string message = {}) {
 		return cvmmap::ControlError{
-			.code    = map_control_error_code(error_code),
+			.code = map_control_error_code(error_code),
 			.message = std::move(message),
 		};
 	};
 
-	const auto to_public_camera_control_state = [](const backends::camera_control_state_t &state) {
+	const auto to_public_camera_control_state = [](
+		const backends::camera_control_state_t &state) {
 		return cvmmap::CameraControlState{
 			.setting = state.setting,
 			.kind = state.kind,
@@ -707,23 +246,25 @@ int main(int argc, char **argv) {
 		};
 	};
 
-	const auto map_backend_control_error = [&map_control_error_code](const int error_code, std::string message = {}) {
+	const auto map_backend_control_error = [&map_control_error_code](
+		const int error_code,
+		std::string message = {}) {
 		return cvmmap::ControlError{
 			.code = map_control_error_code(error_code),
 			.message = std::move(message),
 		};
 	};
 
-
-	const auto to_public_recording_status = [](const backends::recording_status_t &status) {
+	const auto to_public_recording_status = [](
+		const backends::recording_status_t &status) {
 		return cvmmap::SvoRecordingStatus{
-			.can_record      = status.can_record,
-			.is_recording    = status.is_recording,
-			.is_paused       = status.is_paused,
-			.last_frame_ok   = status.last_frame_ok,
+			.can_record = status.can_record,
+			.is_recording = status.is_recording,
+			.is_paused = status.is_paused,
+			.last_frame_ok = status.last_frame_ok,
 			.frames_ingested = status.frames_ingested,
-			.frames_encoded  = status.frames_encoded,
-			.active_path     = status.active_path,
+			.frames_encoded = status.frames_encoded,
+			.active_path = status.active_path,
 		};
 	};
 
@@ -743,7 +284,14 @@ int main(int argc, char **argv) {
 
 	std::optional<CameraControlProvider> camera_control_provider{};
 	std::optional<SvoRecorderProvider> svo_recorder_provider{};
-	app::backends::BackendHandle backend;
+
+	auto frame_publisher = FramePublisher::Create(config, sock);
+	if (!frame_publisher) {
+		spdlog::error("{}", frame_publisher.error());
+		return 1;
+	}
+	BodyTrackingPublisher body_tracking_publisher(config.name, nats_service.get());
+	app::backends::BackendAssembly assembly{};
 
 	const auto send_status = [&nats_service, nats_enabled](cvmmap::ModuleStatus status) {
 		if (!nats_enabled || !nats_service) {
@@ -757,7 +305,9 @@ int main(int argc, char **argv) {
 		configured_playlist.has_value()) {
 		auto resolved_playlist = playlist_controller->Resolve(*configured_playlist);
 		if (!resolved_playlist) {
-			spdlog::error("bad configured playlist resolution: {}", resolved_playlist.error().message);
+			spdlog::error(
+				"configured playlist resolution is invalid: {}",
+				resolved_playlist.error().message);
 			return 1;
 		}
 		playlist_controller->ReplaceState(std::move(*resolved_playlist));
@@ -770,7 +320,8 @@ int main(int argc, char **argv) {
 	std::atomic<PlaylistTransitionAction> pending_playlist_transition{
 		PlaylistTransitionAction::None};
 
-	const auto request_playlist_transition = [&pending_playlist_transition](PlaylistTransitionAction action) {
+	const auto request_playlist_transition = [&pending_playlist_transition](
+		PlaylistTransitionAction action) {
 		auto expected = PlaylistTransitionAction::None;
 		(void)pending_playlist_transition.compare_exchange_strong(
 			expected,
@@ -805,326 +356,161 @@ int main(int argc, char **argv) {
 		};
 	playlist_controller->ApplyCurrentPathToConfig();
 
-	const auto emplace_active_backend = [&]() -> bool {
-		switch (config.video.backend) {
-		case app::BackendType::Dummy: {
-			if (!config.dummy) {
-				spdlog::error("Dummy backend selected but [dummy] config section missing");
-				return false;
-			}
-			backend.emplace<app::backends::DummyBackend>(*config.dummy, config.video);
-			spdlog::info("using Dummy backend");
-			return true;
+	const auto refresh_camera_control_provider = [&]() {
+		camera_control_provider.reset();
+		if (!assembly.camera_control) {
+			return;
 		}
-#ifdef WITH_BACKEND_OPENCV
-		case app::BackendType::OpenCV: {
-			if (!config.opencv) {
-				spdlog::error("OpenCV backend selected but [opencv] config section missing");
-				return false;
-			}
-			backend.emplace<app::backends::OpenCVBackend>(
-				config.opencv->parameter,
-				config.video,
-				config.opencv->api_preference);
-			spdlog::info("using OpenCV backend");
-			return true;
-		}
-#else
-		case app::BackendType::OpenCV:
-			spdlog::error("OpenCV backend selected but unavailable in this build; reconfigure with -DBUILD_BACKEND_OPENCV=ON");
-			return false;
-#endif
-#ifdef WITH_BACKEND_GSTREAMER
-		case app::BackendType::GStreamer: {
-			if (!config.gstreamer) {
-				spdlog::error("GStreamer backend selected but [gstreamer] config section missing");
-				return false;
-			}
-			backend.emplace<app::backends::GStreamerBackend>(
-				config.gstreamer->pipeline,
-				config.video);
-			spdlog::info("using GStreamer backend");
-			return true;
-		}
-		case app::BackendType::UdpRtp: {
-			if (!config.udp_rtp) {
-				spdlog::error("UdpRtp backend selected but [udp_rtp] config section missing");
-				return false;
-			}
-			backend.emplace<app::backends::UdpRtpBackend>(*config.udp_rtp, config.video);
-			spdlog::info("using UdpRtp backend");
-			return true;
-		}
-#else
-		case app::BackendType::GStreamer:
-			spdlog::error("GStreamer backend selected but unavailable in this build; reconfigure with -DBUILD_BACKEND_GSTREAMER=ON");
-			return false;
-		case app::BackendType::UdpRtp:
-			spdlog::error("UdpRtp backend selected but unavailable in this build; reconfigure with -DBUILD_BACKEND_GSTREAMER=ON");
-			return false;
-#endif
-#ifdef WITH_BACKEND_MCAP
-		case app::BackendType::MCAP: {
-			if (!config.mcap) {
-				spdlog::error("MCAP backend selected but [mcap] config section missing");
-				return false;
-			}
-			backend.emplace<app::backends::McapBackend>(*config.mcap, config.video);
-			spdlog::info("using MCAP backend: {}", config.mcap->path);
-			return true;
-		}
-#else
-		case app::BackendType::MCAP:
-			spdlog::error("MCAP backend selected but unavailable in this build; reconfigure with -DBUILD_BACKEND_MCAP=ON");
-			return false;
-#endif
-		case app::BackendType::ZED: {
-#ifdef WITH_BACKEND_ZED
-			if (!config.zed) {
-				spdlog::error("ZED backend selected but [zed] config section missing");
-				return false;
-			}
-			backend.emplace<app::backends::ZedBackend>(*config.zed, config.video);
-			spdlog::info("using ZED backend");
-			return true;
-#else
-			spdlog::error("ZED backend selected but unavailable in this build; reconfigure with -DBUILD_BACKEND_ZED=ON");
-			return false;
-#endif
-		}
-		default:
-			spdlog::error("selected backend is not available in this build");
-			return false;
-		}
+		auto capability = *assembly.camera_control;
+		camera_control_provider = CameraControlProvider{
+			.capabilities = [capability = std::move(capability), &to_public_camera_control_capabilities]() mutable
+				-> cvmmap::expected<cvmmap::CameraControlCapabilities, cvmmap::ControlError> {
+				return to_public_camera_control_capabilities(
+					capability->GetCameraControlCapabilities());
+			},
+			.get = [capability = *assembly.camera_control, &map_backend_control_error, &to_public_camera_control_state](
+					const cvmmap::CameraControlSetting setting) mutable
+				-> cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError> {
+				auto result = capability->GetCameraControl(setting);
+				if (!result) {
+					return cvmmap::unexpected(
+						map_backend_control_error(result.error()));
+				}
+				return to_public_camera_control_state(*result);
+			},
+			.set = [capability = *assembly.camera_control, &map_backend_control_error, &to_public_camera_control_state](
+					const cvmmap::CameraControlRequest &request) mutable
+				-> cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError> {
+				backends::camera_control_request_t backend_request{
+					.setting = request.setting,
+					.mode = request.mode,
+					.value = request.value,
+				};
+				auto result = capability->SetCameraControl(backend_request);
+				if (!result) {
+					return cvmmap::unexpected(
+						map_backend_control_error(result.error()));
+				}
+				return to_public_camera_control_state(*result);
+			},
+			.set_range = [capability = *assembly.camera_control, &map_backend_control_error, &to_public_camera_control_state](
+					const cvmmap::CameraControlRangeRequest &request) mutable
+				-> cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError> {
+				backends::camera_control_range_request_t backend_request{
+					.setting = request.setting,
+					.min_value = request.min_value,
+					.max_value = request.max_value,
+				};
+				auto result = capability->SetCameraControlRange(backend_request);
+				if (!result) {
+					return cvmmap::unexpected(
+						map_backend_control_error(result.error()));
+				}
+				return to_public_camera_control_state(*result);
+			},
+		};
 	};
 
-	const auto bind_encoded_callback = [&]() {
-#ifdef WITH_BACKEND_GSTREAMER
-		if (auto *udp_rtp_backend = backend.get_if<app::backends::UdpRtpBackend>(); udp_rtp_backend != nullptr) {
-			udp_rtp_backend->SetOnEncodedAccessUnit(
-				[&pending_encoded_mutex, &pending_encoded_by_timestamp](const auto &access_unit) {
-					std::lock_guard lock(pending_encoded_mutex);
-					pending_encoded_by_timestamp[access_unit.source_timestamp_ns] = pending_encoded_access_unit_t{
-						.codec = access_unit.codec,
-						.bitstream_format = access_unit.bitstream_format,
-						.flags = access_unit.flags,
-						.frame_rate_num = access_unit.frame_rate_num,
-						.frame_rate_den = access_unit.frame_rate_den,
-						.source_timestamp_ns = access_unit.source_timestamp_ns,
-						.stream_pts_ns = access_unit.stream_pts_ns,
-						.bytes = access_unit.bytes,
-					};
-				});
+	const auto refresh_svo_recorder_provider = [&]() {
+		svo_recorder_provider.reset();
+		if (!assembly.svo_recordable) {
+			return;
 		}
-#endif
+		auto capability = *assembly.svo_recordable;
+		svo_recorder_provider = SvoRecorderProvider{
+			.is_available = [capability = *assembly.svo_recordable]() mutable {
+				auto status = capability->GetRecordingStatus();
+				return status && status->can_record;
+			},
+			.start = [capability = *assembly.svo_recordable, &map_recording_error, &to_public_recording_status](
+					 const cvmmap::SvoRecordingRequest &request) mutable
+				-> cvmmap::expected<cvmmap::SvoRecordingStatus, cvmmap::ControlError> {
+				backends::svo_recording_request_t backend_request{
+					.output_path = request.output_path,
+				};
+				if (request.svo_options) {
+					backend_request.options.compression_mode = request.svo_options->compression_mode;
+					backend_request.options.bitrate = request.svo_options->bitrate;
+					backend_request.options.target_framerate = request.svo_options->target_framerate;
+					backend_request.options.transcode_streaming_input =
+
+						request.svo_options->transcode_streaming_input;
+				}
+				auto result = capability->StartRecording(backend_request);
+				if (!result) {
+					return cvmmap::unexpected(
+						map_recording_error(result.error(), capability->GetLastRecordingError()));
+				}
+				return to_public_recording_status(*result);
+			},
+			.stop = [capability = *assembly.svo_recordable, &map_recording_error, &to_public_recording_status]() mutable
+				-> cvmmap::expected<cvmmap::SvoRecordingStatus, cvmmap::ControlError> {
+				auto result = capability->StopRecording();
+				if (!result) {
+					return cvmmap::unexpected(
+						map_recording_error(result.error(), capability->GetLastRecordingError()));
+				}
+				return to_public_recording_status(*result);
+			},
+			.status = [capability = std::move(capability), &map_recording_error, &to_public_recording_status]() mutable
+				-> cvmmap::expected<cvmmap::SvoRecordingStatus, cvmmap::ControlError> {
+				auto result = capability->GetRecordingStatus();
+				if (!result) {
+					return cvmmap::unexpected(
+						map_recording_error(result.error(), capability->GetLastRecordingError()));
+				}
+				return to_public_recording_status(*result);
+			},
+		};
 	};
 
 	const auto bind_backend_callbacks = [&]() {
-		backend.SetOnMetadata([&backend, &shm_state, &frame_state, &sync_msg, &config, &build_v2_metadata, &now_ns](const frame_metadata_t &metadata) {
-			const auto picture_buffer_size = metadata.info.buffer_size;
-			if (picture_buffer_size == 0) {
-				spdlog::error("received zero-sized picture buffer in metadata callback");
-				return;
-			}
-			const auto total_buffer_size = SHM_PAYLOAD_OFFSET + picture_buffer_size;
-
-#ifdef WITH_BACKEND_ZED
-			if (auto *zed_backend = backend.get_if<app::backends::ZedBackend>(); zed_backend != nullptr && frame_state) {
-				zed_backend->OnDirectOutputBufferWillReset(frame_state->image_buffer());
-			}
-#endif
-			auto fs = frame_state_t::open(shm_state.fd(), total_buffer_size);
-			if (not fs) {
-				spdlog::error("open frame state; {}", fs.error());
-				return;
-			}
-
-			auto initial_metadata         = metadata;
-			initial_metadata.frame_count  = 0;
-			initial_metadata.timestamp_ns = now_ns();
-			auto initial_metadata_v2      = build_v2_metadata(initial_metadata, picture_buffer_size);
-			if (!initial_metadata_v2) {
-				spdlog::error("bad initial ABI v2 metadata build");
-				return;
-			}
-			fs->write_metadata(*initial_metadata_v2);
-			frame_state = std::move(*fs);
-			sync_msg.emplace(config.name, 0);
+		auto backend = assembly.backend;
+		backend->SetOnMetadata([&frame_publisher, direct_frame = assembly.direct_frame](
+			const frame_metadata_t &metadata) mutable {
+			frame_publisher->OnMetadata(
+				metadata,
+				direct_frame
+					? FramePublisher::direct_buffer_reset_hook_t{[direct_frame = *direct_frame](std::span<const uint8_t> buffer) mutable {
+						direct_frame->OnDirectOutputBufferWillReset(buffer);
+					}}
+					: FramePublisher::direct_buffer_reset_hook_t{});
 		});
 
-#ifdef WITH_BACKEND_ZED
-		if (auto *zed_backend = backend.get_if<app::backends::ZedBackend>(); zed_backend != nullptr) {
-			zed_backend->SetOnFrameDirect([&frame_state,
-									 &sync_msg,
-									 &sock,
-									 &shm_state,
-									 &build_v2_metadata,
-									 zed_backend](app::backends::ZedDirectFrame frame) {
-				if (not frame_state || not sync_msg) {
-					spdlog::error("[BUG] ZED direct frame callback invoked before metadata callback (should not happen)");
-					return;
-				}
-				auto &fs = *frame_state;
-				if (frame.metadata.info.buffer_size > fs.image_buffer().size()) {
-					zed_backend->OnDirectOutputBufferWillReset(fs.image_buffer());
-					const auto total_buffer_size = SHM_PAYLOAD_OFFSET + static_cast<size_t>(frame.metadata.info.buffer_size);
-					auto resized_frame_state = frame_state_t::open(shm_state.fd(), total_buffer_size);
-					if (!resized_frame_state) {
-						spdlog::error("resize shared memory for ZED direct frame payload failed; {}", resized_frame_state.error());
-						return;
-					}
-					frame_state = std::move(*resized_frame_state);
-				}
-				auto packed_size = frame.fill_payload(frame_state->image_buffer());
-				if (!packed_size || *packed_size == 0) {
-					spdlog::error("failed to fill ZED direct frame payload");
-					return;
-				}
-				frame.metadata.info.buffer_size = static_cast<uint32_t>(*packed_size);
-				auto metadata_v2 = build_v2_metadata(frame.metadata, *packed_size);
-				if (!metadata_v2) {
-					spdlog::error("build ABI v2 metadata failed for direct ZED frame@{}", frame.metadata.frame_count);
-					return;
-				}
-				if (metadata_v2->header.payload_size_bytes > frame_state->image_buffer().size()) {
-					spdlog::error("direct ZED frame payload ({}) exceeds shared memory payload capacity ({})",
-							  metadata_v2->header.payload_size_bytes,
-							  frame_state->image_buffer().size());
-					return;
-				}
-				frame_state->write_metadata(*metadata_v2);
-				try {
-					std::array<uint8_t, sync_message_t::size()> buffer;
-					sync_msg->set_frame_count(frame.metadata.frame_count);
-					sync_msg->set_timestamp_ns(frame.metadata.timestamp_ns);
-					std::copy(sync_msg->as_uint8s().begin(), sync_msg->as_uint8s().end(), buffer.begin());
-					sock.send(zmq::buffer(buffer), zmq::send_flags::none);
-				} catch (const zmq::error_t &e) {
-					spdlog::error("send synchronization message for direct ZED frame@{}; {}", frame.metadata.frame_count, e.what());
-				}
+		if (assembly.direct_frame) {
+			auto direct_frame = *assembly.direct_frame;
+			direct_frame->SetOnDirectFrame(
+				[&frame_publisher, direct_frame = std::move(direct_frame)](backends::direct_frame_t frame) mutable {
+					frame_publisher->PublishDirectFrame(
+						std::move(frame),
+						[direct_frame](std::span<const uint8_t> buffer) mutable {
+							direct_frame->OnDirectOutputBufferWillReset(buffer);
+						});
+				});
+		} else {
+			backend->SetOnFrame([&frame_publisher](
+				std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata) {
+				frame_publisher->PublishFrame(frame_buffer, metadata);
 			});
 		}
-		else
-		#endif
-		backend.SetOnFrame([&frame_state,
-							&sync_msg,
-							&sock,
-							&shm_state,
-							&build_v2_metadata,
-							&undistort_pass,
-							&pending_encoded_mutex,
-							&pending_encoded_by_timestamp](std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata) {
-			if (not frame_state || not sync_msg) {
-				spdlog::error("[BUG] frame callback invoked before metadata callback (should not happen)");
-				return;
-			}
 
-			std::span<const uint8_t> output_buffer(frame_buffer.data(), frame_buffer.size());
-			if (undistort_pass) {
-				try {
-					output_buffer = undistort_pass->apply(output_buffer, metadata.info);
-				} catch (const std::exception &e) {
-					spdlog::error("bad undistort preprocess: {}", e.what());
-					return;
-				}
-			}
+		if (assembly.body_tracking) {
+			auto body_tracking = *assembly.body_tracking;
+			body_tracking->SetOnBodyTracking(
+				[&body_tracking_publisher](const cvmmap::body_tracking_frame_t &frame) {
+					body_tracking_publisher.Publish(frame);
+				});
+		}
 
-			const auto picture_buffer_size = output_buffer.size();
-			if (picture_buffer_size == 0) {
-				spdlog::error("received zero-sized frame buffer");
-				return;
-			}
-
-			std::optional<encoded_plane_view_t> encoded_plane{};
-			std::vector<uint8_t> encoded_plane_storage{};
-			{
-				std::lock_guard lock(pending_encoded_mutex);
-				auto it = pending_encoded_by_timestamp.find(metadata.timestamp_ns);
-				if (it != pending_encoded_by_timestamp.end()) {
-					encoded_plane_view_t plane{};
-					plane.codec = it->second.codec;
-					plane.bitstream_format = it->second.bitstream_format;
-					plane.flags = it->second.flags;
-					plane.frame_rate_num = it->second.frame_rate_num;
-					plane.frame_rate_den = it->second.frame_rate_den;
-					plane.stream_pts_ns = it->second.stream_pts_ns;
-					encoded_plane_storage = std::move(it->second.bytes);
-					plane.bytes = std::span<const uint8_t>(encoded_plane_storage.data(), encoded_plane_storage.size());
-					encoded_plane = plane;
-					pending_encoded_by_timestamp.erase(it);
-				}
-			}
-
-			const size_t total_payload_size = picture_buffer_size + (encoded_plane ? encoded_plane->bytes.size() : 0);
-			if (total_payload_size > frame_state->image_buffer().size()) {
-				const auto total_buffer_size = SHM_PAYLOAD_OFFSET + total_payload_size;
-				auto resized_frame_state     = frame_state_t::open(shm_state.fd(), total_buffer_size);
-				if (!resized_frame_state) {
-					spdlog::error("bad frame payload shared-memory resize; {}", resized_frame_state.error());
-					return;
-				}
-				frame_state = std::move(*resized_frame_state);
-			}
-
-			auto metadata_v2 = build_v2_metadata(metadata, picture_buffer_size, encoded_plane);
-			if (!metadata_v2) {
-				spdlog::error("bad ABI v2 metadata for frame@{}", metadata.frame_count);
-				return;
-			}
-
-			auto &fs = *frame_state;
-			if (metadata_v2->header.payload_size_bytes > fs.image_buffer().size()) {
-				spdlog::error("frame payload ({}) exceeds shared memory payload capacity ({})",
-							  metadata_v2->header.payload_size_bytes,
-							  fs.image_buffer().size());
-				return;
-			}
-			std::copy_n(output_buffer.begin(), output_buffer.size(), fs.image_buffer().begin());
-			if (encoded_plane && !encoded_plane->bytes.empty()) {
-				std::copy(
-					encoded_plane->bytes.begin(),
-					encoded_plane->bytes.end(),
-					fs.image_buffer().begin() + static_cast<std::ptrdiff_t>(output_buffer.size()));
-			}
-			fs.write_metadata(*metadata_v2);
-
-			try {
-				std::array<uint8_t, sync_message_t::size()> buffer;
-				sync_msg->set_frame_count(metadata.frame_count);
-				sync_msg->set_timestamp_ns(metadata.timestamp_ns);
-				std::copy(
-					sync_msg->as_uint8s().begin(),
-					sync_msg->as_uint8s().end(),
-					buffer.begin());
-#ifdef APP_DEBUG_SYNC_MESSAGE_DUMP
-				spdlog::debug("sync_msg hex dump:\n{}", hexdump(buffer));
-#endif
-				sock.send(zmq::buffer(buffer), zmq::send_flags::none);
-			} catch (const zmq::error_t &e) {
-				spdlog::error("send synchronization message for frame@{}; {}", metadata.frame_count, e.what());
-			}
-		});
-
-		backend.TrySetOnBodyTracking([&serialize_body_tracking_frame, &nats_service, nats_enabled](const cvmmap::body_tracking_frame_t &frame) {
-			if (!nats_enabled || !nats_service) {
-				return;
-			}
-			auto bytes = serialize_body_tracking_frame(frame);
-			nats_service->PublishBodyTracking(
-				std::span<const uint8_t>(bytes.data(), bytes.size()));
-		});
-
-		backend.SetOnError([&backend,
-							&exit_code,
-							&request_playlist_item_transition,
-							&request_playlist_transition](int error_code, std::string_view message) {
+		backend->SetOnError([&exit_code, &request_playlist_item_transition, &request_playlist_transition, backend](
+			int error_code, std::string_view message) mutable {
 			if (error_code == backends::ERR_EOS) {
 				spdlog::info("backend EOF: {}", message);
 				if (request_playlist_item_transition(false)) {
 					return;
 				}
 
-				const auto source_info = backend.GetSourceInfo();
+				const auto source_info = backend->GetSourceInfo();
 				if ((source_info.flags & cvmmap::SOURCE_INFO_FLAG_AUTO_LOOP) != 0) {
 					spdlog::info("looping finite stream (encore)");
 					if ((source_info.flags & cvmmap::SOURCE_INFO_FLAG_LOOP_EMITS_RESET) != 0) {
@@ -1139,151 +525,46 @@ int main(int argc, char **argv) {
 					spdlog::warn("skipping bad finite source item: {}", message);
 					return;
 				}
-				spdlog::error("bad finite source item: {}", message);
+				spdlog::error("finite source item is invalid: {}", message);
 			} else {
 				if (error_code == backends::ERR_FATAL_CAMERA_RECOVERY) {
 					exit_code = static_cast<int>(ProcessExitCode::FatalCameraRecovery);
 				}
-				spdlog::error("backend({}): {}", error_code, message);
+				spdlog::error("backend error {}: {}", error_code, message);
 			}
 			is_running.store(false, std::memory_order::relaxed);
 		});
 	};
 
-	const auto refresh_camera_control_provider = [&]() {
-		camera_control_provider.reset();
-		backend.TryVisitCameraControllable([&](auto &camera_backend) {
-			auto *camera_backend_ptr = &camera_backend;
-			camera_control_provider = CameraControlProvider{
-				.capabilities = [camera_backend_ptr, &to_public_camera_control_capabilities]()
-					-> cvmmap::expected<cvmmap::CameraControlCapabilities, cvmmap::ControlError> {
-					return to_public_camera_control_capabilities(
-						camera_backend_ptr->GetCameraControlCapabilities());
-				},
-				.get = [camera_backend_ptr, &map_backend_control_error, &to_public_camera_control_state](
-						const cvmmap::CameraControlSetting setting)
-					-> cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError> {
-					auto result = camera_backend_ptr->GetCameraControl(setting);
-					if (!result) {
-						return cvmmap::unexpected(map_backend_control_error(result.error()));
-					}
-					return to_public_camera_control_state(*result);
-				},
-				.set = [camera_backend_ptr, &map_backend_control_error, &to_public_camera_control_state](
-						const cvmmap::CameraControlRequest &request)
-					-> cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError> {
-					backends::camera_control_request_t backend_request{
-						.setting = request.setting,
-						.mode = request.mode,
-						.value = request.value,
-					};
-					auto result = camera_backend_ptr->SetCameraControl(backend_request);
-					if (!result) {
-						return cvmmap::unexpected(map_backend_control_error(result.error()));
-					}
-					return to_public_camera_control_state(*result);
-				},
-				.set_range = [camera_backend_ptr, &map_backend_control_error, &to_public_camera_control_state](
-						const cvmmap::CameraControlRangeRequest &request)
-					-> cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError> {
-					backends::camera_control_range_request_t backend_request{
-						.setting = request.setting,
-						.min_value = request.min_value,
-						.max_value = request.max_value,
-					};
-					auto result = camera_backend_ptr->SetCameraControlRange(backend_request);
-					if (!result) {
-						return cvmmap::unexpected(map_backend_control_error(result.error()));
-					}
-					return to_public_camera_control_state(*result);
-				},
-			};
-		});
-	};
-
-
-	const auto refresh_svo_recorder_provider = [&]() {
-		svo_recorder_provider.reset();
-		backend.TryVisitSvoRecordable([&](auto &recordable_backend) {
-			auto *recordable_backend_ptr = &recordable_backend;
-			svo_recorder_provider = SvoRecorderProvider{
-				.is_available = [recordable_backend_ptr]() {
-					auto status = recordable_backend_ptr->GetRecordingStatus();
-					return status && status->can_record;
-				},
-				.start = [recordable_backend_ptr, &map_recording_error, &to_public_recording_status](
-							 const cvmmap::SvoRecordingRequest &request)
-					-> cvmmap::expected<cvmmap::SvoRecordingStatus, cvmmap::ControlError> {
-					backends::svo_recording_request_t backend_request{
-						.output_path = request.output_path,
-					};
-					if (request.svo_options) {
-						backend_request.options.compression_mode = request.svo_options->compression_mode;
-						backend_request.options.bitrate = request.svo_options->bitrate;
-						backend_request.options.target_framerate = request.svo_options->target_framerate;
-						backend_request.options.transcode_streaming_input =
-							request.svo_options->transcode_streaming_input;
-					}
-					auto result = recordable_backend_ptr->StartRecording(backend_request);
-					if (!result) {
-						return cvmmap::unexpected(
-							map_recording_error(result.error(), recordable_backend_ptr->GetLastRecordingError()));
-					}
-					return to_public_recording_status(*result);
-				},
-				.stop = [recordable_backend_ptr, &map_recording_error, &to_public_recording_status]()
-					-> cvmmap::expected<cvmmap::SvoRecordingStatus, cvmmap::ControlError> {
-					auto result = recordable_backend_ptr->StopRecording();
-					if (!result) {
-						return cvmmap::unexpected(
-							map_recording_error(result.error(), recordable_backend_ptr->GetLastRecordingError()));
-					}
-					return to_public_recording_status(*result);
-				},
-				.status = [recordable_backend_ptr, &map_recording_error, &to_public_recording_status]()
-					-> cvmmap::expected<cvmmap::SvoRecordingStatus, cvmmap::ControlError> {
-					auto result = recordable_backend_ptr->GetRecordingStatus();
-					if (!result) {
-						return cvmmap::unexpected(
-							map_recording_error(result.error(), recordable_backend_ptr->GetLastRecordingError()));
-					}
-					return to_public_recording_status(*result);
-				},
-			};
-		});
-	};
-
 	const auto initialize_active_backend = [&]() -> bool {
-		if (!emplace_active_backend()) {
+		auto created_assembly = app::backends::MakeBackendAssembly(config);
+		if (!created_assembly) {
+			spdlog::error("{}", created_assembly.error());
 			return false;
 		}
-		bind_encoded_callback();
+		assembly = std::move(*created_assembly);
+		frame_publisher->Reset();
+		if (assembly.encoded_access_unit) {
+			auto encoded_access_unit = *assembly.encoded_access_unit;
+			encoded_access_unit->SetOnEncodedAccessUnit(
+				[&frame_publisher](const backends::encoded_access_unit_t &access_unit) {
+					frame_publisher->OnEncodedAccessUnit(access_unit);
+				});
+		}
 		bind_backend_callbacks();
 		refresh_camera_control_provider();
 		refresh_svo_recorder_provider();
-		backend.Init();
+		assembly.backend->Init();
 		return true;
 	};
 
 	// Mutex to protect backend calls from concurrent NATS and ZMQ threads
 	std::mutex backend_control_mutex;
 
-	const auto seek_timestamp = [&backend](const uint64_t timestamp_ns)
-		-> cvmmap::expected<backends::seek_result_t, backends::error_t> {
-		return backend.SeekTimestampNs(timestamp_ns);
+	const auto reset_runtime_frame_state = [&frame_publisher]() {
+		frame_publisher->Reset();
 	};
 
-	const auto reset_runtime_frame_state = [&frame_state,
-											&sync_msg,
-											&pending_encoded_mutex,
-											&pending_encoded_by_timestamp]() {
-		frame_state.reset();
-		sync_msg.reset();
-		{
-			std::lock_guard lock(pending_encoded_mutex);
-			pending_encoded_by_timestamp.clear();
-		}
-	};
 
 	struct BackendSourcePathSnapshot {
 		std::string mcap_path{};
@@ -1311,7 +592,7 @@ int main(int argc, char **argv) {
 			return -EINVAL;
 		}
 
-		backend.Shutdown();
+		assembly.backend->Shutdown();
 		playlist_controller->ApplyCurrentPathToConfig();
 		reset_runtime_frame_state();
 
@@ -1338,7 +619,7 @@ int main(int argc, char **argv) {
 	};
 
 	const auto apply_resolved_playlist =
-		[&backend,
+		[&assembly,
 		 &initialize_active_backend,
 		 &playlist_controller,
 		 &pending_playlist_transition,
@@ -1355,27 +636,27 @@ int main(int argc, char **argv) {
 			PlaylistTransitionAction::None,
 			std::memory_order_relaxed);
 
-		backend.Shutdown();
+		assembly.backend->Shutdown();
 		playlist_controller->ReplaceState(std::move(resolved_playlist));
 		playlist_controller->ApplyCurrentPathToConfig();
 		reset_runtime_frame_state();
 
 		if (!initialize_active_backend()) {
-			spdlog::error("bad applied playlist activation; attempting rollback");
+			spdlog::error("applied playlist activation is invalid; attempting rollback");
 			playlist_controller->RestoreState(previous_state);
 			restore_backend_source_path(previous_source_path);
 			reset_runtime_frame_state();
 			if (!initialize_active_backend()) {
-				spdlog::critical("playlist apply rollback failed; stopping producer");
+				spdlog::critical("playlist apply rollback error; stopping producer");
 				is_running.store(false, std::memory_order::relaxed);
 				return cvmmap::unexpected(cvmmap::ControlError{
 					.code = cvmmap::ControlErrorCode::Error,
-					.message = "failed to apply playlist and rollback failed",
+					.message = "playlist apply rollback error after activation error",
 				});
 			}
 			return cvmmap::unexpected(cvmmap::ControlError{
 				.code = cvmmap::ControlErrorCode::Error,
-				.message = "failed to activate the applied playlist; previous source restored",
+				.message = "applied playlist could not be activated; previous source restored",
 			});
 		}
 
@@ -1389,11 +670,12 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 
+
 	// Wire up NATS handlers and start service only when transport is enabled.
 	if (nats_enabled) {
 		cvmmap::NatsControlHandlers nats_handlers;
 		nats_handlers.on_reset_frame_count =
-			[&backend,
+			[&assembly,
 			 &backend_control_mutex,
 			 &map_control_error_code,
 			 &playlist_controller,
@@ -1403,21 +685,11 @@ int main(int argc, char **argv) {
 					playlist_controller->CurrentIndex() != 0) {
 					return map_control_error_code(switch_playlist_item(0, false));
 				}
-				return map_control_error_code(backend.ResetFrameCount());
+				return map_control_error_code(assembly.backend->ResetFrameCount());
 			};
-		nats_handlers.on_get_source_info = [&backend]() {
-			return backend.GetSourceInfo();
+		nats_handlers.on_get_source_info = [&assembly]() {
+			return assembly.backend->GetSourceInfo();
 		};
-		nats_handlers.on_seek_timestamp =
-			[&backend_control_mutex, &map_control_error_code, &seek_timestamp](uint64_t ts) {
-				std::lock_guard lock(backend_control_mutex);
-				auto result = seek_timestamp(ts);
-				if (!result) {
-					return cvmmap::expected<app::backends::seek_result_t, cvmmap::ControlErrorCode>(
-						cvmmap::unexpected(map_control_error_code(result.error())));
-				}
-				return cvmmap::expected<app::backends::seek_result_t, cvmmap::ControlErrorCode>(*result);
-			};
 		nats_handlers.on_apply_playlist =
 			[&apply_resolved_playlist,
 			 &any_recording_active,
@@ -1550,8 +822,8 @@ int main(int argc, char **argv) {
 		};
 		nats_service->SetHandlers(std::move(nats_handlers));
 		if (!nats_service->Start()) {
-			spdlog::error("bad NATS control service startup on '{}'", config.nats.url);
-			backend.Shutdown();
+			spdlog::error("NATS control service could not start on '{}'", config.nats.url);
+			assembly.backend->Shutdown();
 			return 1;
 		}
 	}
@@ -1577,7 +849,7 @@ int main(int argc, char **argv) {
 				break;
 			case PlaylistTransitionAction::ResetActiveEmitReset:
 			case PlaylistTransitionAction::ResetActiveSilent:
-				rc = backend.ResetFrameCount();
+				rc = assembly.backend->ResetFrameCount();
 				if (rc == backends::ERR_OK &&
 					transition == PlaylistTransitionAction::ResetActiveEmitReset) {
 					send_status(cvmmap::ModuleStatus::StreamReset);
@@ -1588,7 +860,7 @@ int main(int argc, char **argv) {
 				break;
 			}
 			if (rc != backends::ERR_OK) {
-				spdlog::error("playlist transition failed: {}", rc);
+				spdlog::error("playlist transition error: {}", rc);
 				if (transition != PlaylistTransitionAction::ResetActiveSilent) {
 					is_running.store(false, std::memory_order::relaxed);
 				}
@@ -1598,7 +870,7 @@ int main(int argc, char **argv) {
 		std::this_thread::sleep_for(std::chrono::milliseconds{100});
 	}
 
-	backend.Shutdown();
+	assembly.backend->Shutdown();
 	send_status(cvmmap::ModuleStatus::Offline);
 	if (nats_service) {
 		nats_service->Stop();

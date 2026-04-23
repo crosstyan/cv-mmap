@@ -27,11 +27,6 @@ struct SourceInfo {
 	uint32_t current_frame_count{0};
 
 	[[nodiscard]]
-	bool can_seek() const {
-		return (flags & SOURCE_INFO_FLAG_CAN_SEEK) != 0;
-	}
-
-	[[nodiscard]]
 	bool auto_loop() const {
 		return (flags & SOURCE_INFO_FLAG_AUTO_LOOP) != 0;
 	}
@@ -57,13 +52,6 @@ struct SourceInfo {
 	}
 };
 
-struct SeekResult {
-	uint64_t requested_timestamp_ns{0};
-	uint64_t landed_timestamp_ns{0};
-	uint32_t landed_frame_count{0};
-	bool exact_match{false};
-};
-
 struct SvoRecordingStatus {
 	bool can_record{false};
 	bool is_recording{false};
@@ -79,9 +67,6 @@ struct ControlError {
 	std::string message{};
 };
 
-struct SourceControlCapabilities {
-	bool can_seek{false};
-};
 
 struct CameraControlState {
 	CameraControlSetting setting{CameraControlSetting::Unknown};
@@ -258,11 +243,6 @@ public:
 	GetSourceInfo(std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
-	cvmmap::expected<SeekResult, ControlErrorCode>
-	SeekTimestampNs(uint64_t timestamp_ns,
-				   std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
-
-	[[nodiscard]]
 	cvmmap::expected<PlaylistInfo, ControlError>
 	ApplyPlaylist(const PlaylistRequest &request,
 				  std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
@@ -270,11 +250,6 @@ public:
 	[[nodiscard]]
 	cvmmap::expected<PlaylistInfo, ControlError>
 	GetPlaylistInfo(std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
-
-	[[nodiscard]]
-	cvmmap::expected<SourceControlCapabilities, ControlError>
-	GetSourceCapabilities(
-		std::chrono::milliseconds timeout = DEFAULT_CONTROL_TIMEOUT);
 
 	[[nodiscard]]
 	cvmmap::expected<CameraControlCapabilities, ControlError>

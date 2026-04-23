@@ -263,12 +263,10 @@ void fill_svo_recording_status_response(
 	response.set_active_path(status.active_path);
 }
 
-void fill_capabilities_response(
+void fill_recording_capabilities_response(
 	pb::CapabilitiesResponse &response,
-	const bool can_seek,
 	const std::initializer_list<RecordingFormat> available_formats) {
 	response.set_error(pb::ERROR_CODE_OK);
-	response.set_can_seek(can_seek);
 	for (const auto format : available_formats) {
 		response.add_available_recording_formats(
 			to_proto_recording_format(format));
@@ -410,7 +408,7 @@ struct NatsControlService::impl {
 		const auto size = response.ByteSizeLong();
 		std::vector<uint8_t> bytes(size);
 		if (!response.SerializeToArray(bytes.data(), static_cast<int>(size))) {
-			return micro_Errorf("failed to serialize protobuf response");
+			return micro_Errorf("protobuf response serialization error");
 		}
 		return microRequest_Respond(
 			request,
@@ -509,49 +507,6 @@ struct NatsControlService::impl {
 		return self->reply(request, response);
 	}
 
-	static microError *on_source_seek_req(microRequest *request) {
-		auto *self = from_request(request);
-		pb::SeekTimestampResponse response;
-		if (!self->handlers.on_seek_timestamp) {
-			response.set_error(pb::ERROR_CODE_UNSUPPORTED);
-			return self->reply(request, response);
-		}
-
-		pb::SeekTimestampRequest wire_request;
-		if (!parse_request(request, &wire_request)) {
-			response.set_error(pb::ERROR_CODE_INVALID_PAYLOAD);
-			return self->reply(request, response);
-		}
-
-		auto result = self->handlers.on_seek_timestamp(
-			wire_request.target_timestamp_ns());
-		if (!result) {
-			response.set_error(map_control_error_code(result.error()));
-			return self->reply(request, response);
-		}
-
-		response.set_error(pb::ERROR_CODE_OK);
-		response.set_requested_timestamp_ns(result->requested_timestamp_ns);
-		response.set_landed_timestamp_ns(result->landed_timestamp_ns);
-		response.set_landed_frame_count(result->landed_frame_count);
-		response.set_exact_match(result->exact_match);
-		return self->reply(request, response);
-	}
-
-	static microError *on_source_capabilities_req(microRequest *request) {
-		auto *self = from_request(request);
-		pb::CapabilitiesResponse response;
-		if (self->handlers.on_get_source_info) {
-			const auto info = self->handlers.on_get_source_info();
-			fill_capabilities_response(
-				response,
-				(info.flags & SOURCE_INFO_FLAG_CAN_SEEK) != 0,
-				{});
-		} else {
-			response.set_error(pb::ERROR_CODE_UNSUPPORTED);
-		}
-		return self->reply(request, response);
-	}
 
 	static microError *on_source_playlist_apply_req(microRequest *request) {
 		auto *self = from_request(request);
@@ -756,9 +711,8 @@ static microError *on_camera_control_set_range_req(microRequest *request) {
 			self->handlers.on_get_svo_recording_capabilities ?
 				self->handlers.on_get_svo_recording_capabilities() :
 				SvoRecordingCapabilities{};
-		fill_capabilities_response(
+		fill_recording_capabilities_response(
 			response,
-			false,
 			capabilities.can_record ? std::initializer_list<RecordingFormat>{RecordingFormat::Svo}
 									: std::initializer_list<RecordingFormat>{});
 		return self->reply(request, response);
@@ -920,7 +874,7 @@ bool NatsControlService::Start() {
 
 	if (auto *error = micro_AddService(&pimpl_->service, pimpl_->conn, &service_config)) {
 		spdlog::error(
-			"failed to start nats micro service '{}': {}",
+			"nats micro service start error '{}': {}",
 			kNatsMicroServiceName,
 			micro_error_to_string(error));
 		microError_Destroy(error);
@@ -937,7 +891,7 @@ bool NatsControlService::Start() {
 			endpoint_config.Handler = handler;
 			if (auto *error = microService_AddEndpoint(pimpl_->service, &endpoint_config)) {
 				spdlog::error(
-					"failed to add nats micro endpoint '{}' on '{}': {}",
+					"nats micro endpoint registration error '{}' on '{}': {}",
 					name,
 					subject,
 					micro_error_to_string(error));
@@ -949,8 +903,6 @@ bool NatsControlService::Start() {
 
 	const auto all_added =
 		add_endpoint("source_reset", nats::subject_producer_source_reset(target_key), impl::on_source_reset_req) &&
-		add_endpoint("source_capabilities", nats::subject_producer_source_capabilities(target_key), impl::on_source_capabilities_req) &&
-		add_endpoint("source_seek", nats::subject_producer_source_seek(target_key), impl::on_source_seek_req) &&
 		add_endpoint("source_playlist_apply", nats::subject_producer_source_playlist_apply(target_key), impl::on_source_playlist_apply_req) &&
 		add_endpoint("source_playlist_info", nats::subject_producer_source_playlist_info(target_key), impl::on_source_playlist_info_req) &&
 		add_endpoint("camera_control_capabilities", nats::subject_producer_camera_control_capabilities(target_key), impl::on_camera_control_capabilities_req) &&
@@ -993,7 +945,7 @@ void NatsControlService::Stop() {
 	if (pimpl_->service) {
 		if (auto *error = microService_Destroy(pimpl_->service)) {
 			spdlog::error(
-				"failed to stop nats micro service '{}': {}",
+				"nats micro service stop error '{}': {}",
 				kNatsMicroServiceName,
 				micro_error_to_string(error));
 			microError_Destroy(error);

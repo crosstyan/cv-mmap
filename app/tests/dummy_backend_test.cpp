@@ -149,48 +149,6 @@ int test_reset_rewinds_to_first_finite_frame() {
 	return 0;
 }
 
-int test_seek_emits_landed_finite_frame() {
-	DummyConfig dummy_cfg{};
-	dummy_cfg.fps = 10;
-	dummy_cfg.frames = 5;
-
-	VideoConfig video_cfg{};
-	video_cfg.backend = BackendType::Dummy;
-	video_cfg.finite_stream_ending_behavior = FiniteStreamEndingBehavior::Stop;
-
-	DummyBackend backend(dummy_cfg, video_cfg);
-	FrameCollector collector;
-	backend.SetOnFrame(
-		[&](std::span<uint8_t>, const auto &metadata) {
-			collector.push(metadata.frame_count, metadata.timestamp_ns);
-		});
-	backend.Init();
-	if (!collector.wait_for_count(1, std::chrono::milliseconds(100))) {
-		backend.Shutdown();
-		return 1;
-	}
-
-	const auto target_timestamp_ns = 200000000ull;
-	const auto seek_result = backend.SeekTimestampNs(target_timestamp_ns);
-	if (!seek_result) {
-		backend.Shutdown();
-		return 2;
-	}
-	if (!collector.wait_for_count(2, std::chrono::milliseconds(250))) {
-		backend.Shutdown();
-		return 3;
-	}
-	backend.Shutdown();
-
-	const auto landed = collector.at(1);
-	if (landed.frame_count != 0) {
-		return 4;
-	}
-	if (landed.timestamp_ns != target_timestamp_ns) {
-		return 5;
-	}
-	return 0;
-}
 
 int test_loop_silent_wraps_to_first_finite_frame() {
 	DummyConfig dummy_cfg{};
@@ -242,7 +200,7 @@ int test_invalid_override_font_path_fails_startup() {
 	}
 }
 
-int test_finite_source_info_stays_seekable() {
+int test_finite_source_info_reflects_finite_flags() {
 	DummyConfig dummy_cfg{};
 	dummy_cfg.frames = 5;
 
@@ -261,14 +219,11 @@ int test_finite_source_info_stays_seekable() {
 	if (source_info.timestamp_domain != cvmmap::TimestampDomain::MediaTimeNs) {
 		return 2;
 	}
-	if ((source_info.flags & cvmmap::SOURCE_INFO_FLAG_CAN_SEEK) == 0) {
+	if ((source_info.flags & cvmmap::SOURCE_INFO_FLAG_AUTO_LOOP) == 0) {
 		return 3;
 	}
-	if ((source_info.flags & cvmmap::SOURCE_INFO_FLAG_AUTO_LOOP) == 0) {
-		return 4;
-	}
 	if ((source_info.flags & cvmmap::SOURCE_INFO_FLAG_LOOP_EMITS_RESET) == 0) {
-		return 5;
+		return 4;
 	}
 
 	return 0;
@@ -283,16 +238,13 @@ int main() {
 	if (const auto rc = test_reset_rewinds_to_first_finite_frame(); rc != 0) {
 		return 20 + rc;
 	}
-	if (const auto rc = test_seek_emits_landed_finite_frame(); rc != 0) {
-		return 30 + rc;
-	}
 	if (const auto rc = test_loop_silent_wraps_to_first_finite_frame(); rc != 0) {
 		return 40 + rc;
 	}
 	if (const auto rc = test_invalid_override_font_path_fails_startup(); rc != 0) {
 		return 50 + rc;
 	}
-	if (const auto rc = test_finite_source_info_stays_seekable(); rc != 0) {
+	if (const auto rc = test_finite_source_info_reflects_finite_flags(); rc != 0) {
 		return 60 + rc;
 	}
 	return 0;

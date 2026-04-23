@@ -28,13 +28,6 @@ struct source_info_t {
 	uint32_t current_frame_count{0};
 };
 
-struct seek_result_t {
-	uint64_t requested_timestamp_ns{0};
-	uint64_t landed_timestamp_ns{0};
-	uint32_t landed_frame_count{0};
-	bool exact_match{false};
-};
-
 struct recording_status_t {
 	cvmmap::RecordingFormat format{cvmmap::RecordingFormat::Unknown};
 	bool can_record{false};

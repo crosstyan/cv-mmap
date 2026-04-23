@@ -151,12 +151,6 @@ struct GStreamerBackendImpl {
 	}
 
 	[[nodiscard]]
-	bool effective_can_seek() const {
-		return finite_source_info.has_value() &&
-			   options.video_config.finite_source_can_seek();
-	}
-
-	[[nodiscard]]
 	source_info_t GetSourceInfo() {
 		std::lock_guard lock(state_mutex);
 		source_info_t info{};
@@ -168,9 +162,6 @@ struct GStreamerBackendImpl {
 				finite_source_info->duration_ns - static_cast<int64_t>(finite_frame_interval_ns()),
 				0));
 			info.duration_ns       = static_cast<uint64_t>(finite_source_info->duration_ns);
-			if (options.video_config.finite_source_can_seek()) {
-				info.flags |= cvmmap::SOURCE_INFO_FLAG_CAN_SEEK;
-			}
 			if (options.video_config.finite_source_auto_loops()) {
 				info.flags |= cvmmap::SOURCE_INFO_FLAG_AUTO_LOOP;
 			}
@@ -433,13 +424,12 @@ struct GStreamerBackendImpl {
 		// Check for finite source
 		finite_source_info = check_finite_source();
 		if (finite_source_info) {
-			spdlog::info("detected finite source; fps={} ({}ms), duration={}s, estimated_frames={}, auto_loops={}, can_seek={}",
+			spdlog::info("detected finite source; fps={} ({}ms), duration={}s, estimated_frames={}, auto_loops={}",
 						 finite_source_info->fps,
 						 finite_source_info->frame_interval().count(),
 						 finite_source_info->duration_ns / 1e9,
 						 finite_source_info->estimated_frame_count(),
-						 options.video_config.finite_source_auto_loops(),
-						 options.video_config.finite_source_can_seek());
+						 options.video_config.finite_source_auto_loops());
 		} else {
 			spdlog::info("infinite source detected (live stream)");
 		}
@@ -579,46 +569,6 @@ struct GStreamerBackendImpl {
 		_on_error = std::move(on_error_);
 	}
 
-	cvmmap::expected<seek_result_t, error_t> SeekTimestampNs(uint64_t timestamp_ns) {
-		if (!finite_source_info) {
-			return cvmmap::unexpected(-EOPNOTSUPP);
-		}
-		if (!effective_can_seek()) {
-			return cvmmap::unexpected(-EOPNOTSUPP);
-		}
-		if (!pipeline) {
-			return cvmmap::unexpected(-ENODEV);
-		}
-
-		const auto duration = static_cast<uint64_t>(finite_source_info->duration_ns);
-		if (timestamp_ns > duration) {
-			return cvmmap::unexpected(-ERANGE);
-		}
-
-		const auto interval_ns         = finite_frame_interval_ns();
-		const auto frame_index         = interval_ns == 0 ? 0u : static_cast<uint32_t>((timestamp_ns + interval_ns - 1) / interval_ns);
-		const auto landed_timestamp_ns = interval_ns == 0 ? timestamp_ns : static_cast<uint64_t>(frame_index) * interval_ns;
-
-		std::lock_guard lock(state_mutex);
-		bool success = gst_element_seek_simple(
-			pipeline, GST_FORMAT_TIME,
-			static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT),
-			static_cast<gint64>(timestamp_ns));
-		if (!success) {
-			return cvmmap::unexpected(-EIO);
-		}
-
-		source_frame_index    = frame_index;
-		metadata.frame_count  = 0;
-		metadata.timestamp_ns = landed_timestamp_ns;
-		return seek_result_t{
-			.requested_timestamp_ns = timestamp_ns,
-			.landed_timestamp_ns    = landed_timestamp_ns,
-			.landed_frame_count     = metadata.frame_count,
-			.exact_match            = landed_timestamp_ns == timestamp_ns,
-		};
-	}
-
 	error_t ResetFrameCount() {
 		std::lock_guard lock(state_mutex);
 		if (finite_source_info && options.video_config.finite_source_can_seek()) {
@@ -673,10 +623,6 @@ void GStreamerBackend::SetOnError(on_error_fn_t on_error) {
 
 source_info_t GStreamerBackend::GetSourceInfo() {
 	return impl->GetSourceInfo();
-}
-
-cvmmap::expected<seek_result_t, error_t> GStreamerBackend::SeekTimestampNs(uint64_t timestamp_ns) {
-	return impl->SeekTimestampNs(timestamp_ns);
 }
 
 error_t GStreamerBackend::ResetFrameCount() {
