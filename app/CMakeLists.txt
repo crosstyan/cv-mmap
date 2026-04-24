@@ -264,7 +264,7 @@ endif()
 
 add_library(app_video_backends STATIC)
 target_include_directories(app_video_backends PUBLIC backends)
-target_sources(app_video_backends PRIVATE backends/app_backends_dummy.cpp)
+target_sources(app_video_backends PRIVATE backends/dummy/app_backends_dummy.cpp)
 target_sources(app_video_backends PRIVATE backends/app_backends_playlist.cpp)
 target_sources(app_video_backends PRIVATE backends/app_backend_factory.cpp)
 target_link_libraries(app_video_backends PRIVATE cvmmap_stb_truetype_headers)
@@ -276,19 +276,19 @@ target_compile_definitions(app_video_backends
 
 if (WITH_BACKEND_OPENCV)
 		target_compile_definitions(app_video_backends PUBLIC WITH_BACKEND_OPENCV=1)
-		target_sources(app_video_backends PRIVATE backends/app_backends_opencv.cpp)
+		target_sources(app_video_backends PRIVATE backends/opencv/app_backends_opencv.cpp)
 		target_include_directories(app_video_backends PRIVATE ${OpenCV_INCLUDE_DIRS})
 		target_link_libraries(app_video_backends PRIVATE opencv_videoio)
 endif()
 if (WITH_BACKEND_GSTREAMER)
         target_compile_definitions(app_video_backends PUBLIC WITH_BACKEND_GSTREAMER=1) 
-        target_sources(app_video_backends PRIVATE backends/app_backends_gst.cpp)
-        target_sources(app_video_backends PRIVATE backends/app_backends_udp_rtp.cpp)
+        target_sources(app_video_backends PRIVATE backends/gstreamer/app_backends_gst.cpp)
+        target_sources(app_video_backends PRIVATE backends/udp_rtp/app_backends_udp_rtp.cpp)
         target_link_libraries(app_video_backends PRIVATE PkgConfig::GST)
 endif()
 if (WITH_BACKEND_MCAP)
 		target_compile_definitions(app_video_backends PUBLIC WITH_BACKEND_MCAP=1)
-		target_sources(app_video_backends PRIVATE backends/app_backends_mcap.cpp)
+		target_sources(app_video_backends PRIVATE backends/mcap/app_backends_mcap.cpp)
 		target_link_libraries(app_video_backends PRIVATE app_mcap_headers app_mcap_proto PkgConfig::FFMPEG_LIBAV rvl::rvl)
 		if (TARGET PkgConfig::MCAP_COMPRESSION_LIBS)
 			target_link_libraries(app_video_backends PRIVATE PkgConfig::MCAP_COMPRESSION_LIBS)
@@ -314,7 +314,13 @@ if (WITH_BACKEND_ZED)
         endif()
 
         target_compile_definitions(app_video_backends PUBLIC WITH_BACKEND_ZED=1)
-        target_sources(app_video_backends PRIVATE backends/app_backends_zed.cpp backends/zed/zed_sdk_utils.cpp)
+        target_sources(app_video_backends PRIVATE
+			backends/zed/app_backends_zed.cpp
+			backends/zed/zed_sdk_utils.cpp
+			backends/zed/zed_capture_pipeline.cpp
+			backends/zed/zed_camera_controls.cpp
+			backends/zed/zed_recording.cpp
+			backends/zed/zed_lifecycle.cpp)
         target_link_libraries(app_video_backends PRIVATE ${ZED_LIBS})
 endif()
 

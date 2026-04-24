@@ -3,20 +3,20 @@
 #include <memory>
 #include <utility>
 
-#include "app_backends_dummy.hpp"
+#include "dummy/app_backends_dummy.hpp"
 #include "app_config.hpp"
 #ifdef WITH_BACKEND_OPENCV
-#include "app_backends_opencv.hpp"
+#include "opencv/app_backends_opencv.hpp"
 #endif
 #ifdef WITH_BACKEND_GSTREAMER
-#include "app_backends_gst.hpp"
-#include "app_backends_udp_rtp.hpp"
+#include "gstreamer/app_backends_gst.hpp"
+#include "udp_rtp/app_backends_udp_rtp.hpp"
 #endif
 #ifdef WITH_BACKEND_MCAP
-#include "app_backends_mcap.hpp"
+#include "mcap/app_backends_mcap.hpp"
 #endif
 #ifdef WITH_BACKEND_ZED
-#include "app_backends_zed.hpp"
+#include "zed/app_backends_zed.hpp"
 #endif
 
 namespace app::backends {

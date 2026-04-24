@@ -8,8 +8,8 @@
 
 #include <spdlog/spdlog.h>
 
-#include "app_backends_mcap.hpp"
-#include "app_backends_zed.hpp"
+#include "mcap/app_backends_mcap.hpp"
+#include "zed/app_backends_zed.hpp"
 #include "app_config.hpp"
 
 namespace {
