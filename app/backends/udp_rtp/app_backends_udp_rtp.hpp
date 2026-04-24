@@ -2,6 +2,7 @@
 #define B64F0D43_7776_4423_8B0F_8C67333E4434
 
 #include <memory>
+#include <span>
 
 #include <cvmmap/compat/expected.hpp>
 #include <cvmmap/compat/functional.hpp>
@@ -27,6 +28,8 @@ struct UdpRtpBackend {
 	void Shutdown();
 	void SetOnMetadata(on_metadata_fn_t on_metadata);
 	void SetOnFrame(on_frame_fn_t on_frame);
+	void SetOnDirectFrame(on_direct_frame_fn_t on_direct_frame);
+	void OnDirectOutputBufferWillReset(std::span<const uint8_t> output_buffer);
 	void SetOnError(on_error_fn_t on_error);
 	void SetOnEncodedAccessUnit(on_encoded_access_unit_fn_t on_encoded_access_unit);
 	source_info_t GetSourceInfo();

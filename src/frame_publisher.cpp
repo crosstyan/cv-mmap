@@ -19,41 +19,41 @@ namespace app {
 
 namespace {
 
-constexpr size_t MIN_SHARED_PAYLOAD_CAPACITY = 1024 * 1024;
-constexpr size_t MAX_SHARED_PAYLOAD_CAPACITY =
-	std::numeric_limits<uint32_t>::max();
+	constexpr size_t MIN_SHARED_PAYLOAD_CAPACITY = 1024 * 1024;
+	constexpr size_t MAX_SHARED_PAYLOAD_CAPACITY =
+		std::numeric_limits<uint32_t>::max();
 
-std::optional<size_t> shared_payload_capacity_for(size_t payload_size) {
-	if (payload_size == 0 ||
-		payload_size > MAX_SHARED_PAYLOAD_CAPACITY) {
-		return std::nullopt;
-	}
-
-	size_t capacity = MIN_SHARED_PAYLOAD_CAPACITY;
-	while (capacity < payload_size) {
-		if (capacity > MAX_SHARED_PAYLOAD_CAPACITY / 2) {
-			return MAX_SHARED_PAYLOAD_CAPACITY;
+	std::optional<size_t> shared_payload_capacity_for(size_t payload_size) {
+		if (payload_size == 0 ||
+			payload_size > MAX_SHARED_PAYLOAD_CAPACITY) {
+			return std::nullopt;
 		}
-		capacity *= 2;
+
+		size_t capacity = MIN_SHARED_PAYLOAD_CAPACITY;
+		while (capacity < payload_size) {
+			if (capacity > MAX_SHARED_PAYLOAD_CAPACITY / 2) {
+				return MAX_SHARED_PAYLOAD_CAPACITY;
+			}
+			capacity *= 2;
+		}
+		return capacity;
 	}
-	return capacity;
-}
 
-cvmmap::Depth to_core_depth(const Depth depth) {
-	return static_cast<cvmmap::Depth>(static_cast<uint8_t>(depth));
-}
+	cvmmap::Depth to_core_depth(const Depth depth) {
+		return static_cast<cvmmap::Depth>(static_cast<uint8_t>(depth));
+	}
 
-cvmmap::PixelFormat to_core_pixel_format(const PixelFormat pixel_format) {
-	return static_cast<cvmmap::PixelFormat>(static_cast<uint8_t>(pixel_format));
-}
+	cvmmap::PixelFormat to_core_pixel_format(const PixelFormat pixel_format) {
+		return static_cast<cvmmap::PixelFormat>(static_cast<uint8_t>(pixel_format));
+	}
 
-cvmmap::FramePlaneType to_core_plane_type(const FramePlaneType plane_type) {
-	return static_cast<cvmmap::FramePlaneType>(static_cast<uint8_t>(plane_type));
-}
+	cvmmap::FramePlaneType to_core_plane_type(const FramePlaneType plane_type) {
+		return static_cast<cvmmap::FramePlaneType>(static_cast<uint8_t>(plane_type));
+	}
 
-cvmmap::DepthUnit to_core_depth_unit(const DepthUnit depth_unit) {
-	return static_cast<cvmmap::DepthUnit>(static_cast<uint8_t>(depth_unit));
-}
+	cvmmap::DepthUnit to_core_depth_unit(const DepthUnit depth_unit) {
+		return static_cast<cvmmap::DepthUnit>(static_cast<uint8_t>(depth_unit));
+	}
 
 } // namespace
 
@@ -79,8 +79,8 @@ FramePublisher::shm_state_t &FramePublisher::shm_state_t::operator=(shm_state_t 
 			close(shm_fd);
 			shm_unlink(name.c_str());
 		}
-		name = std::move(other.name);
-		shm_fd = other.shm_fd;
+		name         = std::move(other.name);
+		shm_fd       = other.shm_fd;
 		other.shm_fd = -1;
 	}
 	return *this;
@@ -116,7 +116,7 @@ FramePublisher::frame_state_t::frame_state_t(std::span<uint8_t> buf)
 	: mmap_ptr(buf.data()),
 	  metadata_buffer(buf.subspan(0, SHM_PAYLOAD_OFFSET)),
 	  image_buffer(
-			  buf.subspan(SHM_PAYLOAD_OFFSET, buf.size() - SHM_PAYLOAD_OFFSET)) {
+		  buf.subspan(SHM_PAYLOAD_OFFSET, buf.size() - SHM_PAYLOAD_OFFSET)) {
 	assert(total_buffer_size() == buf.size());
 	std::fill(metadata_buffer.begin(), metadata_buffer.end(), 0);
 	cvmmap::protocol::ensure_frame_metadata_v2_magic(metadata().header);
@@ -131,11 +131,11 @@ FramePublisher::frame_state_t::~frame_state_t() {
 
 FramePublisher::frame_state_t::frame_state_t(frame_state_t &&other) noexcept
 	: mmap_ptr(other.mmap_ptr),
-  metadata_buffer(other.metadata_buffer),
-  image_buffer(other.image_buffer) {
-	other.mmap_ptr = {};
+	  metadata_buffer(other.metadata_buffer),
+	  image_buffer(other.image_buffer) {
+	other.mmap_ptr        = {};
 	other.metadata_buffer = {};
-	other.image_buffer = {};
+	other.image_buffer    = {};
 }
 
 FramePublisher::frame_state_t &FramePublisher::frame_state_t::operator=(frame_state_t &&other) noexcept {
@@ -143,12 +143,12 @@ FramePublisher::frame_state_t &FramePublisher::frame_state_t::operator=(frame_st
 		if (mmap_ptr) {
 			munmap(mmap_ptr, total_buffer_size());
 		}
-		mmap_ptr = other.mmap_ptr;
-		metadata_buffer = other.metadata_buffer;
-		image_buffer = other.image_buffer;
-		other.mmap_ptr = {};
+		mmap_ptr              = other.mmap_ptr;
+		metadata_buffer       = other.metadata_buffer;
+		image_buffer          = other.image_buffer;
+		other.mmap_ptr        = {};
 		other.metadata_buffer = {};
-		other.image_buffer = {};
+		other.image_buffer    = {};
 	}
 	return *this;
 }
@@ -232,13 +232,13 @@ FramePublisher::FramePublisher(FramePublisher &&other) noexcept
 
 FramePublisher &FramePublisher::operator=(FramePublisher &&other) noexcept {
 	if (this != &other) {
-		config_ = other.config_;
-		sync_socket_ = other.sync_socket_;
-		shm_state_ = std::move(other.shm_state_);
-		frame_state_ = std::move(other.frame_state_);
-		sync_msg_ = std::move(other.sync_msg_);
+		config_                       = other.config_;
+		sync_socket_                  = other.sync_socket_;
+		shm_state_                    = std::move(other.shm_state_);
+		frame_state_                  = std::move(other.frame_state_);
+		sync_msg_                     = std::move(other.sync_msg_);
 		pending_encoded_by_timestamp_ = std::move(other.pending_encoded_by_timestamp_);
-		undistort_pass_ = std::move(other.undistort_pass_);
+		undistort_pass_               = std::move(other.undistort_pass_);
 	}
 	return *this;
 }
@@ -285,14 +285,14 @@ FramePublisher::TakeEncodedPlane(
 		return std::nullopt;
 	}
 	encoded_plane_view_t plane{};
-	plane.codec = it->second.codec;
+	plane.codec            = it->second.codec;
 	plane.bitstream_format = it->second.bitstream_format;
-	plane.flags = it->second.flags;
-	plane.frame_rate_num = it->second.frame_rate_num;
-	plane.frame_rate_den = it->second.frame_rate_den;
-	plane.stream_pts_ns = it->second.stream_pts_ns;
-	storage = std::move(it->second.bytes);
-	plane.bytes = std::span<const uint8_t>(storage.data(), storage.size());
+	plane.flags            = it->second.flags;
+	plane.frame_rate_num   = it->second.frame_rate_num;
+	plane.frame_rate_den   = it->second.frame_rate_den;
+	plane.stream_pts_ns    = it->second.stream_pts_ns;
+	storage                = std::move(it->second.bytes);
+	plane.bytes            = std::span<const uint8_t>(storage.data(), storage.size());
 	pending_encoded_by_timestamp_.erase(it);
 	return plane;
 }
@@ -321,15 +321,15 @@ std::optional<cvmmap::frame_metadata_v2_t> FramePublisher::BuildV2Metadata(
 	}
 
 	cvmmap::protocol::frame_metadata_v2_build_input_t build_input{
-		.frame_id = source_metadata.frame_count,
+		.frame_id      = source_metadata.frame_count,
 		.capture_ts_ns = source_metadata.timestamp_ns,
-		.publish_seq = source_metadata.frame_count,
-		.depth_unit = cvmmap::DepthUnit::Unknown,
+		.publish_seq   = source_metadata.frame_count,
+		.depth_unit    = cvmmap::DepthUnit::Unknown,
 	};
 
 	size_t expected_next_offset = 0;
-	uint8_t raw_plane_count = 0;
-	uint8_t raw_presence_mask = 0;
+	uint8_t raw_plane_count     = 0;
+	uint8_t raw_presence_mask   = 0;
 	for (size_t slot = 0; slot < layout.planes.size(); ++slot) {
 		const auto &plane = layout.planes[slot];
 		if (!plane) {
@@ -339,9 +339,9 @@ std::optional<cvmmap::frame_metadata_v2_t> FramePublisher::BuildV2Metadata(
 		const auto expected_type =
 			slot == backends::frame_payload_layout_t::SLOT_LEFT
 				? FramePlaneType::LEFT
-				: slot == backends::frame_payload_layout_t::SLOT_DEPTH
-					? FramePlaneType::DEPTH
-					: FramePlaneType::CONFIDENCE;
+			: slot == backends::frame_payload_layout_t::SLOT_DEPTH
+				? FramePlaneType::DEPTH
+				: FramePlaneType::CONFIDENCE;
 		if (plane->plane_type != expected_type) {
 			return std::nullopt;
 		}
@@ -359,11 +359,11 @@ std::optional<cvmmap::frame_metadata_v2_t> FramePublisher::BuildV2Metadata(
 			return std::nullopt;
 		}
 
-		auto width_u32 = to_u32(plane->info.width);
+		auto width_u32  = to_u32(plane->info.width);
 		auto height_u32 = to_u32(plane->info.height);
 		auto stride_u32 = to_u32(plane->stride_bytes);
 		auto offset_u32 = to_u32(plane->offset_bytes);
-		auto size_u32 = to_u32(plane->size_bytes);
+		auto size_u32   = to_u32(plane->size_bytes);
 		if (!width_u32 || !height_u32 || !stride_u32 || !offset_u32 || !size_u32) {
 			return std::nullopt;
 		}
@@ -396,7 +396,7 @@ std::optional<cvmmap::frame_metadata_v2_t> FramePublisher::BuildV2Metadata(
 
 	if (encoded_plane && !encoded_plane->bytes.empty()) {
 		auto encoded_offset_u32 = to_u32(layout.payload_size_bytes);
-		auto encoded_size_u32 = to_u32(encoded_plane->bytes.size());
+		auto encoded_size_u32   = to_u32(encoded_plane->bytes.size());
 		if (!encoded_offset_u32 || !encoded_size_u32) {
 			return std::nullopt;
 		}
@@ -406,13 +406,13 @@ std::optional<cvmmap::frame_metadata_v2_t> FramePublisher::BuildV2Metadata(
 				*encoded_size_u32);
 
 		cvmmap::frame_metadata_v2_encoded_extension_t encoded_extension{};
-		encoded_extension.encoded_codec = encoded_plane->codec;
+		encoded_extension.encoded_codec            = encoded_plane->codec;
 		encoded_extension.encoded_bitstream_format = encoded_plane->bitstream_format;
-		encoded_extension.encoded_flags = encoded_plane->flags;
-		encoded_extension.encoded_frame_rate_num = encoded_plane->frame_rate_num;
-		encoded_extension.encoded_frame_rate_den = encoded_plane->frame_rate_den;
-		encoded_extension.encoded_stream_pts_ns = encoded_plane->stream_pts_ns;
-		build_input.encoded_extension = encoded_extension;
+		encoded_extension.encoded_flags            = encoded_plane->flags;
+		encoded_extension.encoded_frame_rate_num   = encoded_plane->frame_rate_num;
+		encoded_extension.encoded_frame_rate_den   = encoded_plane->frame_rate_den;
+		encoded_extension.encoded_stream_pts_ns    = encoded_plane->stream_pts_ns;
+		build_input.encoded_extension              = encoded_extension;
 	}
 
 	auto metadata_v2 = cvmmap::protocol::build_frame_metadata_v2(build_input);
@@ -450,8 +450,8 @@ void FramePublisher::EnsureMetadataState(
 		spdlog::error("open frame state: {}", fs.error());
 		return;
 	}
-	auto initial_metadata = metadata;
-	initial_metadata.frame_count = 0;
+	auto initial_metadata         = metadata;
+	initial_metadata.frame_count  = 0;
 	initial_metadata.timestamp_ns = now_ns();
 	const auto initial_layout =
 		backends::make_left_only_payload_layout(initial_metadata, payload_size);
@@ -496,13 +496,27 @@ void FramePublisher::PublishDirectFrame(
 		spdlog::error("direct frame callback ran before metadata initialization");
 		return;
 	}
-	if (frame.metadata.info.buffer_size > frame_state_->image_buffer.size()) {
+
+	std::vector<uint8_t> encoded_plane_storage{};
+	auto encoded_plane =
+		TakeEncodedPlane(frame.metadata.timestamp_ns, encoded_plane_storage);
+	const size_t encoded_payload_size =
+		encoded_plane ? encoded_plane->bytes.size() : 0;
+	if (encoded_payload_size >
+		std::numeric_limits<size_t>::max() - frame.metadata.info.buffer_size) {
+		spdlog::error("direct frame payload size overflows after appending encoded access unit");
+		return;
+	}
+	const size_t expected_payload_size =
+		static_cast<size_t>(frame.metadata.info.buffer_size) + encoded_payload_size;
+
+	if (expected_payload_size > frame_state_->image_buffer.size()) {
 		const auto payload_capacity =
-			shared_payload_capacity_for(frame.metadata.info.buffer_size);
+			shared_payload_capacity_for(expected_payload_size);
 		if (!payload_capacity) {
 			spdlog::error(
 				"direct frame payload size ({}) exceeds ABI limits",
-				frame.metadata.info.buffer_size);
+				expected_payload_size);
 			return;
 		}
 		if (before_reset) {
@@ -532,6 +546,20 @@ void FramePublisher::PublishDirectFrame(
 			fill_result->payload_size_bytes);
 		return;
 	}
+	if (encoded_payload_size >
+		std::numeric_limits<size_t>::max() - fill_result->payload_size_bytes) {
+		spdlog::error("direct frame payload size overflows after fill");
+		return;
+	}
+	const size_t total_payload_size =
+		fill_result->payload_size_bytes + encoded_payload_size;
+	if (total_payload_size > frame_state_->image_buffer.size()) {
+		spdlog::error(
+			"direct frame payload ({}) exceeds shared memory payload capacity ({})",
+			total_payload_size,
+			frame_state_->image_buffer.size());
+		return;
+	}
 	auto fill_payload_size_u32 = to_u32(fill_result->payload_size_bytes);
 	if (!fill_payload_size_u32) {
 		spdlog::error(
@@ -540,22 +568,22 @@ void FramePublisher::PublishDirectFrame(
 		return;
 	}
 	frame.metadata.info.buffer_size = *fill_payload_size_u32;
-	auto metadata_v2 = BuildV2Metadata(
+	auto metadata_v2                = BuildV2Metadata(
 		frame.metadata,
 		fill_result->layout,
-		std::nullopt);
+		encoded_plane);
 	if (!metadata_v2) {
 		spdlog::error(
 			"ABI v2 metadata is invalid for direct frame@{}",
 			frame.metadata.frame_count);
 		return;
 	}
-	if (metadata_v2->header.payload_size_bytes > frame_state_->image_buffer.size()) {
-		spdlog::error(
-			"direct frame payload ({}) exceeds shared memory payload capacity ({})",
-			metadata_v2->header.payload_size_bytes,
-			frame_state_->image_buffer.size());
-		return;
+	if (encoded_plane && !encoded_plane->bytes.empty()) {
+		std::copy(
+			encoded_plane->bytes.begin(),
+			encoded_plane->bytes.end(),
+			frame_state_->image_buffer.begin() +
+				static_cast<std::ptrdiff_t>(fill_result->payload_size_bytes));
 	}
 	frame_state_->write_metadata(*metadata_v2);
 	SendSyncMessage(frame.metadata.frame_count, frame.metadata.timestamp_ns);
@@ -661,14 +689,14 @@ void FramePublisher::OnEncodedAccessUnit(
 	std::lock_guard lock(pending_encoded_mutex_);
 	pending_encoded_by_timestamp_[access_unit.source_timestamp_ns] =
 		pending_encoded_access_unit_t{
-			.codec = access_unit.codec,
-			.bitstream_format = access_unit.bitstream_format,
-			.flags = access_unit.flags,
-			.frame_rate_num = access_unit.frame_rate_num,
-			.frame_rate_den = access_unit.frame_rate_den,
+			.codec               = access_unit.codec,
+			.bitstream_format    = access_unit.bitstream_format,
+			.flags               = access_unit.flags,
+			.frame_rate_num      = access_unit.frame_rate_num,
+			.frame_rate_den      = access_unit.frame_rate_den,
 			.source_timestamp_ns = access_unit.source_timestamp_ns,
-			.stream_pts_ns = access_unit.stream_pts_ns,
-			.bytes = access_unit.bytes,
+			.stream_pts_ns       = access_unit.stream_pts_ns,
+			.bytes               = access_unit.bytes,
 		};
 }
 
@@ -679,8 +707,8 @@ BodyTrackingPublisher::BodyTrackingPublisher(
 
 std::vector<uint8_t> BodyTrackingPublisher::Serialize(
 	const cvmmap::body_tracking_frame_t &frame) const {
-	auto header = frame.header;
-	header._magic = cvmmap::BODY_TRACKING_MAGIC;
+	auto header           = frame.header;
+	header._magic         = cvmmap::BODY_TRACKING_MAGIC;
 	header.versions_major = VERSION_MAJOR;
 	header.versions_minor = VERSION_MINOR;
 	std::memset(header._label, 0, sizeof(header._label));
@@ -688,8 +716,8 @@ std::vector<uint8_t> BodyTrackingPublisher::Serialize(
 		header._label,
 		stream_name_.data(),
 		std::min(sizeof(header._label), stream_name_.size()));
-	header.body_count = static_cast<uint16_t>(frame.bodies.size());
-	header.body_record_size = sizeof(cvmmap::body_tracking_body_t);
+	header.body_count         = static_cast<uint16_t>(frame.bodies.size());
+	header.body_record_size   = sizeof(cvmmap::body_tracking_body_t);
 	header.payload_size_bytes = static_cast<uint32_t>(
 		frame.bodies.size() * sizeof(cvmmap::body_tracking_body_t));
 

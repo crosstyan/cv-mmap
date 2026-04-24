@@ -30,7 +30,16 @@ Behavior:
 - The parser is configured so keyframes carry codec parameter sets in-band.
 - The backend pairs encoded and raw samples by GStreamer PTS before publishing.
 - Encoded access-unit callbacks are emitted before the matching raw-frame callback.
+- Raw frames publish through the direct-frame path. The backend maps each raw GStreamer sample and copies it once into shared memory, avoiding the older backend-owned vector copy.
 - Unmatched raw or encoded samples are dropped instead of publishing mixed snapshots.
+
+### Why there is no custom GStreamer allocator yet
+
+A true shared-memory allocator path was prototyped for the raw image plane on a GStreamer 1.20 machine. The raw sink allocation query accepted wrapped shared-memory buffers, but the pipeline crashed inside GStreamer video conversion (`videoconvert` / `libgstvideo`) while processing those buffers.
+
+That failure suggests a plain wrapped shared-memory span is not enough for this part of the pipeline: `videoconvert`, decoder output, and buffer-pool negotiation can depend on allocator, alignment, padding, lifetime, and `GstVideoMeta` details that the simple prototype did not fully satisfy.
+
+Do not restore the simple wrapped-memory allocator path. A future zero-copy attempt should implement and test a real GStreamer buffer-pool and allocator integration for the negotiated raw-video caps, validate it through `videoconvert` and hardware decoders, and probably reserve multiple writable shared-memory slots instead of trying to hand one current snapshot buffer directly to upstream.
 
 ## Config
 

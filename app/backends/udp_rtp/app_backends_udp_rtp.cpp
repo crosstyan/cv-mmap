@@ -2,10 +2,12 @@
 #include <gst/gst.h>
 #include <gst/video/video.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -27,7 +29,7 @@ namespace {
 
 	constexpr const char *RAW_SINK_NAME       = "raw_sink";
 	constexpr const char *ENCODED_SINK_NAME   = "encoded_sink";
-	constexpr std::size_t MAX_PENDING_MATCHES = 16;
+	constexpr std::size_t MAX_PENDING_MATCHES = 128;
 
 	enum class UdpRtpCodec {
 		H264,
@@ -44,9 +46,24 @@ namespace {
 		cvmmap::EncodedCodec encoded_codec;
 	};
 
+	struct ResolvedDecoder {
+		std::string name{};
+		std::string selection_kind{};
+	};
+
+	struct GstSampleDeleter {
+		void operator()(GstSample *sample) const {
+			if (sample != nullptr) {
+				gst_sample_unref(sample);
+			}
+		}
+	};
+
+	using GstSamplePtr = std::shared_ptr<GstSample>;
+
 	struct RawSample {
 		frame_metadata_t metadata{};
-		std::vector<uint8_t> bytes{};
+		GstSamplePtr sample{};
 	};
 
 	struct EncodedSample {
@@ -150,24 +167,65 @@ namespace {
 		}
 	}
 
-	std::string resolve_decoder_name(const UdpRtpCodec codec, const std::string &configured) {
+	ResolvedDecoder resolve_decoder_name(const UdpRtpCodec codec, const std::string &configured) {
 		const auto traits = codec_traits(codec);
 		if (configured == "auto") {
 			if (is_element_available(traits.preferred_hw_decoder)) {
-				return traits.preferred_hw_decoder;
+				return ResolvedDecoder{
+					.name           = traits.preferred_hw_decoder,
+					.selection_kind = "auto-hardware",
+				};
 			}
 			if (is_element_available(traits.preferred_sw_decoder)) {
-				return traits.preferred_sw_decoder;
+				return ResolvedDecoder{
+					.name           = traits.preferred_sw_decoder,
+					.selection_kind = "auto-software",
+				};
 			}
 			return {};
 		}
-		return configured;
+		return ResolvedDecoder{
+			.name           = configured,
+			.selection_kind = "explicit",
+		};
+	}
+
+	void log_resolved_decoder(
+		const UdpRtpCodec codec,
+		const std::string &configured_decoder,
+		const ResolvedDecoder &resolved_decoder) {
+		const auto traits = codec_traits(codec);
+		GstElementFactory *factory =
+			gst_element_factory_find(resolved_decoder.name.c_str());
+		if (factory == nullptr) {
+			spdlog::info(
+				"udp_rtp decoder resolved: codec={} configured={} resolved={} selection={}",
+				traits.encoding_name,
+				configured_decoder,
+				resolved_decoder.name,
+				resolved_decoder.selection_kind);
+			return;
+		}
+
+		const gchar *long_name =
+			gst_element_factory_get_metadata(factory, GST_ELEMENT_METADATA_LONGNAME);
+		const gchar *klass =
+			gst_element_factory_get_metadata(factory, GST_ELEMENT_METADATA_KLASS);
+		spdlog::info(
+			"udp_rtp decoder resolved: codec={} configured={} resolved={} selection={} long_name=\"{}\" klass=\"{}\"",
+			traits.encoding_name,
+			configured_decoder,
+			resolved_decoder.name,
+			resolved_decoder.selection_kind,
+			long_name != nullptr ? long_name : "",
+			klass != nullptr ? klass : "");
+		gst_object_unref(factory);
 	}
 
 	std::string make_pipeline_string(const app::UdpRtpConfig &config,
 									 const UdpRtpCodec codec,
 									 const std::string &decoder_name) {
-		const auto traits = codec_traits(codec);
+		const auto traits           = codec_traits(codec);
 		const auto address_property = config.address.empty() ? std::string{} : cvmmap::format("address={} ", config.address);
 		return cvmmap::format(
 			"udpsrc auto-multicast={} {}port={} caps=\"application/x-rtp,media=video,clock-rate=90000,encoding-name={},payload={}\" ! "
@@ -202,6 +260,7 @@ struct UdpRtpBackendImpl {
 
 	on_metadata_fn_t on_metadata{};
 	on_frame_fn_t on_frame{};
+	on_direct_frame_fn_t on_direct_frame{};
 	on_error_fn_t on_error{};
 	on_encoded_access_unit_fn_t on_encoded_access_unit{};
 
@@ -214,11 +273,51 @@ struct UdpRtpBackendImpl {
 	std::mutex mutex{};
 	std::map<uint64_t, RawSample> pending_raw{};
 	std::map<uint64_t, EncodedSample> pending_encoded{};
+	bool direct_frame_copy_logged{false};
 
 	void emit_error(error_t error_code, std::string_view message) {
 		if (on_error) {
 			on_error(error_code, message);
 		}
+	}
+
+	std::optional<direct_frame_fill_result_t> fill_raw_sample_payload(
+		const GstSamplePtr &sample,
+		const frame_metadata_t &metadata,
+		std::span<uint8_t> output_buffer) {
+		if (!sample) {
+			return std::nullopt;
+		}
+
+		GstBuffer *buffer = gst_sample_get_buffer(sample.get());
+		if (buffer == nullptr) {
+			return std::nullopt;
+		}
+
+		GstMapInfo map{};
+		if (!gst_buffer_map(buffer, &map, GST_MAP_READ)) {
+			emit_error(-EIO, "udp_rtp failed to map raw sample buffer for direct fill");
+			return std::nullopt;
+		}
+
+		if (map.size == 0 || map.size > output_buffer.size()) {
+			gst_buffer_unmap(buffer, &map);
+			return std::nullopt;
+		}
+
+		const auto payload_size = map.size;
+		std::copy(map.data, map.data + payload_size, output_buffer.begin());
+		if (!direct_frame_copy_logged) {
+			spdlog::info(
+				"udp_rtp raw frames use direct-frame one-copy publish path");
+			direct_frame_copy_logged = true;
+		}
+		const auto layout = make_left_only_payload_layout(metadata, payload_size);
+		gst_buffer_unmap(buffer, &map);
+		return direct_frame_fill_result_t{
+			.payload_size_bytes = payload_size,
+			.layout             = layout,
+		};
 	}
 
 	void shutdown_pipeline() {
@@ -288,13 +387,40 @@ struct UdpRtpBackendImpl {
 		if (on_encoded_access_unit) {
 			on_encoded_access_unit(encoded->access_unit);
 		}
+		if (on_direct_frame) {
+			on_direct_frame(direct_frame_t{
+				.metadata = raw->metadata,
+				.fill_payload =
+					[this,
+					 sample   = raw->sample,
+					 metadata = raw->metadata](
+						std::span<uint8_t> output_buffer) mutable {
+						return fill_raw_sample_payload(
+							sample,
+							metadata,
+							output_buffer);
+					},
+			});
+			return;
+		}
 		if (on_frame) {
+			GstBuffer *buffer = gst_sample_get_buffer(raw->sample.get());
+			if (buffer == nullptr) {
+				return;
+			}
+			GstMapInfo map{};
+			if (!gst_buffer_map(buffer, &map, GST_MAP_READ)) {
+				emit_error(-EIO, "udp_rtp failed to map raw sample buffer");
+				return;
+			}
+			std::vector<uint8_t> raw_bytes(map.data, map.data + map.size);
 			const auto layout =
-				make_left_only_payload_layout(raw->metadata, raw->bytes.size());
+				make_left_only_payload_layout(raw->metadata, raw_bytes.size());
 			on_frame(
-				std::span<uint8_t>(raw->bytes.data(), raw->bytes.size()),
+				std::span<uint8_t>(raw_bytes.data(), raw_bytes.size()),
 				raw->metadata,
 				layout);
+			gst_buffer_unmap(buffer, &map);
 		}
 	}
 
@@ -331,15 +457,15 @@ struct UdpRtpBackendImpl {
 			return false;
 		}
 
-		GstMapInfo map{};
-		if (!gst_buffer_map(buffer, &map, GST_MAP_READ)) {
+		const auto payload_size = gst_buffer_get_size(buffer);
+		if (payload_size > std::numeric_limits<uint32_t>::max()) {
 			gst_sample_unref(sample);
-			emit_error(-EIO, "udp_rtp failed to map raw sample buffer");
+			emit_error(-EOVERFLOW, "udp_rtp raw sample exceeds ABI payload limits");
 			return false;
 		}
 
 		RawSample raw{};
-		raw.bytes.assign(map.data, map.data + map.size);
+		raw.sample                  = GstSamplePtr(sample, GstSampleDeleter{});
 		raw.metadata.versions_major = cvmmap::FRAME_METADATA_V2_MAJOR;
 		raw.metadata.versions_minor = cvmmap::FRAME_METADATA_V2_MINOR_ENCODED_AU;
 		std::copy(
@@ -353,15 +479,12 @@ struct UdpRtpBackendImpl {
 		raw.metadata.info.channels     = channels_for_pixel_format(*pixel_format);
 		raw.metadata.info.depth        = Depth::U8;
 		raw.metadata.info.pixel_format = *pixel_format;
-		raw.metadata.info.buffer_size  = static_cast<uint32_t>(raw.bytes.size());
+		raw.metadata.info.buffer_size  = static_cast<uint32_t>(payload_size);
 
 		if (GST_VIDEO_INFO_FPS_N(&video_info) > 0 && GST_VIDEO_INFO_FPS_D(&video_info) > 0) {
 			frame_rate_num = static_cast<uint16_t>(GST_VIDEO_INFO_FPS_N(&video_info));
 			frame_rate_den = static_cast<uint16_t>(GST_VIDEO_INFO_FPS_D(&video_info));
 		}
-
-		gst_buffer_unmap(buffer, &map);
-		gst_sample_unref(sample);
 
 		{
 			std::lock_guard lock(mutex);
@@ -485,13 +608,14 @@ void UdpRtpBackend::Init() {
 	}
 	impl->codec = *parsed_codec;
 
-	const auto decoder_name = resolve_decoder_name(impl->codec, impl->config.decoder);
-	if (decoder_name.empty()) {
+	const auto resolved_decoder = resolve_decoder_name(impl->codec, impl->config.decoder);
+	if (resolved_decoder.name.empty()) {
 		impl->emit_error(-ENOENT, "udp_rtp decoder auto resolution failed");
 		return;
 	}
+	log_resolved_decoder(impl->codec, impl->config.decoder, resolved_decoder);
 
-	const auto pipeline_string = make_pipeline_string(impl->config, impl->codec, decoder_name);
+	const auto pipeline_string = make_pipeline_string(impl->config, impl->codec, resolved_decoder.name);
 	spdlog::info("udp_rtp pipeline: {}", pipeline_string);
 
 	GError *error  = nullptr;
@@ -548,6 +672,12 @@ void UdpRtpBackend::SetOnMetadata(on_metadata_fn_t on_metadata) {
 void UdpRtpBackend::SetOnFrame(on_frame_fn_t on_frame) {
 	impl->on_frame = std::move(on_frame);
 }
+
+void UdpRtpBackend::SetOnDirectFrame(on_direct_frame_fn_t on_direct_frame) {
+	impl->on_direct_frame = std::move(on_direct_frame);
+}
+
+void UdpRtpBackend::OnDirectOutputBufferWillReset(std::span<const uint8_t>) {}
 
 void UdpRtpBackend::SetOnError(on_error_fn_t on_error) {
 	impl->on_error = std::move(on_error);
