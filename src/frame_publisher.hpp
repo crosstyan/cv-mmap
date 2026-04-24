@@ -10,6 +10,7 @@
 
 #include <cvmmap/compat/expected.hpp>
 #include <cvmmap/nats_service.hpp>
+#include <cvmmap/protocol.hpp>
 #include <zmq.hpp>
 
 #include "config/app_config.hpp"
@@ -76,8 +77,8 @@ private:
 
 		static cvmmap::expected<frame_state_t, int> open(int shm_fd, size_t size);
 		[[nodiscard]] size_t total_buffer_size() const;
-		[[nodiscard]] frame_metadata_v2_t &metadata();
-		void write_metadata(const frame_metadata_v2_t &metadata_value);
+		[[nodiscard]] cvmmap::frame_metadata_v2_t &metadata();
+		void write_metadata(const cvmmap::frame_metadata_v2_t &metadata_value);
 
 		uint8_t *mmap_ptr{};
 		std::span<uint8_t> metadata_buffer{};
@@ -117,7 +118,7 @@ private:
 	[[nodiscard]] std::optional<uint32_t> to_u32(size_t value) const;
 	[[nodiscard]] std::optional<encoded_plane_view_t>
 	TakeEncodedPlane(uint64_t timestamp_ns, std::vector<uint8_t> &storage);
-	[[nodiscard]] std::optional<frame_metadata_v2_t> BuildV2Metadata(
+	[[nodiscard]] std::optional<cvmmap::frame_metadata_v2_t> BuildV2Metadata(
 		const frame_metadata_t &source_metadata,
 		const backends::frame_payload_layout_t &layout,
 		const std::optional<encoded_plane_view_t> &encoded_plane = std::nullopt) const;

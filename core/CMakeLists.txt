@@ -32,6 +32,7 @@ cvmmap_configure_compat(cvmmap_target)
 add_library(cvmmap::target ALIAS cvmmap_target)
 
 add_library(cvmmap_ipc STATIC
+	src/protocol.cpp
 	src/parser.cpp
 )
 set_target_properties(cvmmap_ipc PROPERTIES EXPORT_NAME ipc)

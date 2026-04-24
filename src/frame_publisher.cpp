@@ -17,6 +17,26 @@
 
 namespace app {
 
+namespace {
+
+cvmmap::Depth to_core_depth(const Depth depth) {
+	return static_cast<cvmmap::Depth>(static_cast<uint8_t>(depth));
+}
+
+cvmmap::PixelFormat to_core_pixel_format(const PixelFormat pixel_format) {
+	return static_cast<cvmmap::PixelFormat>(static_cast<uint8_t>(pixel_format));
+}
+
+cvmmap::FramePlaneType to_core_plane_type(const FramePlaneType plane_type) {
+	return static_cast<cvmmap::FramePlaneType>(static_cast<uint8_t>(plane_type));
+}
+
+cvmmap::DepthUnit to_core_depth_unit(const DepthUnit depth_unit) {
+	return static_cast<cvmmap::DepthUnit>(static_cast<uint8_t>(depth_unit));
+}
+
+} // namespace
+
 FramePublisher::shm_state_t::shm_state_t(std::string name, int shm_fd)
 	: name(std::move(name)), shm_fd(shm_fd) {}
 
@@ -74,12 +94,12 @@ FramePublisher::shm_state_t::open(const std::string &name) {
 
 FramePublisher::frame_state_t::frame_state_t(std::span<uint8_t> buf)
 	: mmap_ptr(buf.data()),
-  metadata_buffer(buf.subspan(0, SHM_PAYLOAD_OFFSET)),
-  image_buffer(
-		  buf.subspan(SHM_PAYLOAD_OFFSET, buf.size() - SHM_PAYLOAD_OFFSET)) {
+	  metadata_buffer(buf.subspan(0, SHM_PAYLOAD_OFFSET)),
+	  image_buffer(
+			  buf.subspan(SHM_PAYLOAD_OFFSET, buf.size() - SHM_PAYLOAD_OFFSET)) {
 	assert(total_buffer_size() == buf.size());
 	std::fill(metadata_buffer.begin(), metadata_buffer.end(), 0);
-	metadata().header.ensure_magic();
+	cvmmap::protocol::ensure_frame_metadata_v2_magic(metadata().header);
 }
 
 FramePublisher::frame_state_t::~frame_state_t() {
@@ -140,12 +160,12 @@ size_t FramePublisher::frame_state_t::total_buffer_size() const {
 	return metadata_buffer.size() + image_buffer.size();
 }
 
-frame_metadata_v2_t &FramePublisher::frame_state_t::metadata() {
-	return *reinterpret_cast<frame_metadata_v2_t *>(metadata_buffer.data());
+cvmmap::frame_metadata_v2_t &FramePublisher::frame_state_t::metadata() {
+	return *reinterpret_cast<cvmmap::frame_metadata_v2_t *>(metadata_buffer.data());
 }
 
 void FramePublisher::frame_state_t::write_metadata(
-	const frame_metadata_v2_t &metadata_value) {
+	const cvmmap::frame_metadata_v2_t &metadata_value) {
 	std::memcpy(metadata_buffer.data(), &metadata_value, sizeof(metadata_value));
 }
 
@@ -257,7 +277,7 @@ FramePublisher::TakeEncodedPlane(
 	return plane;
 }
 
-std::optional<frame_metadata_v2_t> FramePublisher::BuildV2Metadata(
+std::optional<cvmmap::frame_metadata_v2_t> FramePublisher::BuildV2Metadata(
 	const frame_metadata_t &source_metadata,
 	const backends::frame_payload_layout_t &layout,
 	const std::optional<encoded_plane_view_t> &encoded_plane) const {
@@ -276,28 +296,16 @@ std::optional<frame_metadata_v2_t> FramePublisher::BuildV2Metadata(
 		return std::nullopt;
 	}
 
-	frame_metadata_v2_t metadata_v2{};
-	std::memset(&metadata_v2, 0, sizeof(metadata_v2));
-	metadata_v2.header.ensure_magic();
-	metadata_v2.header.versions_major = frame_metadata_v2_header_t::VERSION_MAJOR_V2;
-	metadata_v2.header.versions_minor = VERSION_MINOR;
-	metadata_v2.header.frame_id = source_metadata.frame_count;
-	metadata_v2.header.capture_ts_ns = source_metadata.timestamp_ns;
-	metadata_v2.header.publish_seq = source_metadata.frame_count;
-	metadata_v2.header.plane_count = 1;
-	metadata_v2.header.plane_presence_mask = 0x01;
-	metadata_v2.header.plane_descriptors_offset =
-		frame_metadata_v2_header_t::PLANE_DESCRIPTORS_OFFSET;
-	metadata_v2.header.plane_descriptor_size =
-		frame_metadata_v2_header_t::PLANE_DESCRIPTOR_SIZE;
-	metadata_v2.header.plane_descriptor_capacity =
-		frame_metadata_v2_header_t::PLANE_DESCRIPTOR_CAPACITY;
-	metadata_v2.header.payload_size_bytes = *payload_size_u32;
-	metadata_v2.header.depth_unit = DepthUnit::Unknown;
-
 	if (!layout.planes[backends::frame_payload_layout_t::SLOT_LEFT]) {
 		return std::nullopt;
 	}
+
+	cvmmap::protocol::frame_metadata_v2_build_input_t build_input{
+		.frame_id = source_metadata.frame_count,
+		.capture_ts_ns = source_metadata.timestamp_ns,
+		.publish_seq = source_metadata.frame_count,
+		.depth_unit = cvmmap::DepthUnit::Unknown,
+	};
 
 	size_t expected_next_offset = 0;
 	uint8_t raw_plane_count = 0;
@@ -340,15 +348,16 @@ std::optional<frame_metadata_v2_t> FramePublisher::BuildV2Metadata(
 			return std::nullopt;
 		}
 
-		auto &descriptor = metadata_v2.plane_descriptors[slot];
-		descriptor.plane_type = plane->plane_type;
-		descriptor.pixel_format = plane->info.pixel_format;
-		descriptor.depth = plane->info.depth;
-		descriptor.width = *width_u32;
-		descriptor.height = *height_u32;
-		descriptor.stride_bytes = *stride_u32;
-		descriptor.offset_bytes = *offset_u32;
-		descriptor.size_bytes = *size_u32;
+		build_input.descriptors[slot] =
+			cvmmap::protocol::make_frame_metadata_v2_descriptor(
+				to_core_plane_type(plane->plane_type),
+				to_core_pixel_format(plane->info.pixel_format),
+				to_core_depth(plane->info.depth),
+				*width_u32,
+				*height_u32,
+				*stride_u32,
+				*offset_u32,
+				*size_u32);
 
 		expected_next_offset = plane->offset_bytes + plane->size_bytes;
 		raw_plane_count += 1;
@@ -362,10 +371,8 @@ std::optional<frame_metadata_v2_t> FramePublisher::BuildV2Metadata(
 		return std::nullopt;
 	}
 	if ((raw_presence_mask & (1u << backends::frame_payload_layout_t::SLOT_DEPTH)) != 0) {
-		metadata_v2.header.depth_unit = layout.depth_unit;
+		build_input.depth_unit = to_core_depth_unit(layout.depth_unit);
 	}
-	metadata_v2.header.plane_count = raw_plane_count;
-	metadata_v2.header.plane_presence_mask = raw_presence_mask;
 
 	if (encoded_plane && !encoded_plane->bytes.empty()) {
 		auto encoded_offset_u32 = to_u32(layout.payload_size_bytes);
@@ -373,58 +380,30 @@ std::optional<frame_metadata_v2_t> FramePublisher::BuildV2Metadata(
 		if (!encoded_offset_u32 || !encoded_size_u32) {
 			return std::nullopt;
 		}
-		auto &encoded_descriptor = metadata_v2.plane_descriptors[3];
-		encoded_descriptor.plane_type = FramePlaneType::ENCODED_ACCESS_UNIT;
-		encoded_descriptor.pixel_format = PixelFormat::GRAY;
-		encoded_descriptor.depth = Depth::U8;
-		encoded_descriptor.width = *encoded_size_u32;
-		encoded_descriptor.height = 1;
-		encoded_descriptor.stride_bytes = *encoded_size_u32;
-		encoded_descriptor.offset_bytes = *encoded_offset_u32;
-		encoded_descriptor.size_bytes = *encoded_size_u32;
-		metadata_v2.header.versions_minor =
-			frame_metadata_v2_header_t::VERSION_MINOR_V2_ENCODED_AU;
-		metadata_v2.header.plane_presence_mask |= 0x08;
-		metadata_v2.header.plane_count = static_cast<uint8_t>(
-			((metadata_v2.header.plane_presence_mask & 0x01) ? 1 : 0) +
-			((metadata_v2.header.plane_presence_mask & 0x02) ? 1 : 0) +
-			((metadata_v2.header.plane_presence_mask & 0x04) ? 1 : 0) + 1);
+		build_input.descriptors[3] =
+			cvmmap::protocol::make_encoded_access_unit_descriptor(
+				*encoded_offset_u32,
+				*encoded_size_u32);
 
-		frame_metadata_v2_encoded_extension_t encoded_extension{};
-		switch (encoded_plane->codec) {
-		case cvmmap::EncodedCodec::H264:
-			encoded_extension.encoded_codec = EncodedCodec::H264;
-			break;
-		case cvmmap::EncodedCodec::H265:
-			encoded_extension.encoded_codec = EncodedCodec::H265;
-			break;
-		case cvmmap::EncodedCodec::Unknown:
-		default:
-			encoded_extension.encoded_codec = EncodedCodec::UNKNOWN;
-			break;
-		}
-		switch (encoded_plane->bitstream_format) {
-		case cvmmap::EncodedBitstreamFormat::AnnexB:
-			encoded_extension.encoded_bitstream_format =
-				EncodedBitstreamFormat::ANNEXB;
-			break;
-		case cvmmap::EncodedBitstreamFormat::Unknown:
-		default:
-			encoded_extension.encoded_bitstream_format =
-				EncodedBitstreamFormat::UNKNOWN;
-			break;
-		}
+		cvmmap::frame_metadata_v2_encoded_extension_t encoded_extension{};
+		encoded_extension.encoded_codec = encoded_plane->codec;
+		encoded_extension.encoded_bitstream_format = encoded_plane->bitstream_format;
 		encoded_extension.encoded_flags = encoded_plane->flags;
 		encoded_extension.encoded_frame_rate_num = encoded_plane->frame_rate_num;
 		encoded_extension.encoded_frame_rate_den = encoded_plane->frame_rate_den;
 		encoded_extension.encoded_stream_pts_ns = encoded_plane->stream_pts_ns;
-		std::memcpy(
-			metadata_v2.header.reserved_0,
-			&encoded_extension,
-			sizeof(encoded_extension));
+		build_input.encoded_extension = encoded_extension;
 	}
 
-	return metadata_v2;
+	auto metadata_v2 = cvmmap::protocol::build_frame_metadata_v2(build_input);
+	if (!metadata_v2) {
+		return std::nullopt;
+	}
+	if (metadata_v2->header.payload_size_bytes != *payload_size_u32) {
+		return std::nullopt;
+	}
+
+	return *metadata_v2;
 }
 
 void FramePublisher::EnsureMetadataState(
