@@ -152,7 +152,7 @@ These are ordered by expected payoff.
    SDK-free policy with focused tests, and by splitting ZED frame packing and
    direct SHM binding out of the capture pipeline.
 
-5. [ ] Split NATS client/service by API area.
+5. [x] Split NATS client/service by API area.
 
    `core/src/nats_client.cpp` and `core/src/nats_service.cpp` are large because
    discovery, control, status, body transport, and request serialization are
@@ -163,6 +163,11 @@ These are ordered by expected payoff.
    - body/status subscriptions
    - protobuf encode/decode helpers
    - reconnect/error policy
+
+   Completed in this wave by moving NATS discovery, client body/status
+   subscriptions, and service protobuf encode/decode helpers into focused
+   internal translation units while keeping the public NATS client/service APIs
+   unchanged.
 
 6. [ ] Normalize CMake backend dependency helpers.
 

@@ -93,6 +93,9 @@ add_library(cvmmap::proto ALIAS cvmmap_proto)
 add_library(cvmmap_nats STATIC
 	src/nats_service.cpp
 	src/nats_client.cpp
+	src/nats_client_subscriptions.cpp
+	src/nats_discovery.cpp
+	src/nats_service_protocol.cpp
 )
 set_target_properties(cvmmap_nats PROPERTIES EXPORT_NAME nats)
 target_compile_features(cvmmap_nats PUBLIC cxx_std_23)
