@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-#include "app_backends_dummy.hpp"
+#include "backends/dummy/app_backends_dummy.hpp"
 #include "app_config.hpp"
 
 namespace {
