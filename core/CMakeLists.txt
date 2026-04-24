@@ -15,6 +15,10 @@ function(cvmmap_configure_compat target_name)
 		target_compile_definitions(${target_name} PUBLIC CVMMAP_HAS_STD_FORMAT=0)
 		target_link_libraries(${target_name} PUBLIC fmt::fmt)
 	endif()
+
+	target_compile_definitions(
+		${target_name}
+		PUBLIC CVMMAP_HAS_STD_MOVE_ONLY_FUNCTION=${CVMMAP_HAS_STD_MOVE_ONLY_FUNCTION})
 endfunction()
 
 

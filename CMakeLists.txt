@@ -22,6 +22,7 @@ endfunction()
 
 set(CVMMAP_HAS_STD_EXPECTED 0)
 set(CVMMAP_HAS_STD_FORMAT 0)
+set(CVMMAP_HAS_STD_MOVE_ONLY_FUNCTION 0)
 cvmmap_check_cxx23_source_compiles(
 	CVMMAP_HAS_STD_EXPECTED
 	"cvmmap_check_expected.cpp"
@@ -41,6 +42,20 @@ cvmmap_check_cxx23_source_compiles(
 		return std::format(\"{}\", 42) == std::string{\"42\"} ? 0 : 1;
 	}")
 
+cvmmap_check_cxx23_source_compiles(
+	CVMMAP_HAS_STD_MOVE_ONLY_FUNCTION
+	"cvmmap_check_move_only_function.cpp"
+	"#include <functional>
+	#include <memory>
+	#include <type_traits>
+	static_assert(!std::is_copy_constructible_v<std::move_only_function<void()>>);
+	int main() {
+		auto value = std::make_unique<int>(41);
+		std::move_only_function<int(int)> fn{
+			[value = std::move(value)](int delta) { return *value + delta; }};
+		return fn(1) == 42 ? 0 : 1;
+	}")
+
 if(CVMMAP_HAS_STD_EXPECTED)
 	set(CVMMAP_HAS_STD_EXPECTED 1)
 else()
@@ -53,8 +68,15 @@ else()
 	set(CVMMAP_HAS_STD_FORMAT 0)
 endif()
 
+if(CVMMAP_HAS_STD_MOVE_ONLY_FUNCTION)
+	set(CVMMAP_HAS_STD_MOVE_ONLY_FUNCTION 1)
+else()
+	set(CVMMAP_HAS_STD_MOVE_ONLY_FUNCTION 0)
+endif()
+
 message(STATUS "cv-mmap native std::expected support: ${CVMMAP_HAS_STD_EXPECTED}")
 message(STATUS "cv-mmap native std::format support: ${CVMMAP_HAS_STD_FORMAT}")
+message(STATUS "cv-mmap native std::move_only_function support: ${CVMMAP_HAS_STD_MOVE_ONLY_FUNCTION}")
 
 function(cvmmap_append_runtime_dir out_var runtime_library)
 	execute_process(

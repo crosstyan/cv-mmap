@@ -41,6 +41,25 @@ add_test(
 	COMMAND cvmmap_control_api_tests
 )
 
+add_executable(cvmmap_compat_functional_tests
+	compat_functional_test.cpp
+)
+
+target_link_libraries(cvmmap_compat_functional_tests
+	PRIVATE
+		cvmmap_target
+)
+
+target_compile_definitions(cvmmap_compat_functional_tests
+	PRIVATE
+		CVMMAP_FORCE_COMPAT_MOVE_ONLY_FUNCTION=1
+)
+
+add_test(
+	NAME cvmmap_compat_functional_tests
+	COMMAND cvmmap_compat_functional_tests
+)
+
 add_executable(cvmmap_protocol_fixture_writer
 	protocol_fixture_writer.cpp
 )

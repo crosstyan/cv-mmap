@@ -262,7 +262,7 @@ so older standard-library environments can still build:
 
 - `cvmmap/compat/expected.hpp` uses `std::expected` when available, otherwise `tl::expected`
 - `cvmmap/compat/format.hpp` uses `std::format` when available, otherwise `fmt`
-- `cvmmap/compat/functional.hpp` uses `std::move_only_function` when available, otherwise `std::function`
+- `cvmmap/compat/functional.hpp` uses `std::move_only_function` when available, otherwise the vendored Boost.Compat `move_only_function` fallback
 
 In practice this means newer toolchains can build with native C++23 library
 support, while older environments can keep working with `libfmt-dev` and
