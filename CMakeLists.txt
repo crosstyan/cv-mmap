@@ -73,6 +73,11 @@ set(CVMMAP_BUILD_RPATH "")
 cvmmap_append_runtime_dir(CVMMAP_BUILD_RPATH libstdc++.so.6)
 cvmmap_append_runtime_dir(CVMMAP_BUILD_RPATH libgcc_s.so.1)
 list(REMOVE_DUPLICATES CVMMAP_BUILD_RPATH)
+if (CVMMAP_BUILD_RPATH)
+	# Apply the compiler runtime path to every build-tree executable, including
+	# tests. Individual targets may still contribute additional runpath entries.
+	set(CMAKE_BUILD_RPATH "${CVMMAP_BUILD_RPATH}")
+endif()
 
 
 # brew install cppzmq
@@ -115,10 +120,6 @@ add_executable(cv-mmap src/main.cpp)
 target_include_directories(cv-mmap PRIVATE src/inc)
 target_link_libraries(cv-mmap PRIVATE cppzmq app_runtime)
 target_link_options(cv-mmap PRIVATE "LINKER:--copy-dt-needed-entries")
-if (CVMMAP_BUILD_RPATH)
-	set_target_properties(cv-mmap PROPERTIES
-		BUILD_RPATH "${CVMMAP_BUILD_RPATH}")
-endif()
 set_target_properties(cv-mmap PROPERTIES
 	INSTALL_RPATH "$ORIGIN/../lib")
 

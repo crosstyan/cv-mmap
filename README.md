@@ -19,11 +19,13 @@ The current split is:
 - `core/`: installable `cvmmap-core` package
 - `app/`: producer-only implementation modules
 
-`cvmmap-core` exports three CMake targets:
+`cvmmap-core` exports these CMake targets:
 
 - `cvmmap::target`
 - `cvmmap::ipc`
 - `cvmmap::client`
+- `cvmmap::proto`
+- `cvmmap::nats`
 
 Public headers are installed under `include/cvmmap/`:
 

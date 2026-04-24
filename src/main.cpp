@@ -4,7 +4,6 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -31,6 +30,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <unistd.h>
 #include "version/app_version.hpp"
 #include "config/app_config.hpp"
 #include "models/app_metadata_models.hpp"
@@ -41,14 +41,6 @@
 #include "frame_publisher.hpp"
 #include <cvmmap/nats_service.hpp>
 
-#if defined(__APPLE__) && defined(__MACH__)
-#define __APP_MACOS__
-#endif
-#ifdef __APP_MACOS__
-// https://en.wikipedia.org/wiki/Unistd.h
-#include <unistd.h>
-#endif
-
 // APP_DEBUG_SYNC_MESSAGE_DUMP
 
 namespace {
@@ -57,6 +49,18 @@ enum class ProcessExitCode : int {
 	Failure = 1,
 	FatalCameraRecovery = 32,
 };
+
+volatile std::sig_atomic_t g_sigint_requested = 0;
+volatile std::sig_atomic_t g_sigint_count     = 0;
+
+void handle_sigint(int) {
+	if (g_sigint_count == 0) {
+		g_sigint_count     = 1;
+		g_sigint_requested = 1;
+		return;
+	}
+	::_exit(128 + SIGINT);
+}
 } // namespace
 
 int main(int argc, char **argv) {
@@ -178,21 +182,11 @@ int main(int argc, char **argv) {
 	}
 
 	static auto is_running   = std::atomic_bool{true};
-	static auto sigint_count = std::atomic_int{0};
+	g_sigint_requested       = 0;
+	g_sigint_count           = 0;
 	int exit_code = static_cast<int>(ProcessExitCode::Success);
 
-	/**
-	 * @brief signal handler for SIGINT
-	 */
-	constexpr auto sigint_handler = [](int) {
-		if (sigint_count.fetch_add(1, std::memory_order::relaxed) > 0) {
-			spdlog::critical("SIGINT received twice, force killing...");
-			std::exit(1);
-		}
-		spdlog::info("SIGINT received, stopping...");
-		is_running.store(false, std::memory_order::relaxed);
-	};
-	std::signal(SIGINT, sigint_handler);
+	std::signal(SIGINT, handle_sigint);
 
 	auto frame_publisher = FramePublisher::Create(config, sock);
 	if (!frame_publisher) {
@@ -268,7 +262,7 @@ int main(int argc, char **argv) {
 	// Mutex to protect backend calls from concurrent NATS and ZMQ threads
 	std::mutex backend_control_mutex;
 	const BackendRuntimeCallbacks runtime_callbacks{
-		.stop_running = [&is_running]() {
+		.stop_running = []() {
 			is_running.store(false, std::memory_order::relaxed);
 		},
 		.mark_fatal_camera_recovery = [&exit_code]() {
@@ -315,8 +309,7 @@ int main(int argc, char **argv) {
 		 &runtime_callbacks,
 		 &playlist_controller,
 		 &pending_playlist_transition,
-		 &send_status,
-		 &is_running](
+		 &send_status](
 			app::backends::ResolvedPlaylistState resolved_playlist,
 			const bool emit_reset)
 			-> cvmmap::expected<cvmmap::PlaylistInfo, cvmmap::ControlError> {
@@ -390,7 +383,8 @@ int main(int argc, char **argv) {
 				}
 				return map_control_error_code(runtime.assembly().backend->ResetFrameCount());
 			};
-		nats_handlers.on_get_source_info = [&runtime]() {
+		nats_handlers.on_get_source_info = [&backend_control_mutex, &runtime]() {
+			std::lock_guard lock(backend_control_mutex);
 			return runtime.assembly().backend->GetSourceInfo();
 		};
 		nats_handlers.on_apply_playlist =
@@ -541,6 +535,11 @@ int main(int argc, char **argv) {
 
 	send_status(cvmmap::ModuleStatus::Online);
 	while (is_running.load(std::memory_order::relaxed)) {
+		if (g_sigint_requested != 0) {
+			spdlog::info("SIGINT received, stopping...");
+			is_running.store(false, std::memory_order::relaxed);
+			break;
+		}
 		const auto transition =
 			pending_playlist_transition.exchange(PlaylistTransitionAction::None, std::memory_order_relaxed);
 		if (transition != PlaylistTransitionAction::None) {

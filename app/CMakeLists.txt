@@ -167,17 +167,23 @@ if (PkgConfig_FOUND)
 	pkg_check_modules(MCAP_COMPRESSION_LIBS QUIET IMPORTED_TARGET libzstd liblz4)
 endif()
 
+set(CVMMAP_RVL_ROOT "" CACHE PATH
+	"Optional RVL install/source root containing core/include/rvl/rvl.hpp and build/core/librvl_core.a")
 find_package(rvl CONFIG QUIET)
-if (NOT TARGET rvl::rvl)
-	set(RVL_LOCAL_ROOT "/home/crosstyan/Code/rvl_impl")
-	set(RVL_LOCAL_BUILD "${RVL_LOCAL_ROOT}/build/core")
+if (NOT TARGET rvl::rvl AND CVMMAP_RVL_ROOT)
+	set(_CVMMAP_RVL_INCLUDE_DIR "${CVMMAP_RVL_ROOT}/core/include")
+	set(_CVMMAP_RVL_LIBRARY "${CVMMAP_RVL_ROOT}/build/core/librvl_core.a")
 	if (
-		EXISTS "${RVL_LOCAL_ROOT}/core/include/rvl/rvl.hpp"
-		AND EXISTS "${RVL_LOCAL_BUILD}/librvl_core.a")
+		EXISTS "${_CVMMAP_RVL_INCLUDE_DIR}/rvl/rvl.hpp"
+		AND EXISTS "${_CVMMAP_RVL_LIBRARY}")
 		add_library(rvl::rvl INTERFACE IMPORTED)
 		set_target_properties(rvl::rvl PROPERTIES
-			INTERFACE_INCLUDE_DIRECTORIES "${RVL_LOCAL_ROOT}/core/include"
-			INTERFACE_LINK_LIBRARIES "${RVL_LOCAL_BUILD}/librvl_core.a")
+			INTERFACE_INCLUDE_DIRECTORIES "${_CVMMAP_RVL_INCLUDE_DIR}"
+			INTERFACE_LINK_LIBRARIES "${_CVMMAP_RVL_LIBRARY}")
+	else()
+		message(FATAL_ERROR
+			"CVMMAP_RVL_ROOT='${CVMMAP_RVL_ROOT}' must contain core/include/rvl/rvl.hpp "
+			"and build/core/librvl_core.a")
 	endif()
 endif()
 
