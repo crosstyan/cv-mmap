@@ -77,6 +77,7 @@ stream_mode = "local"
 # stream_mode = "svo"
 # svo_path = "/data/example.svo2"
 # In svo mode, resolution/fps are ignored at runtime and come from the file.
+#
 
 # SVO playlist example (use instead of svo_path):
 # [zed.playlist]
@@ -118,10 +119,7 @@ depth_stabilization = 30
 # v1 supported values are IMAGE and RIGHT_HANDED_Y_UP.
 coordinate_system = "IMAGE"
 open_timeout_ms = 10000
-warmup_frames = 15
 max_consecutive_failures = 30
-reconnect_interval_ms = 1000
-reconnect = true
 left_pixel_format = "bgr8"
 
 [zed.recording]

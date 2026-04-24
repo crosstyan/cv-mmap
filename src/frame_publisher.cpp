@@ -174,13 +174,7 @@ FramePublisher::Create(const Config &config, zmq::socket_t &sync_socket) {
 
 	auto undistort_pass = preprocess::make_undistort_pass(config.preprocess);
 	if (undistort_pass) {
-		if (config.video.backend == BackendType::ZED) {
-			spdlog::warn(
-				"ignoring preprocess.undistort for direct-frame backend; direct-fill path publishes native frames without producer-side undistort");
-			undistort_pass.reset();
-		} else {
-			spdlog::info("undistort preprocess pass is enabled");
-		}
+		spdlog::info("undistort preprocess pass is enabled");
 	}
 
 	spdlog::debug(
@@ -223,6 +217,16 @@ FramePublisher &FramePublisher::operator=(FramePublisher &&other) noexcept {
 }
 FramePublisher::~FramePublisher() = default;
 
+void FramePublisher::Configure(FramePublisherOptions options) {
+	const bool direct_frame_changed =
+		options_.uses_direct_frame != options.uses_direct_frame;
+	options_ = options;
+	if (direct_frame_changed && options_.uses_direct_frame && undistort_pass_) {
+		spdlog::warn(
+			"ignoring preprocess.undistort for direct-frame backend; direct-fill path publishes native frames without producer-side undistort");
+	}
+}
+
 void FramePublisher::Reset() {
 	frame_state_.reset();
 	sync_msg_.reset();
@@ -242,16 +246,6 @@ std::optional<uint32_t> FramePublisher::to_u32(size_t value) const {
 		return std::nullopt;
 	}
 	return static_cast<uint32_t>(value);
-}
-
-DepthUnit FramePublisher::determine_depth_unit() const {
-	if (config_->video.backend != BackendType::ZED || !config_->zed.has_value()) {
-		return DepthUnit::Unknown;
-	}
-	const auto &zed = *config_->zed;
-	const bool body_tracking_uses_meters =
-		zed.body_tracking.has_value() && zed.body_tracking->enabled;
-	return body_tracking_uses_meters ? DepthUnit::Meter : DepthUnit::Millimeter;
 }
 
 std::optional<FramePublisher::encoded_plane_view_t>
@@ -279,7 +273,8 @@ FramePublisher::TakeEncodedPlane(
 std::optional<frame_metadata_v2_t> FramePublisher::BuildV2Metadata(
 	const frame_metadata_t &source_metadata,
 	size_t raw_payload_size,
-	const std::optional<encoded_plane_view_t> &encoded_plane) const {
+	const std::optional<encoded_plane_view_t> &encoded_plane,
+	const DepthUnit depth_unit) const {
 	if (raw_payload_size == 0 || source_metadata.info.width == 0 ||
 		source_metadata.info.height == 0 || source_metadata.info.channels == 0) {
 		return std::nullopt;
@@ -398,7 +393,7 @@ std::optional<frame_metadata_v2_t> FramePublisher::BuildV2Metadata(
 		depth_descriptor.size_bytes = *depth_size_u32;
 		metadata_v2.header.plane_count = 2;
 		metadata_v2.header.plane_presence_mask = 0x03;
-		metadata_v2.header.depth_unit = determine_depth_unit();
+		metadata_v2.header.depth_unit = depth_unit;
 	}
 
 	if (confidence_plane_active) {
@@ -568,7 +563,11 @@ void FramePublisher::PublishDirectFrame(
 		return;
 	}
 	frame.metadata.info.buffer_size = static_cast<uint32_t>(*packed_size);
-	auto metadata_v2 = BuildV2Metadata(frame.metadata, *packed_size);
+	auto metadata_v2 = BuildV2Metadata(
+		frame.metadata,
+		*packed_size,
+		std::nullopt,
+		frame.depth_unit);
 	if (!metadata_v2) {
 		spdlog::error(
 			"ABI v2 metadata is invalid for direct frame@{}",
@@ -595,7 +594,7 @@ void FramePublisher::PublishFrame(
 	}
 
 	std::span<const uint8_t> output_buffer(frame_buffer.data(), frame_buffer.size());
-	if (undistort_pass_) {
+	if (undistort_pass_ && !options_.uses_direct_frame) {
 		try {
 			output_buffer = undistort_pass_->apply(output_buffer, metadata.info);
 		} catch (const std::exception &e) {

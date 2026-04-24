@@ -1086,35 +1086,11 @@ Config Config::from_toml(const std::filesystem::path &path) {
 			}
 		}
 
-		if (auto val = (*zed)["warmup_frames"]; val) {
-			if (auto v = val.value<int>(); v) {
-				zed_cfg.warmup_frames = *v;
-			} else {
-				throw invalid_argument("zed.warmup_frames must be integer");
-			}
-		}
-
 		if (auto val = (*zed)["max_consecutive_failures"]; val) {
 			if (auto v = val.value<int>(); v) {
 				zed_cfg.max_consecutive_failures = *v;
 			} else {
 				throw invalid_argument("zed.max_consecutive_failures must be integer");
-			}
-		}
-
-		if (auto val = (*zed)["reconnect_interval_ms"]; val) {
-			if (auto v = val.value<int>(); v) {
-				zed_cfg.reconnect_interval_ms = *v;
-			} else {
-				throw invalid_argument("zed.reconnect_interval_ms must be integer");
-			}
-		}
-
-		if (auto val = (*zed)["reconnect"]; val) {
-			if (auto v = val.value<bool>(); v) {
-				zed_cfg.reconnect = *v;
-			} else {
-				throw invalid_argument("zed.reconnect must be boolean");
 			}
 		}
 
@@ -1421,10 +1397,7 @@ std::string Config::to_toml() const {
 		ss << "depth_max_fps = " << zed->depth_max_fps << "\n";
 		ss << "depth_stabilization = " << zed->depth_stabilization << "\n";
 		ss << "open_timeout_ms = " << zed->open_timeout_ms << "\n";
-		ss << "warmup_frames = " << zed->warmup_frames << "\n";
 		ss << "max_consecutive_failures = " << zed->max_consecutive_failures << "\n";
-		ss << "reconnect_interval_ms = " << zed->reconnect_interval_ms << "\n";
-		ss << "reconnect = " << (zed->reconnect ? "true" : "false") << "\n";
 		ss << "left_pixel_format = \"" << zed->left_pixel_format << "\"\n";
 		ss << "coordinate_system = \"" << zed->coordinate_system << "\"\n";
 		if (zed->playlist) {
@@ -1467,5 +1440,41 @@ std::string Config::to_toml() const {
 	}
 
 	return ss.str();
+}
+
+ActiveBackendSourceSnapshot Config::SnapshotActiveBackendSource() const {
+	switch (video.backend) {
+	case BackendType::MCAP:
+		if (mcap) {
+			return ActiveBackendSourceSnapshot{.path = mcap->path};
+		}
+		break;
+	case BackendType::ZED:
+		if (zed) {
+			return ActiveBackendSourceSnapshot{.path = zed->svo_path};
+		}
+		break;
+	default:
+		break;
+	}
+
+	return {};
+}
+
+void Config::RestoreActiveBackendSource(const ActiveBackendSourceSnapshot &snapshot) {
+	switch (video.backend) {
+	case BackendType::MCAP:
+		if (mcap) {
+			mcap->path = snapshot.path.value_or("");
+		}
+		break;
+	case BackendType::ZED:
+		if (zed) {
+			zed->svo_path = snapshot.path;
+		}
+		break;
+	default:
+		break;
+	}
 }
 } // namespace app

@@ -113,10 +113,7 @@ struct ZedConfig {
 	int depth_max_fps{0};
 	int depth_stabilization{30};
 	int open_timeout_ms{10000};
-	int warmup_frames{15};
 	int max_consecutive_failures{30};
-	int reconnect_interval_ms{1000};
-	bool reconnect{true};
 	std::string left_pixel_format{"bgr8"};
 	std::string coordinate_system{"IMAGE"};
 	std::optional<BodyTrackingConfig> body_tracking;
@@ -181,6 +178,10 @@ struct NatsConfig {
 	std::string url{"nats://localhost:4222"};
 };
 
+struct ActiveBackendSourceSnapshot {
+	std::optional<std::string> path{};
+};
+
 struct Config {
 	/// name of cvmmap server instance
 	std::string name;
@@ -204,6 +205,11 @@ struct Config {
 
 	[[nodiscard]]
 	std::string to_toml() const;
+
+	[[nodiscard]]
+	ActiveBackendSourceSnapshot SnapshotActiveBackendSource() const;
+
+	void RestoreActiveBackendSource(const ActiveBackendSourceSnapshot &snapshot);
 
 	[[nodiscard]]
 	std::string shm_name() const {

@@ -28,6 +28,7 @@ using direct_frame_fill_fn_t =
 
 struct direct_frame_t {
 	frame_metadata_t metadata{};
+	DepthUnit depth_unit{DepthUnit::Unknown};
 	direct_frame_fill_fn_t fill_payload{};
 };
 

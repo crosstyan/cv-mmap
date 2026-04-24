@@ -28,6 +28,24 @@ add_test(
 	NAME app_backend_capability_tests
 	COMMAND app_backend_capability_tests)
 
+add_executable(app_frame_publisher_tests
+	frame_publisher_test.cpp)
+
+target_include_directories(app_frame_publisher_tests
+	PRIVATE
+		"${CMAKE_CURRENT_SOURCE_DIR}/.."
+		"${CMAKE_CURRENT_SOURCE_DIR}/../.."
+		"${CMAKE_CURRENT_SOURCE_DIR}/../../src")
+target_link_libraries(app_frame_publisher_tests
+	PRIVATE
+		app_runtime
+		spdlog::spdlog
+		fmt::fmt)
+
+add_test(
+	NAME app_frame_publisher_tests
+	COMMAND app_frame_publisher_tests)
+
 add_executable(app_playlist_controller_tests
 	playlist_controller_test.cpp)
 

@@ -98,10 +98,22 @@ endif()
 
 add_subdirectory(third_party)
 add_subdirectory(core)
+add_subdirectory(app)
 
-add_executable(cv-mmap src/main.cpp src/frame_publisher.cpp)
+add_library(app_runtime STATIC
+	src/frame_publisher.cpp
+	src/backend_runtime.cpp)
+target_include_directories(app_runtime PUBLIC src src/inc)
+target_link_libraries(app_runtime
+	PUBLIC
+		cppzmq
+		spdlog::spdlog
+		app
+		cvmmap::nats)
+
+add_executable(cv-mmap src/main.cpp)
 target_include_directories(cv-mmap PRIVATE src/inc)
-target_link_libraries(cv-mmap PRIVATE cppzmq)
+target_link_libraries(cv-mmap PRIVATE cppzmq app_runtime)
 target_link_options(cv-mmap PRIVATE "LINKER:--copy-dt-needed-entries")
 if (CVMMAP_BUILD_RPATH)
 	set_target_properties(cv-mmap PROPERTIES
@@ -110,12 +122,10 @@ endif()
 set_target_properties(cv-mmap PROPERTIES
 	INSTALL_RPATH "$ORIGIN/../lib")
 
-add_subdirectory(app)
 target_link_libraries(cv-mmap
 	PRIVATE
 		CLI11::CLI11
 		spdlog::spdlog
-		app
 		cvmmap::nats)
 
 

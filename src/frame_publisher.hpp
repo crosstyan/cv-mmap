@@ -19,6 +19,10 @@
 
 namespace app {
 
+struct FramePublisherOptions {
+	bool uses_direct_frame{false};
+};
+
 class FramePublisher {
 public:
 	using direct_buffer_reset_hook_t = std::function<void(std::span<const uint8_t>)>;
@@ -33,6 +37,7 @@ public:
 	FramePublisher(const FramePublisher &) = delete;
 	FramePublisher &operator=(const FramePublisher &) = delete;
 
+	void Configure(FramePublisherOptions options);
 	void Reset();
 	void OnMetadata(
 		const frame_metadata_t &metadata,
@@ -108,14 +113,14 @@ private:
 		std::optional<preprocess::UndistortPass> undistort_pass);
 
 	[[nodiscard]] uint64_t now_ns() const;
-	[[nodiscard]] DepthUnit determine_depth_unit() const;
 	[[nodiscard]] std::optional<uint32_t> to_u32(size_t value) const;
 	[[nodiscard]] std::optional<encoded_plane_view_t>
 	TakeEncodedPlane(uint64_t timestamp_ns, std::vector<uint8_t> &storage);
 	[[nodiscard]] std::optional<frame_metadata_v2_t> BuildV2Metadata(
 		const frame_metadata_t &source_metadata,
 		size_t raw_payload_size,
-		const std::optional<encoded_plane_view_t> &encoded_plane = std::nullopt) const;
+		const std::optional<encoded_plane_view_t> &encoded_plane = std::nullopt,
+		DepthUnit depth_unit = DepthUnit::Unknown) const;
 	void EnsureMetadataState(
 		const frame_metadata_t &metadata,
 		size_t payload_size,
@@ -131,6 +136,7 @@ private:
 	std::unordered_map<uint64_t, pending_encoded_access_unit_t>
 		pending_encoded_by_timestamp_{};
 	std::optional<preprocess::UndistortPass> undistort_pass_{};
+	FramePublisherOptions options_{};
 };
 
 class BodyTrackingPublisher {

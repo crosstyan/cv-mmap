@@ -96,10 +96,7 @@ depth_max_fps = 0
 depth_stabilization = 30
 coordinate_system = "IMAGE"
 open_timeout_ms = 10000
-warmup_frames = 15
 max_consecutive_failures = 30
-reconnect_interval_ms = 1000
-reconnect = true
 left_pixel_format = "bgr8"
 
 [zed.recording]
@@ -506,44 +503,90 @@ sort_by_recording_time = true
 	expect(config.zed->depth_stabilization == 30, "zed playlist config should default depth_stabilization to 30");
 }
 
-void test_zed_runtime_knobs_parse_and_round_trip() {
+void test_zed_runtime_config_round_trip() {
 	TempDir dir;
-	const auto path = dir.path() / "zed-runtime-knobs.toml";
+	const auto path = dir.path() / "zed-runtime-config.toml";
 	write_file(
 		path,
-		R"(name = "zed-runtime-knobs"
-
-[ipc]
-namespace = "cvmmap"
-prefix = "/tmp"
-
-[video]
-backend = "zed"
-
-[zed]
-stream_mode = "svo"
-svo_path = "/data/example.svo2"
-resolution = "AUTO"
-fps = 30
-depth_mode = "NEURAL"
-publish_confidence = false
-svo_real_time_mode = false
-depth_max_fps = 12
-depth_stabilization = 0
-)");
+		R"(name = "zed-runtime-config"
+		
+		[ipc]
+		namespace = "cvmmap"
+		prefix = "/tmp"
+		
+		[video]
+		backend = "zed"
+		
+		[zed]
+		stream_mode = "svo"
+		svo_path = "/data/example.svo2"
+		resolution = "AUTO"
+		fps = 30
+		depth_mode = "NEURAL"
+		publish_confidence = false
+		svo_real_time_mode = false
+		depth_max_fps = 12
+		depth_stabilization = 0
+		max_consecutive_failures = 45
+		)");
 
 	const auto config = app::Config::from_toml(path);
-	expect(config.zed.has_value(), "zed runtime knob config should populate zed section");
-	expect(!config.zed->publish_confidence, "zed runtime knob config should parse publish_confidence");
-	expect(!config.zed->svo_real_time_mode, "zed runtime knob config should parse svo_real_time_mode");
-	expect(config.zed->depth_max_fps == 12, "zed runtime knob config should parse depth_max_fps");
-	expect(config.zed->depth_stabilization == 0, "zed runtime knob config should parse depth_stabilization");
+	expect(config.zed.has_value(), "zed runtime config should populate zed section");
+	expect(!config.zed->publish_confidence, "zed runtime config should parse publish_confidence");
+	expect(!config.zed->svo_real_time_mode, "zed runtime config should parse svo_real_time_mode");
+	expect(config.zed->depth_max_fps == 12, "zed runtime config should parse depth_max_fps");
+	expect(config.zed->depth_stabilization == 0, "zed runtime config should parse depth_stabilization");
+	expect(config.zed->max_consecutive_failures == 45, "zed runtime config should parse max_consecutive_failures");
 
 	const auto rendered = config.to_toml();
 	expect(rendered.find("publish_confidence = false") != std::string::npos, "zed publish_confidence should round-trip");
 	expect(rendered.find("svo_real_time_mode = false") != std::string::npos, "zed svo_real_time_mode should round-trip");
 	expect(rendered.find("depth_max_fps = 12") != std::string::npos, "zed depth_max_fps should round-trip");
 	expect(rendered.find("depth_stabilization = 0") != std::string::npos, "zed depth_stabilization should round-trip");
+	expect(rendered.find("max_consecutive_failures = 45") != std::string::npos, "zed max_consecutive_failures should round-trip");
+}
+
+void test_active_backend_source_snapshot_round_trips_mcap_empty_path() {
+	auto config = app::Config::Default();
+	config.video.backend = app::BackendType::MCAP;
+	config.mcap = app::McapConfig{};
+	config.mcap->path = "";
+
+	const auto snapshot = config.SnapshotActiveBackendSource();
+	expect(snapshot.path.has_value(), "mcap snapshot should capture configured path state");
+	expect(snapshot.path->empty(), "mcap snapshot should preserve empty path");
+
+	config.mcap->path = "/data/other.mcap";
+	config.RestoreActiveBackendSource(snapshot);
+	expect(config.mcap->path.empty(), "mcap restore should write empty string when snapshot path is empty");
+}
+
+void test_active_backend_source_snapshot_restores_zed_playlist_mode() {
+	auto config = app::Config::Default();
+	config.video.backend = app::BackendType::ZED;
+	config.zed = app::ZedConfig{};
+	config.zed->playlist = app::FilePlaylistConfig{.paths = {"/data/a.svo2", "/data/b.svo2"}, .sort_by_recording_time = false};
+	config.zed->svo_path = std::nullopt;
+
+	const auto snapshot = config.SnapshotActiveBackendSource();
+	expect(!snapshot.path.has_value(), "zed playlist snapshot should preserve nullopt svo_path");
+
+	config.zed->svo_path = "/data/temp.svo2";
+	config.RestoreActiveBackendSource(snapshot);
+	expect(!config.zed->svo_path.has_value(), "zed restore should preserve nullopt svo_path for playlist mode");
+}
+
+void test_active_backend_source_snapshot_is_noop_for_other_backends() {
+	auto config = app::Config::Default();
+	config.video.backend = app::BackendType::Dummy;
+	config.dummy = app::DummyConfig{};
+	config.dummy->fps = 60;
+
+	const auto snapshot = config.SnapshotActiveBackendSource();
+	expect(!snapshot.path.has_value(), "non-file backend snapshot should be empty");
+
+	config.RestoreActiveBackendSource(app::ActiveBackendSourceSnapshot{.path = std::string("/ignored")});
+	expect(config.dummy->fps == 60, "non-file backend restore should be a no-op");
 }
 
 void test_zed_rejects_negative_depth_max_fps() {
@@ -724,7 +767,10 @@ int main() {
 	ok &= run_test("mcap_playlist_rejects_non_boolean_sort_flag", test_mcap_playlist_rejects_non_boolean_sort_flag);
 	ok &= run_test("zed_playlist_requires_svo_mode", test_zed_playlist_requires_svo_mode);
 	ok &= run_test("zed_playlist_parses_without_svo_path", test_zed_playlist_parses_without_svo_path);
-	ok &= run_test("zed_runtime_knobs_parse_and_round_trip", test_zed_runtime_knobs_parse_and_round_trip);
+	ok &= run_test("zed_runtime_config_round_trip", test_zed_runtime_config_round_trip);
+	ok &= run_test("active_backend_source_snapshot_round_trips_mcap_empty_path", test_active_backend_source_snapshot_round_trips_mcap_empty_path);
+	ok &= run_test("active_backend_source_snapshot_restores_zed_playlist_mode", test_active_backend_source_snapshot_restores_zed_playlist_mode);
+	ok &= run_test("active_backend_source_snapshot_is_noop_for_other_backends", test_active_backend_source_snapshot_is_noop_for_other_backends);
 	ok &= run_test("zed_rejects_negative_depth_max_fps", test_zed_rejects_negative_depth_max_fps);
 	ok &= run_test("zed_rejects_non_integer_depth_max_fps", test_zed_rejects_non_integer_depth_max_fps);
 	ok &= run_test("zed_rejects_depth_max_fps_with_body_tracking_enabled", test_zed_rejects_depth_max_fps_with_body_tracking_enabled);

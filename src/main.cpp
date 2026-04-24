@@ -35,6 +35,7 @@
 #include "config/app_config.hpp"
 #include "models/app_metadata_models.hpp"
 #include "app_utils.hpp"
+#include "backend_runtime.hpp"
 #include "backends/app_backend_factory.hpp"
 #include "backends/app_backends_playlist.hpp"
 #include "frame_publisher.hpp"
@@ -51,16 +52,6 @@
 // APP_DEBUG_SYNC_MESSAGE_DUMP
 
 namespace {
-
-enum class PlaylistTransitionAction {
-	None,
-	Advance,
-	RewindEmitReset,
-	RewindSilent,
-	ResetActiveEmitReset,
-	ResetActiveSilent,
-};
-
 enum class ProcessExitCode : int {
 	Success = 0,
 	Failure = 1,
@@ -203,95 +194,13 @@ int main(int argc, char **argv) {
 	};
 	std::signal(SIGINT, sigint_handler);
 
-	const auto map_control_error_code = [](const int error_code) {
-		switch (error_code) {
-		case 0:
-			return cvmmap::ControlErrorCode::Ok;
-		case -EOPNOTSUPP:
-			return cvmmap::ControlErrorCode::Unsupported;
-		case -EINVAL:
-			return cvmmap::ControlErrorCode::InvalidPayload;
-		case -ERANGE:
-			return cvmmap::ControlErrorCode::OutOfRange;
-		default:
-			return cvmmap::ControlErrorCode::Error;
-		}
-	};
-
-	const auto map_recording_error = [&map_control_error_code](
-		const int error_code,
-		std::string message = {}) {
-		return cvmmap::ControlError{
-			.code = map_control_error_code(error_code),
-			.message = std::move(message),
-		};
-	};
-
-	const auto to_public_camera_control_state = [](
-		const backends::camera_control_state_t &state) {
-		return cvmmap::CameraControlState{
-			.setting = state.setting,
-			.kind = state.kind,
-			.value = state.value,
-			.min_value = state.min_value,
-			.max_value = state.max_value,
-		};
-	};
-
-	const auto to_public_camera_control_capabilities = [](
-		const backends::camera_control_capabilities_t &capabilities) {
-		return cvmmap::CameraControlCapabilities{
-			.supported = capabilities.supported,
-			.supported_settings = capabilities.supported_settings,
-		};
-	};
-
-	const auto map_backend_control_error = [&map_control_error_code](
-		const int error_code,
-		std::string message = {}) {
-		return cvmmap::ControlError{
-			.code = map_control_error_code(error_code),
-			.message = std::move(message),
-		};
-	};
-
-	const auto to_public_recording_status = [](
-		const backends::recording_status_t &status) {
-		return cvmmap::SvoRecordingStatus{
-			.can_record = status.can_record,
-			.is_recording = status.is_recording,
-			.is_paused = status.is_paused,
-			.last_frame_ok = status.last_frame_ok,
-			.frames_ingested = status.frames_ingested,
-			.frames_encoded = status.frames_encoded,
-			.active_path = status.active_path,
-		};
-	};
-
-	struct CameraControlProvider {
-		std::function<cvmmap::expected<cvmmap::CameraControlCapabilities, cvmmap::ControlError>()> capabilities;
-		std::function<cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError>(cvmmap::CameraControlSetting)> get;
-		std::function<cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError>(const cvmmap::CameraControlRequest &)> set;
-		std::function<cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError>(const cvmmap::CameraControlRangeRequest &)> set_range;
-	};
-
-	struct SvoRecorderProvider {
-		std::function<bool()> is_available;
-		std::function<cvmmap::expected<cvmmap::SvoRecordingStatus, cvmmap::ControlError>(const cvmmap::SvoRecordingRequest &)> start;
-		std::function<cvmmap::expected<cvmmap::SvoRecordingStatus, cvmmap::ControlError>()> stop;
-		std::function<cvmmap::expected<cvmmap::SvoRecordingStatus, cvmmap::ControlError>()> status;
-	};
-
-	std::optional<CameraControlProvider> camera_control_provider{};
-	std::optional<SvoRecorderProvider> svo_recorder_provider{};
-
 	auto frame_publisher = FramePublisher::Create(config, sock);
 	if (!frame_publisher) {
 		spdlog::error("{}", frame_publisher.error());
 		return 1;
 	}
 	BodyTrackingPublisher body_tracking_publisher(config.name, nats_service.get());
-	app::backends::BackendAssembly assembly{};
+	BackendRuntime runtime(config, *frame_publisher, body_tracking_publisher);
 
 	const auto send_status = [&nats_service, nats_enabled](cvmmap::ModuleStatus status) {
 		if (!nats_enabled || !nats_service) {
@@ -356,235 +265,17 @@ int main(int argc, char **argv) {
 		};
 	playlist_controller->ApplyCurrentPathToConfig();
 
-	const auto refresh_camera_control_provider = [&]() {
-		camera_control_provider.reset();
-		if (!assembly.camera_control) {
-			return;
-		}
-		auto capability = *assembly.camera_control;
-		camera_control_provider = CameraControlProvider{
-			.capabilities = [capability = std::move(capability), &to_public_camera_control_capabilities]() mutable
-				-> cvmmap::expected<cvmmap::CameraControlCapabilities, cvmmap::ControlError> {
-				return to_public_camera_control_capabilities(
-					capability->GetCameraControlCapabilities());
-			},
-			.get = [capability = *assembly.camera_control, &map_backend_control_error, &to_public_camera_control_state](
-					const cvmmap::CameraControlSetting setting) mutable
-				-> cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError> {
-				auto result = capability->GetCameraControl(setting);
-				if (!result) {
-					return cvmmap::unexpected(
-						map_backend_control_error(result.error()));
-				}
-				return to_public_camera_control_state(*result);
-			},
-			.set = [capability = *assembly.camera_control, &map_backend_control_error, &to_public_camera_control_state](
-					const cvmmap::CameraControlRequest &request) mutable
-				-> cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError> {
-				backends::camera_control_request_t backend_request{
-					.setting = request.setting,
-					.mode = request.mode,
-					.value = request.value,
-				};
-				auto result = capability->SetCameraControl(backend_request);
-				if (!result) {
-					return cvmmap::unexpected(
-						map_backend_control_error(result.error()));
-				}
-				return to_public_camera_control_state(*result);
-			},
-			.set_range = [capability = *assembly.camera_control, &map_backend_control_error, &to_public_camera_control_state](
-					const cvmmap::CameraControlRangeRequest &request) mutable
-				-> cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError> {
-				backends::camera_control_range_request_t backend_request{
-					.setting = request.setting,
-					.min_value = request.min_value,
-					.max_value = request.max_value,
-				};
-				auto result = capability->SetCameraControlRange(backend_request);
-				if (!result) {
-					return cvmmap::unexpected(
-						map_backend_control_error(result.error()));
-				}
-				return to_public_camera_control_state(*result);
-			},
-		};
-	};
-
-	const auto refresh_svo_recorder_provider = [&]() {
-		svo_recorder_provider.reset();
-		if (!assembly.svo_recordable) {
-			return;
-		}
-		auto capability = *assembly.svo_recordable;
-		svo_recorder_provider = SvoRecorderProvider{
-			.is_available = [capability = *assembly.svo_recordable]() mutable {
-				auto status = capability->GetRecordingStatus();
-				return status && status->can_record;
-			},
-			.start = [capability = *assembly.svo_recordable, &map_recording_error, &to_public_recording_status](
-					 const cvmmap::SvoRecordingRequest &request) mutable
-				-> cvmmap::expected<cvmmap::SvoRecordingStatus, cvmmap::ControlError> {
-				backends::svo_recording_request_t backend_request{
-					.output_path = request.output_path,
-				};
-				if (request.svo_options) {
-					backend_request.options.compression_mode = request.svo_options->compression_mode;
-					backend_request.options.bitrate = request.svo_options->bitrate;
-					backend_request.options.target_framerate = request.svo_options->target_framerate;
-					backend_request.options.transcode_streaming_input =
-
-						request.svo_options->transcode_streaming_input;
-				}
-				auto result = capability->StartRecording(backend_request);
-				if (!result) {
-					return cvmmap::unexpected(
-						map_recording_error(result.error(), capability->GetLastRecordingError()));
-				}
-				return to_public_recording_status(*result);
-			},
-			.stop = [capability = *assembly.svo_recordable, &map_recording_error, &to_public_recording_status]() mutable
-				-> cvmmap::expected<cvmmap::SvoRecordingStatus, cvmmap::ControlError> {
-				auto result = capability->StopRecording();
-				if (!result) {
-					return cvmmap::unexpected(
-						map_recording_error(result.error(), capability->GetLastRecordingError()));
-				}
-				return to_public_recording_status(*result);
-			},
-			.status = [capability = std::move(capability), &map_recording_error, &to_public_recording_status]() mutable
-				-> cvmmap::expected<cvmmap::SvoRecordingStatus, cvmmap::ControlError> {
-				auto result = capability->GetRecordingStatus();
-				if (!result) {
-					return cvmmap::unexpected(
-						map_recording_error(result.error(), capability->GetLastRecordingError()));
-				}
-				return to_public_recording_status(*result);
-			},
-		};
-	};
-
-	const auto bind_backend_callbacks = [&]() {
-		auto backend = assembly.backend;
-		backend->SetOnMetadata([&frame_publisher, direct_frame = assembly.direct_frame](
-			const frame_metadata_t &metadata) mutable {
-			frame_publisher->OnMetadata(
-				metadata,
-				direct_frame
-					? FramePublisher::direct_buffer_reset_hook_t{[direct_frame = *direct_frame](std::span<const uint8_t> buffer) mutable {
-						direct_frame->OnDirectOutputBufferWillReset(buffer);
-					}}
-					: FramePublisher::direct_buffer_reset_hook_t{});
-		});
-
-		if (assembly.direct_frame) {
-			auto direct_frame = *assembly.direct_frame;
-			direct_frame->SetOnDirectFrame(
-				[&frame_publisher, direct_frame = std::move(direct_frame)](backends::direct_frame_t frame) mutable {
-					frame_publisher->PublishDirectFrame(
-						std::move(frame),
-						[direct_frame](std::span<const uint8_t> buffer) mutable {
-							direct_frame->OnDirectOutputBufferWillReset(buffer);
-						});
-				});
-		} else {
-			backend->SetOnFrame([&frame_publisher](
-				std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata) {
-				frame_publisher->PublishFrame(frame_buffer, metadata);
-			});
-		}
-
-		if (assembly.body_tracking) {
-			auto body_tracking = *assembly.body_tracking;
-			body_tracking->SetOnBodyTracking(
-				[&body_tracking_publisher](const cvmmap::body_tracking_frame_t &frame) {
-					body_tracking_publisher.Publish(frame);
-				});
-		}
-
-		backend->SetOnError([&exit_code, &request_playlist_item_transition, &request_playlist_transition, backend](
-			int error_code, std::string_view message) mutable {
-			if (error_code == backends::ERR_EOS) {
-				spdlog::info("backend EOF: {}", message);
-				if (request_playlist_item_transition(false)) {
-					return;
-				}
-
-				const auto source_info = backend->GetSourceInfo();
-				if ((source_info.flags & cvmmap::SOURCE_INFO_FLAG_AUTO_LOOP) != 0) {
-					spdlog::info("looping finite stream (encore)");
-					if ((source_info.flags & cvmmap::SOURCE_INFO_FLAG_LOOP_EMITS_RESET) != 0) {
-						request_playlist_transition(PlaylistTransitionAction::ResetActiveEmitReset);
-					} else {
-						request_playlist_transition(PlaylistTransitionAction::ResetActiveSilent);
-					}
-					return;
-				}
-			} else if (error_code == backends::ERR_SKIP_PLAYLIST_ITEM) {
-				if (request_playlist_item_transition(true)) {
-					spdlog::warn("skipping bad finite source item: {}", message);
-					return;
-				}
-				spdlog::error("finite source item is invalid: {}", message);
-			} else {
-				if (error_code == backends::ERR_FATAL_CAMERA_RECOVERY) {
-					exit_code = static_cast<int>(ProcessExitCode::FatalCameraRecovery);
-				}
-				spdlog::error("backend error {}: {}", error_code, message);
-			}
-			is_running.store(false, std::memory_order::relaxed);
-		});
-	};
-
-	const auto initialize_active_backend = [&]() -> bool {
-		auto created_assembly = app::backends::MakeBackendAssembly(config);
-		if (!created_assembly) {
-			spdlog::error("{}", created_assembly.error());
-			return false;
-		}
-		assembly = std::move(*created_assembly);
-		frame_publisher->Reset();
-		if (assembly.encoded_access_unit) {
-			auto encoded_access_unit = *assembly.encoded_access_unit;
-			encoded_access_unit->SetOnEncodedAccessUnit(
-				[&frame_publisher](const backends::encoded_access_unit_t &access_unit) {
-					frame_publisher->OnEncodedAccessUnit(access_unit);
-				});
-		}
-		bind_backend_callbacks();
-		refresh_camera_control_provider();
-		refresh_svo_recorder_provider();
-		assembly.backend->Init();
-		return true;
-	};
-
 	// Mutex to protect backend calls from concurrent NATS and ZMQ threads
 	std::mutex backend_control_mutex;
-
-	const auto reset_runtime_frame_state = [&frame_publisher]() {
-		frame_publisher->Reset();
-	};
-
-
-	struct BackendSourcePathSnapshot {
-		std::string mcap_path{};
-		std::optional<std::string> zed_svo_path{};
-	};
-
-	const auto snapshot_backend_source_path = [&config]() {
-		return BackendSourcePathSnapshot{
-			.mcap_path = config.mcap ? config.mcap->path : std::string{},
-			.zed_svo_path = config.zed ? config.zed->svo_path : std::optional<std::string>{},
-		};
-	};
-
-	const auto restore_backend_source_path = [&config](const BackendSourcePathSnapshot &snapshot) {
-		if (config.mcap) {
-			config.mcap->path = snapshot.mcap_path;
-		}
-		if (config.zed) {
-			config.zed->svo_path = snapshot.zed_svo_path;
-		}
+	const BackendRuntimeCallbacks runtime_callbacks{
+		.stop_running = [&is_running]() {
+			is_running.store(false, std::memory_order::relaxed);
+		},
+		.mark_fatal_camera_recovery = [&exit_code]() {
+			exit_code = static_cast<int>(ProcessExitCode::FatalCameraRecovery);
+		},
+		.request_playlist_item_transition = request_playlist_item_transition,
+		.request_playlist_transition = request_playlist_transition,
 	};
 
 	const auto switch_playlist_item = [&](const size_t target_index, const bool emit_reset) -> int {
@@ -592,11 +283,11 @@ int main(int argc, char **argv) {
 			return -EINVAL;
 		}
 
-		assembly.backend->Shutdown();
+		runtime.ShutdownActiveBackend();
 		playlist_controller->ApplyCurrentPathToConfig();
-		reset_runtime_frame_state();
+		runtime.ResetFrameState();
 
-		if (!initialize_active_backend()) {
+		if (!runtime.InitializeActiveBackend(runtime_callbacks)) {
 			is_running.store(false, std::memory_order::relaxed);
 			return -EIO;
 		}
@@ -606,8 +297,9 @@ int main(int argc, char **argv) {
 		return backends::ERR_OK;
 	};
 
-	const auto any_recording_active = [&svo_recorder_provider]()
+	const auto any_recording_active = [&runtime]()
 		-> cvmmap::expected<bool, cvmmap::ControlError> {
+		const auto &svo_recorder_provider = runtime.svo_recorder_provider();
 		if (!svo_recorder_provider || !svo_recorder_provider->status) {
 			return false;
 		}
@@ -619,34 +311,32 @@ int main(int argc, char **argv) {
 	};
 
 	const auto apply_resolved_playlist =
-		[&assembly,
-		 &initialize_active_backend,
+		[&runtime,
+		 &runtime_callbacks,
 		 &playlist_controller,
 		 &pending_playlist_transition,
-		 &reset_runtime_frame_state,
-		 &restore_backend_source_path,
 		 &send_status,
-		 &snapshot_backend_source_path](
+		 &is_running](
 			app::backends::ResolvedPlaylistState resolved_playlist,
 			const bool emit_reset)
 			-> cvmmap::expected<cvmmap::PlaylistInfo, cvmmap::ControlError> {
 		const auto previous_state = playlist_controller->SnapshotState();
-		const auto previous_source_path = snapshot_backend_source_path();
+		const auto previous_source_path = runtime.SnapshotSourcePath();
 		pending_playlist_transition.exchange(
 			PlaylistTransitionAction::None,
 			std::memory_order_relaxed);
 
-		assembly.backend->Shutdown();
+		runtime.ShutdownActiveBackend();
 		playlist_controller->ReplaceState(std::move(resolved_playlist));
 		playlist_controller->ApplyCurrentPathToConfig();
-		reset_runtime_frame_state();
+		runtime.ResetFrameState();
 
-		if (!initialize_active_backend()) {
+		if (!runtime.InitializeActiveBackend(runtime_callbacks)) {
 			spdlog::error("applied playlist activation is invalid; attempting rollback");
 			playlist_controller->RestoreState(previous_state);
-			restore_backend_source_path(previous_source_path);
-			reset_runtime_frame_state();
-			if (!initialize_active_backend()) {
+			runtime.RestoreSourcePath(previous_source_path);
+			runtime.ResetFrameState();
+			if (!runtime.InitializeActiveBackend(runtime_callbacks)) {
 				spdlog::critical("playlist apply rollback error; stopping producer");
 				is_running.store(false, std::memory_order::relaxed);
 				return cvmmap::unexpected(cvmmap::ControlError{
@@ -666,7 +356,7 @@ int main(int argc, char **argv) {
 		return playlist_controller->GetInfo();
 	};
 
-	if (!initialize_active_backend()) {
+	if (!runtime.InitializeActiveBackend(runtime_callbacks)) {
 		return 1;
 	}
 
@@ -675,20 +365,33 @@ int main(int argc, char **argv) {
 	if (nats_enabled) {
 		cvmmap::NatsControlHandlers nats_handlers;
 		nats_handlers.on_reset_frame_count =
-			[&assembly,
+			[&runtime,
 			 &backend_control_mutex,
-			 &map_control_error_code,
 			 &playlist_controller,
 			 &switch_playlist_item]() -> cvmmap::ControlErrorCode {
+				const auto map_control_error_code = [](const int error_code) {
+					switch (error_code) {
+					case 0:
+						return cvmmap::ControlErrorCode::Ok;
+					case -EOPNOTSUPP:
+						return cvmmap::ControlErrorCode::Unsupported;
+					case -EINVAL:
+						return cvmmap::ControlErrorCode::InvalidPayload;
+					case -ERANGE:
+						return cvmmap::ControlErrorCode::OutOfRange;
+					default:
+						return cvmmap::ControlErrorCode::Error;
+					}
+				};
 				std::lock_guard lock(backend_control_mutex);
 				if (playlist_controller->HasPlaylist() &&
 					playlist_controller->CurrentIndex() != 0) {
 					return map_control_error_code(switch_playlist_item(0, false));
 				}
-				return map_control_error_code(assembly.backend->ResetFrameCount());
+				return map_control_error_code(runtime.assembly().backend->ResetFrameCount());
 			};
-		nats_handlers.on_get_source_info = [&assembly]() {
-			return assembly.backend->GetSourceInfo();
+		nats_handlers.on_get_source_info = [&runtime]() {
+			return runtime.assembly().backend->GetSourceInfo();
 		};
 		nats_handlers.on_apply_playlist =
 			[&apply_resolved_playlist,
@@ -727,18 +430,20 @@ int main(int argc, char **argv) {
 				return playlist_controller->GetInfo();
 			};
 		nats_handlers.on_get_camera_control_capabilities =
-			[&backend_control_mutex, &camera_control_provider]()
+			[&backend_control_mutex, &runtime]()
 			-> cvmmap::expected<cvmmap::CameraControlCapabilities, cvmmap::ControlError> {
 				std::lock_guard lock(backend_control_mutex);
+				const auto &camera_control_provider = runtime.camera_control_provider();
 				if (!camera_control_provider || !camera_control_provider->capabilities) {
 					return cvmmap::CameraControlCapabilities{};
 				}
 				return camera_control_provider->capabilities();
 			};
 		nats_handlers.on_get_camera_control =
-			[&backend_control_mutex, &camera_control_provider](const cvmmap::CameraControlSetting setting)
+			[&backend_control_mutex, &runtime](const cvmmap::CameraControlSetting setting)
 			-> cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError> {
 				std::lock_guard lock(backend_control_mutex);
+				const auto &camera_control_provider = runtime.camera_control_provider();
 				if (!camera_control_provider || !camera_control_provider->get) {
 					return cvmmap::unexpected(cvmmap::ControlError{
 						.code = cvmmap::ControlErrorCode::Unsupported,
@@ -748,9 +453,10 @@ int main(int argc, char **argv) {
 				return camera_control_provider->get(setting);
 			};
 		nats_handlers.on_set_camera_control =
-			[&backend_control_mutex, &camera_control_provider](const cvmmap::CameraControlRequest &request)
+			[&backend_control_mutex, &runtime](const cvmmap::CameraControlRequest &request)
 			-> cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError> {
 				std::lock_guard lock(backend_control_mutex);
+				const auto &camera_control_provider = runtime.camera_control_provider();
 				if (!camera_control_provider || !camera_control_provider->set) {
 					return cvmmap::unexpected(cvmmap::ControlError{
 						.code = cvmmap::ControlErrorCode::Unsupported,
@@ -760,10 +466,11 @@ int main(int argc, char **argv) {
 				return camera_control_provider->set(request);
 			};
 		nats_handlers.on_set_camera_control_range =
-			[&backend_control_mutex, &camera_control_provider](
+			[&backend_control_mutex, &runtime](
 				const cvmmap::CameraControlRangeRequest &request)
 			-> cvmmap::expected<cvmmap::CameraControlState, cvmmap::ControlError> {
 				std::lock_guard lock(backend_control_mutex);
+				const auto &camera_control_provider = runtime.camera_control_provider();
 				if (!camera_control_provider || !camera_control_provider->set_range) {
 					return cvmmap::unexpected(cvmmap::ControlError{
 						.code = cvmmap::ControlErrorCode::Unsupported,
@@ -775,8 +482,9 @@ int main(int argc, char **argv) {
 
 
 		nats_handlers.on_get_svo_recording_capabilities =
-			[&backend_control_mutex, &svo_recorder_provider]() -> cvmmap::SvoRecordingCapabilities {
+			[&backend_control_mutex, &runtime]() -> cvmmap::SvoRecordingCapabilities {
 				std::lock_guard lock(backend_control_mutex);
+				const auto &svo_recorder_provider = runtime.svo_recorder_provider();
 				return cvmmap::SvoRecordingCapabilities{
 					.can_record =
 						svo_recorder_provider &&
@@ -785,9 +493,10 @@ int main(int argc, char **argv) {
 				};
 			};
 		nats_handlers.on_start_svo_recording =
-			[&backend_control_mutex, &svo_recorder_provider](const cvmmap::SvoRecordingRequest &request)
+			[&backend_control_mutex, &runtime](const cvmmap::SvoRecordingRequest &request)
 			-> cvmmap::expected<cvmmap::SvoRecordingStatus, cvmmap::ControlError> {
 			std::lock_guard lock(backend_control_mutex);
+			const auto &svo_recorder_provider = runtime.svo_recorder_provider();
 			if (!svo_recorder_provider || !svo_recorder_provider->start) {
 				return cvmmap::unexpected(cvmmap::ControlError{
 					.code    = cvmmap::ControlErrorCode::Unsupported,
@@ -797,9 +506,10 @@ int main(int argc, char **argv) {
 			return svo_recorder_provider->start(request);
 		};
 		nats_handlers.on_stop_svo_recording =
-			[&backend_control_mutex, &svo_recorder_provider]()
+			[&backend_control_mutex, &runtime]()
 			-> cvmmap::expected<cvmmap::SvoRecordingStatus, cvmmap::ControlError> {
 			std::lock_guard lock(backend_control_mutex);
+			const auto &svo_recorder_provider = runtime.svo_recorder_provider();
 			if (!svo_recorder_provider || !svo_recorder_provider->stop) {
 				return cvmmap::unexpected(cvmmap::ControlError{
 					.code    = cvmmap::ControlErrorCode::Unsupported,
@@ -809,9 +519,10 @@ int main(int argc, char **argv) {
 			return svo_recorder_provider->stop();
 		};
 		nats_handlers.on_get_svo_recording_status =
-			[&backend_control_mutex, &svo_recorder_provider]()
+			[&backend_control_mutex, &runtime]()
 			-> cvmmap::expected<cvmmap::SvoRecordingStatus, cvmmap::ControlError> {
 			std::lock_guard lock(backend_control_mutex);
+			const auto &svo_recorder_provider = runtime.svo_recorder_provider();
 			if (!svo_recorder_provider || !svo_recorder_provider->status) {
 				return cvmmap::unexpected(cvmmap::ControlError{
 					.code    = cvmmap::ControlErrorCode::Unsupported,
@@ -823,7 +534,7 @@ int main(int argc, char **argv) {
 		nats_service->SetHandlers(std::move(nats_handlers));
 		if (!nats_service->Start()) {
 			spdlog::error("NATS control service could not start on '{}'", config.nats.url);
-			assembly.backend->Shutdown();
+			runtime.ShutdownActiveBackend();
 			return 1;
 		}
 	}
@@ -849,7 +560,7 @@ int main(int argc, char **argv) {
 				break;
 			case PlaylistTransitionAction::ResetActiveEmitReset:
 			case PlaylistTransitionAction::ResetActiveSilent:
-				rc = assembly.backend->ResetFrameCount();
+				rc = runtime.assembly().backend->ResetFrameCount();
 				if (rc == backends::ERR_OK &&
 					transition == PlaylistTransitionAction::ResetActiveEmitReset) {
 					send_status(cvmmap::ModuleStatus::StreamReset);
@@ -870,7 +581,7 @@ int main(int argc, char **argv) {
 		std::this_thread::sleep_for(std::chrono::milliseconds{100});
 	}
 
-	assembly.backend->Shutdown();
+	runtime.ShutdownActiveBackend();
 	send_status(cvmmap::ModuleStatus::Offline);
 	if (nats_service) {
 		nats_service->Stop();
