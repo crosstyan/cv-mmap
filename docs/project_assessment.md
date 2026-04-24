@@ -169,12 +169,16 @@ These are ordered by expected payoff.
    internal translation units while keeping the public NATS client/service APIs
    unchanged.
 
-6. [ ] Normalize CMake backend dependency helpers.
+6. [x] Normalize CMake backend dependency helpers.
 
    `app/CMakeLists.txt` has useful backend-mode logic, but dependency discovery
    is still embedded in one file. Backend-specific helper functions would make
    optional dependency failures easier to read and less prone to copy-paste
    differences.
+
+   Completed in this wave by moving OpenCV, GStreamer, MCAP, and ZED dependency
+   resolution into named CMake helpers while preserving the existing backend
+   mode semantics and status/error messages.
 
 ## Documentation Alignment
 

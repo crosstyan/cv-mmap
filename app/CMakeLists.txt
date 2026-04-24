@@ -91,139 +91,207 @@ cvmmap_resolve_backend_mode(BUILD_BACKEND_MCAP_MODE BUILD_BACKEND_MCAP WITH_BACK
 cvmmap_resolve_backend_mode(BUILD_BACKEND_ZED_MODE BUILD_BACKEND_ZED WITH_BACKEND_ZED OFF
 	"Build ZED backend support (AUTO, ON, OFF)")
 
-set(WITH_BACKEND_OPENCV OFF)
-if (BUILD_BACKEND_OPENCV_MODE STREQUAL "ON")
-	find_package(OpenCV REQUIRED COMPONENTS videoio)
-	set(WITH_BACKEND_OPENCV ON)
-	message(STATUS "OpenCV backend: enabled (BUILD_BACKEND_OPENCV=ON)")
-elseif (BUILD_BACKEND_OPENCV_MODE STREQUAL "AUTO")
-	find_package(OpenCV QUIET COMPONENTS videoio)
-	if (OpenCV_FOUND)
-		set(WITH_BACKEND_OPENCV ON)
-		message(STATUS "OpenCV backend: enabled (auto-detected)")
+function(cvmmap_configure_opencv_backend out_enabled mode)
+	set(_enabled OFF)
+	if (mode STREQUAL "ON")
+		find_package(OpenCV REQUIRED COMPONENTS videoio)
+		set(_enabled ON)
+		message(STATUS "OpenCV backend: enabled (BUILD_BACKEND_OPENCV=ON)")
+	elseif (mode STREQUAL "AUTO")
+		find_package(OpenCV QUIET COMPONENTS videoio)
+		if (OpenCV_FOUND)
+			set(_enabled ON)
+			message(STATUS "OpenCV backend: enabled (auto-detected)")
+		else()
+			message(STATUS "OpenCV backend: disabled (OpenCV not found)")
+		endif()
 	else()
-		message(STATUS "OpenCV backend: disabled (OpenCV not found)")
+		message(STATUS "OpenCV backend: disabled (BUILD_BACKEND_OPENCV=OFF)")
 	endif()
-else()
-	message(STATUS "OpenCV backend: disabled (BUILD_BACKEND_OPENCV=OFF)")
-endif()
 
-set(WITH_BACKEND_GSTREAMER OFF)
-set(_GSTREAMER_DEPS_FOUND OFF)
-find_package(PkgConfig QUIET)
-if (PkgConfig_FOUND)
-	pkg_check_modules(GST QUIET IMPORTED_TARGET
-		gstreamer-1.0>=1.14
-		gstreamer-video-1.0>=1.14
-		gstreamer-app-1.0>=1.14)
-	if (GST_FOUND)
-		set(_GSTREAMER_DEPS_FOUND ON)
-	endif()
-endif()
+	set(${out_enabled} "${_enabled}" PARENT_SCOPE)
+	set(OpenCV_INCLUDE_DIRS "${OpenCV_INCLUDE_DIRS}" PARENT_SCOPE)
+endfunction()
 
-if (BUILD_BACKEND_GSTREAMER_MODE STREQUAL "ON")
-	if (NOT PkgConfig_FOUND)
-		message(FATAL_ERROR "BUILD_BACKEND_GSTREAMER=ON requires PkgConfig")
+function(cvmmap_probe_gstreamer_backend_dependencies out_found out_pkgconfig_found)
+	set(_found OFF)
+	find_package(PkgConfig QUIET)
+	set(_pkgconfig_found "${PkgConfig_FOUND}")
+	if (PkgConfig_FOUND)
+		pkg_check_modules(GST QUIET IMPORTED_TARGET
+			gstreamer-1.0>=1.14
+			gstreamer-video-1.0>=1.14
+			gstreamer-app-1.0>=1.14)
+		if (GST_FOUND)
+			set(_found ON)
+		endif()
 	endif()
-	if (NOT _GSTREAMER_DEPS_FOUND)
-		message(FATAL_ERROR "BUILD_BACKEND_GSTREAMER=ON requires gstreamer-1.0, gstreamer-video-1.0, and gstreamer-app-1.0 (>= 1.14)")
-	endif()
-	set(WITH_BACKEND_GSTREAMER ON)
-	message(STATUS "GStreamer backend: enabled (BUILD_BACKEND_GSTREAMER=ON)")
-elseif (BUILD_BACKEND_GSTREAMER_MODE STREQUAL "AUTO")
-	if (_GSTREAMER_DEPS_FOUND)
-		set(WITH_BACKEND_GSTREAMER ON)
-		message(STATUS "GStreamer backend: enabled (auto-detected)")
+
+	set(${out_found} "${_found}" PARENT_SCOPE)
+	set(${out_pkgconfig_found} "${_pkgconfig_found}" PARENT_SCOPE)
+endfunction()
+
+function(cvmmap_configure_gstreamer_backend out_enabled mode)
+	set(_enabled OFF)
+	cvmmap_probe_gstreamer_backend_dependencies(
+		_GSTREAMER_DEPS_FOUND
+		_GSTREAMER_PKGCONFIG_FOUND)
+
+	if (mode STREQUAL "ON")
+		if (NOT _GSTREAMER_PKGCONFIG_FOUND)
+			message(FATAL_ERROR "BUILD_BACKEND_GSTREAMER=ON requires PkgConfig")
+		endif()
+		if (NOT _GSTREAMER_DEPS_FOUND)
+			message(FATAL_ERROR "BUILD_BACKEND_GSTREAMER=ON requires gstreamer-1.0, gstreamer-video-1.0, and gstreamer-app-1.0 (>= 1.14)")
+		endif()
+		set(_enabled ON)
+		message(STATUS "GStreamer backend: enabled (BUILD_BACKEND_GSTREAMER=ON)")
+	elseif (mode STREQUAL "AUTO")
+		if (_GSTREAMER_DEPS_FOUND)
+			set(_enabled ON)
+			message(STATUS "GStreamer backend: enabled (auto-detected)")
+		else()
+			message(STATUS "GStreamer backend: disabled (GStreamer not found)")
+		endif()
 	else()
-		message(STATUS "GStreamer backend: disabled (GStreamer not found)")
+		message(STATUS "GStreamer backend: disabled (BUILD_BACKEND_GSTREAMER=OFF)")
 	endif()
-else()
-	message(STATUS "GStreamer backend: disabled (BUILD_BACKEND_GSTREAMER=OFF)")
-endif()
 
-set(WITH_BACKEND_MCAP OFF)
-set(_MCAP_DEPS_FOUND OFF)
-set(_MCAP_INCLUDE_DIR "")
-set(CVMMAP_MCAP_INCLUDE_DIR "" CACHE PATH
-	"Optional path to MCAP C++ headers (the directory containing mcap/reader.hpp)")
-if (CVMMAP_MCAP_INCLUDE_DIR)
-	if (EXISTS "${CVMMAP_MCAP_INCLUDE_DIR}/mcap/reader.hpp")
-		set(_MCAP_INCLUDE_DIR "${CVMMAP_MCAP_INCLUDE_DIR}")
+	set(${out_enabled} "${_enabled}" PARENT_SCOPE)
+endfunction()
+
+function(cvmmap_probe_mcap_backend_dependencies out_found out_include_dir)
+	set(_found OFF)
+	set(_include_dir "")
+	set(CVMMAP_MCAP_INCLUDE_DIR "" CACHE PATH
+		"Optional path to MCAP C++ headers (the directory containing mcap/reader.hpp)")
+	if (CVMMAP_MCAP_INCLUDE_DIR)
+		if (EXISTS "${CVMMAP_MCAP_INCLUDE_DIR}/mcap/reader.hpp")
+			set(_include_dir "${CVMMAP_MCAP_INCLUDE_DIR}")
+		else()
+			message(FATAL_ERROR
+				"CVMMAP_MCAP_INCLUDE_DIR='${CVMMAP_MCAP_INCLUDE_DIR}' does not contain mcap/reader.hpp")
+		endif()
+	elseif (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mcap/include/mcap/reader.hpp")
+		set(_include_dir "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mcap/include")
+	endif()
+
+	find_package(Protobuf QUIET)
+	set(_protobuf_found OFF)
+	if (Protobuf_FOUND)
+		set(_protobuf_found ON)
+	endif()
+
+	set(_ffmpeg_found OFF)
+	find_package(PkgConfig QUIET)
+	if (PkgConfig_FOUND)
+		pkg_check_modules(FFMPEG_LIBAV QUIET IMPORTED_TARGET libavcodec libavutil libswscale)
+		if (FFMPEG_LIBAV_FOUND)
+			set(_ffmpeg_found ON)
+		endif()
+		pkg_check_modules(MCAP_COMPRESSION_LIBS QUIET IMPORTED_TARGET libzstd liblz4)
+	endif()
+
+	set(CVMMAP_RVL_ROOT "" CACHE PATH
+		"Optional RVL install/source root containing core/include/rvl/rvl.hpp and build/core/librvl_core.a")
+	find_package(rvl CONFIG QUIET)
+	if (NOT TARGET rvl::rvl AND CVMMAP_RVL_ROOT)
+		set(_CVMMAP_RVL_INCLUDE_DIR "${CVMMAP_RVL_ROOT}/core/include")
+		set(_CVMMAP_RVL_LIBRARY "${CVMMAP_RVL_ROOT}/build/core/librvl_core.a")
+		if (
+			EXISTS "${_CVMMAP_RVL_INCLUDE_DIR}/rvl/rvl.hpp"
+			AND EXISTS "${_CVMMAP_RVL_LIBRARY}")
+			add_library(rvl::rvl INTERFACE IMPORTED)
+			set_target_properties(rvl::rvl PROPERTIES
+				INTERFACE_INCLUDE_DIRECTORIES "${_CVMMAP_RVL_INCLUDE_DIR}"
+				INTERFACE_LINK_LIBRARIES "${_CVMMAP_RVL_LIBRARY}")
+		else()
+			message(FATAL_ERROR
+				"CVMMAP_RVL_ROOT='${CVMMAP_RVL_ROOT}' must contain core/include/rvl/rvl.hpp "
+				"and build/core/librvl_core.a")
+		endif()
+	endif()
+
+	if (_include_dir AND _protobuf_found AND _ffmpeg_found AND TARGET rvl::rvl)
+		set(_found ON)
+	endif()
+
+	set(${out_found} "${_found}" PARENT_SCOPE)
+	set(${out_include_dir} "${_include_dir}" PARENT_SCOPE)
+	set(Protobuf_FOUND "${Protobuf_FOUND}" PARENT_SCOPE)
+	set(Protobuf_LIBRARIES "${Protobuf_LIBRARIES}" PARENT_SCOPE)
+endfunction()
+
+function(cvmmap_configure_mcap_backend out_enabled out_include_dir mode)
+	set(_enabled OFF)
+	cvmmap_probe_mcap_backend_dependencies(
+		_MCAP_DEPS_FOUND
+		_MCAP_INCLUDE_DIR)
+
+	if (mode STREQUAL "ON")
+		if (NOT _MCAP_DEPS_FOUND)
+			message(FATAL_ERROR
+				"BUILD_BACKEND_MCAP=ON requires mcap headers, Protobuf, libavcodec/libavutil/libswscale, and rvl::rvl. "
+				"Set CVMMAP_MCAP_INCLUDE_DIR if the headers are not vendored under third_party/mcap/include.")
+		endif()
+		set(_enabled ON)
+		message(STATUS "MCAP backend: enabled (BUILD_BACKEND_MCAP=ON)")
+	elseif (mode STREQUAL "AUTO")
+		if (_MCAP_DEPS_FOUND)
+			set(_enabled ON)
+			message(STATUS "MCAP backend: enabled (auto-detected)")
+		else()
+			message(STATUS "MCAP backend: disabled (dependencies not found)")
+		endif()
 	else()
-		message(FATAL_ERROR
-			"CVMMAP_MCAP_INCLUDE_DIR='${CVMMAP_MCAP_INCLUDE_DIR}' does not contain mcap/reader.hpp")
+		message(STATUS "MCAP backend: disabled (BUILD_BACKEND_MCAP=OFF)")
 	endif()
-elseif (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mcap/include/mcap/reader.hpp")
-	set(_MCAP_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mcap/include")
-endif()
 
-find_package(Protobuf QUIET)
-set(_MCAP_PROTOBUF_FOUND OFF)
-if (Protobuf_FOUND)
-	set(_MCAP_PROTOBUF_FOUND ON)
-endif()
+	set(${out_enabled} "${_enabled}" PARENT_SCOPE)
+	set(${out_include_dir} "${_MCAP_INCLUDE_DIR}" PARENT_SCOPE)
+endfunction()
 
-set(_MCAP_FFMPEG_FOUND OFF)
-if (PkgConfig_FOUND)
-	pkg_check_modules(FFMPEG_LIBAV QUIET IMPORTED_TARGET libavcodec libavutil libswscale)
-	if (FFMPEG_LIBAV_FOUND)
-		set(_MCAP_FFMPEG_FOUND ON)
-	endif()
-	pkg_check_modules(MCAP_COMPRESSION_LIBS QUIET IMPORTED_TARGET libzstd liblz4)
-endif()
-
-set(CVMMAP_RVL_ROOT "" CACHE PATH
-	"Optional RVL install/source root containing core/include/rvl/rvl.hpp and build/core/librvl_core.a")
-find_package(rvl CONFIG QUIET)
-if (NOT TARGET rvl::rvl AND CVMMAP_RVL_ROOT)
-	set(_CVMMAP_RVL_INCLUDE_DIR "${CVMMAP_RVL_ROOT}/core/include")
-	set(_CVMMAP_RVL_LIBRARY "${CVMMAP_RVL_ROOT}/build/core/librvl_core.a")
-	if (
-		EXISTS "${_CVMMAP_RVL_INCLUDE_DIR}/rvl/rvl.hpp"
-		AND EXISTS "${_CVMMAP_RVL_LIBRARY}")
-		add_library(rvl::rvl INTERFACE IMPORTED)
-		set_target_properties(rvl::rvl PROPERTIES
-			INTERFACE_INCLUDE_DIRECTORIES "${_CVMMAP_RVL_INCLUDE_DIR}"
-			INTERFACE_LINK_LIBRARIES "${_CVMMAP_RVL_LIBRARY}")
+function(cvmmap_configure_zed_backend out_enabled mode)
+	set(_enabled OFF)
+	if (mode STREQUAL "AUTO")
+		message(FATAL_ERROR "BUILD_BACKEND_ZED=AUTO is not supported; use ON or OFF")
+	elseif (mode STREQUAL "ON")
+		set(_enabled ON)
+		message(STATUS "ZED backend: enabled (BUILD_BACKEND_ZED=ON)")
 	else()
-		message(FATAL_ERROR
-			"CVMMAP_RVL_ROOT='${CVMMAP_RVL_ROOT}' must contain core/include/rvl/rvl.hpp "
-			"and build/core/librvl_core.a")
+		message(STATUS "ZED backend: disabled (BUILD_BACKEND_ZED=OFF)")
 	endif()
-endif()
 
-if (_MCAP_INCLUDE_DIR AND _MCAP_PROTOBUF_FOUND AND _MCAP_FFMPEG_FOUND AND TARGET rvl::rvl)
-	set(_MCAP_DEPS_FOUND ON)
-endif()
+	set(${out_enabled} "${_enabled}" PARENT_SCOPE)
+endfunction()
 
-if (BUILD_BACKEND_MCAP_MODE STREQUAL "ON")
-	if (NOT _MCAP_DEPS_FOUND)
-		message(FATAL_ERROR
-			"BUILD_BACKEND_MCAP=ON requires mcap headers, Protobuf, libavcodec/libavutil/libswscale, and rvl::rvl. "
-			"Set CVMMAP_MCAP_INCLUDE_DIR if the headers are not vendored under third_party/mcap/include.")
+function(cvmmap_resolve_zed_backend_dependencies out_include_dirs out_link_dirs out_libs)
+	option(LINK_SHARED_ZED "Link with the ZED SDK shared executable" ON)
+	if (NOT LINK_SHARED_ZED AND MSVC)
+		message(FATAL_ERROR "LINK_SHARED_ZED OFF : ZED SDK static libraries not available on Windows")
 	endif()
-	set(WITH_BACKEND_MCAP ON)
-	message(STATUS "MCAP backend: enabled (BUILD_BACKEND_MCAP=ON)")
-elseif (BUILD_BACKEND_MCAP_MODE STREQUAL "AUTO")
-	if (_MCAP_DEPS_FOUND)
-		set(WITH_BACKEND_MCAP ON)
-		message(STATUS "MCAP backend: enabled (auto-detected)")
+
+	find_package(ZED REQUIRED)
+	find_package(CUDA ${ZED_CUDA_VERSION} REQUIRED)
+
+	if (LINK_SHARED_ZED)
+		set(_libs ${ZED_LIBRARIES} ${CUDA_CUDA_LIBRARY} ${CUDA_CUDART_LIBRARY})
 	else()
-		message(STATUS "MCAP backend: disabled (dependencies not found)")
+		set(_libs ${ZED_STATIC_LIBRARIES} ${CUDA_CUDA_LIBRARY} ${CUDA_LIBRARY})
 	endif()
-else()
-	message(STATUS "MCAP backend: disabled (BUILD_BACKEND_MCAP=OFF)")
-endif()
 
-set(WITH_BACKEND_ZED OFF)
-if (BUILD_BACKEND_ZED_MODE STREQUAL "AUTO")
-	message(FATAL_ERROR "BUILD_BACKEND_ZED=AUTO is not supported; use ON or OFF")
-elseif (BUILD_BACKEND_ZED_MODE STREQUAL "ON")
-	set(WITH_BACKEND_ZED ON)
-	message(STATUS "ZED backend: enabled (BUILD_BACKEND_ZED=ON)")
-else()
-	message(STATUS "ZED backend: disabled (BUILD_BACKEND_ZED=OFF)")
-endif()
+	set(${out_include_dirs} ${CUDA_INCLUDE_DIRS} ${ZED_INCLUDE_DIRS} PARENT_SCOPE)
+	set(${out_link_dirs} ${ZED_LIBRARY_DIR} ${CUDA_LIBRARY_DIRS} PARENT_SCOPE)
+	set(${out_libs} ${_libs} PARENT_SCOPE)
+endfunction()
+
+cvmmap_configure_opencv_backend(WITH_BACKEND_OPENCV "${BUILD_BACKEND_OPENCV_MODE}")
+cvmmap_configure_gstreamer_backend(WITH_BACKEND_GSTREAMER "${BUILD_BACKEND_GSTREAMER_MODE}")
+cvmmap_configure_mcap_backend(
+	WITH_BACKEND_MCAP
+	_MCAP_INCLUDE_DIR
+	"${BUILD_BACKEND_MCAP_MODE}")
+cvmmap_configure_zed_backend(WITH_BACKEND_ZED "${BUILD_BACKEND_ZED_MODE}")
 
 ####### PREPROCESS #######
 add_library(app_preprocess STATIC preprocess/app_preprocess_undistort.cpp)
@@ -290,54 +358,43 @@ target_compile_definitions(app_video_backends
 		CVMMAP_DUMMY_BUILD_TREE_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../third_party/fonts/JetBrainsMono-Regular.ttf")
 
 if (WITH_BACKEND_OPENCV)
-		target_compile_definitions(app_video_backends PUBLIC WITH_BACKEND_OPENCV=1)
-		target_sources(app_video_backends PRIVATE backends/opencv/app_backends_opencv.cpp)
-		target_include_directories(app_video_backends PRIVATE ${OpenCV_INCLUDE_DIRS})
-		target_link_libraries(app_video_backends PRIVATE opencv_videoio)
+	target_compile_definitions(app_video_backends PUBLIC WITH_BACKEND_OPENCV=1)
+	target_sources(app_video_backends PRIVATE backends/opencv/app_backends_opencv.cpp)
+	target_include_directories(app_video_backends PRIVATE ${OpenCV_INCLUDE_DIRS})
+	target_link_libraries(app_video_backends PRIVATE opencv_videoio)
 endif()
 if (WITH_BACKEND_GSTREAMER)
-        target_compile_definitions(app_video_backends PUBLIC WITH_BACKEND_GSTREAMER=1) 
-        target_sources(app_video_backends PRIVATE backends/gstreamer/app_backends_gst.cpp)
-        target_sources(app_video_backends PRIVATE backends/udp_rtp/app_backends_udp_rtp.cpp)
-        target_link_libraries(app_video_backends PRIVATE PkgConfig::GST)
+	target_compile_definitions(app_video_backends PUBLIC WITH_BACKEND_GSTREAMER=1)
+	target_sources(app_video_backends PRIVATE backends/gstreamer/app_backends_gst.cpp)
+	target_sources(app_video_backends PRIVATE backends/udp_rtp/app_backends_udp_rtp.cpp)
+	target_link_libraries(app_video_backends PRIVATE PkgConfig::GST)
 endif()
 if (WITH_BACKEND_MCAP)
-		target_compile_definitions(app_video_backends PUBLIC WITH_BACKEND_MCAP=1)
-		target_sources(app_video_backends PRIVATE backends/mcap/app_backends_mcap.cpp)
-		target_link_libraries(app_video_backends PRIVATE app_mcap_headers app_mcap_proto PkgConfig::FFMPEG_LIBAV rvl::rvl)
-		if (TARGET PkgConfig::MCAP_COMPRESSION_LIBS)
-			target_link_libraries(app_video_backends PRIVATE PkgConfig::MCAP_COMPRESSION_LIBS)
-		endif()
+	target_compile_definitions(app_video_backends PUBLIC WITH_BACKEND_MCAP=1)
+	target_sources(app_video_backends PRIVATE backends/mcap/app_backends_mcap.cpp)
+	target_link_libraries(app_video_backends PRIVATE app_mcap_headers app_mcap_proto PkgConfig::FFMPEG_LIBAV rvl::rvl)
+	if (TARGET PkgConfig::MCAP_COMPRESSION_LIBS)
+		target_link_libraries(app_video_backends PRIVATE PkgConfig::MCAP_COMPRESSION_LIBS)
+	endif()
 endif()
 
 if (WITH_BACKEND_ZED)
-        option(LINK_SHARED_ZED "Link with the ZED SDK shared executable" ON)
-        if (NOT LINK_SHARED_ZED AND MSVC)
-                message(FATAL_ERROR "LINK_SHARED_ZED OFF : ZED SDK static libraries not available on Windows")
-        endif()
-
-        find_package(ZED REQUIRED)
-        find_package(CUDA ${ZED_CUDA_VERSION} REQUIRED)
-
-        target_include_directories(app_video_backends PRIVATE ${CUDA_INCLUDE_DIRS} ${ZED_INCLUDE_DIRS})
-        target_link_directories(app_video_backends PRIVATE ${ZED_LIBRARY_DIR} ${CUDA_LIBRARY_DIRS})
-
-        if (LINK_SHARED_ZED)
-                set(ZED_LIBS ${ZED_LIBRARIES} ${CUDA_CUDA_LIBRARY} ${CUDA_CUDART_LIBRARY})
-        else()
-                set(ZED_LIBS ${ZED_STATIC_LIBRARIES} ${CUDA_CUDA_LIBRARY} ${CUDA_LIBRARY})
-        endif()
-
-        target_compile_definitions(app_video_backends PUBLIC WITH_BACKEND_ZED=1)
-        target_sources(app_video_backends PRIVATE
-			backends/zed/app_backends_zed.cpp
-			backends/zed/zed_sdk_utils.cpp
-			backends/zed/zed_capture_pipeline.cpp
-			backends/zed/zed_frame_packing.cpp
-			backends/zed/zed_camera_controls.cpp
-			backends/zed/zed_recording.cpp
-			backends/zed/zed_lifecycle.cpp)
-        target_link_libraries(app_video_backends PRIVATE app_zed_depth_policy ${ZED_LIBS})
+	cvmmap_resolve_zed_backend_dependencies(
+		_ZED_INCLUDE_DIRS
+		_ZED_LIBRARY_DIRS
+		_ZED_LIBS)
+	target_include_directories(app_video_backends PRIVATE ${_ZED_INCLUDE_DIRS})
+	target_link_directories(app_video_backends PRIVATE ${_ZED_LIBRARY_DIRS})
+	target_compile_definitions(app_video_backends PUBLIC WITH_BACKEND_ZED=1)
+	target_sources(app_video_backends PRIVATE
+		backends/zed/app_backends_zed.cpp
+		backends/zed/zed_sdk_utils.cpp
+		backends/zed/zed_capture_pipeline.cpp
+		backends/zed/zed_frame_packing.cpp
+		backends/zed/zed_camera_controls.cpp
+		backends/zed/zed_recording.cpp
+		backends/zed/zed_lifecycle.cpp)
+	target_link_libraries(app_video_backends PRIVATE app_zed_depth_policy ${_ZED_LIBS})
 endif()
 
 target_link_libraries(app_video_backends PUBLIC app_models)
@@ -353,7 +410,7 @@ option(BUILD_PREPROCESS_BENCHMARKS "Build preprocess benchmark executables" OFF)
 if (BUILD_PREPROCESS_BENCHMARKS)
 	add_executable(app_preprocess_benchmark preprocess/benchmark_undistort.cpp)
 	target_include_directories(app_preprocess_benchmark PRIVATE .)
-target_link_libraries(app_preprocess_benchmark PRIVATE app_preprocess spdlog::spdlog fmt::fmt)
+	target_link_libraries(app_preprocess_benchmark PRIVATE app_preprocess spdlog::spdlog fmt::fmt)
 	if (WITH_PREPROCESS_UNDISTORT_OPENCV)
 		target_compile_definitions(app_preprocess_benchmark PRIVATE WITH_PREPROCESS_UNDISTORT_OPENCV=1)
 	endif()
