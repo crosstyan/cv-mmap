@@ -43,6 +43,8 @@ enum class ProcessExitCode : int {
 
 volatile std::sig_atomic_t g_sigint_requested = 0;
 volatile std::sig_atomic_t g_sigint_count     = 0;
+std::atomic<int> g_process_exit_code{
+	static_cast<int>(ProcessExitCode::Success)};
 
 void handle_sigint(int) {
 	if (g_sigint_count == 0) {
@@ -175,7 +177,9 @@ int main(int argc, char **argv) {
 	static auto is_running   = std::atomic_bool{true};
 	g_sigint_requested       = 0;
 	g_sigint_count           = 0;
-	int exit_code = static_cast<int>(ProcessExitCode::Success);
+	g_process_exit_code.store(
+		static_cast<int>(ProcessExitCode::Success),
+		std::memory_order::relaxed);
 
 	std::signal(SIGINT, handle_sigint);
 
@@ -256,8 +260,10 @@ int main(int argc, char **argv) {
 		.stop_running = []() {
 			is_running.store(false, std::memory_order::relaxed);
 		},
-		.mark_fatal_camera_recovery = [&exit_code]() {
-			exit_code = static_cast<int>(ProcessExitCode::FatalCameraRecovery);
+		.mark_fatal_camera_recovery = []() {
+			g_process_exit_code.store(
+				static_cast<int>(ProcessExitCode::FatalCameraRecovery),
+				std::memory_order::relaxed);
 		},
 		.request_playlist_item_transition = request_playlist_item_transition,
 		.request_playlist_transition = request_playlist_transition,
@@ -577,6 +583,7 @@ int main(int argc, char **argv) {
 		nats_service->Stop();
 	}
 
+	const int exit_code = g_process_exit_code.load(std::memory_order::relaxed);
 	if (exit_code == static_cast<int>(ProcessExitCode::Success)) {
 		spdlog::info("normally exit");
 	} else {
