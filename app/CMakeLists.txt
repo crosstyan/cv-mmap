@@ -4,7 +4,12 @@ target_include_directories(app_models PUBLIC models)
 target_link_libraries(app_models PUBLIC cvmmap_target)
 
 ####### CONFIG #######
-add_library(app_config STATIC config/app_config.cpp)
+add_library(app_config STATIC
+	config/app_config.cpp
+	config/app_config_parsers.cpp
+	config/app_config_serialization.cpp
+	config/app_config_toml.cpp
+	config/app_config_validation.cpp)
 target_include_directories(app_config PUBLIC config)
 target_link_libraries(app_config PUBLIC app_models tomlplusplus::tomlplusplus cvmmap_target)
 
