@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstring>
 #include <limits>
+#include <utility>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -15,20 +16,6 @@
 #include <spdlog/spdlog.h>
 
 namespace app {
-namespace {
-
-struct encoded_plane_view_payload_t {
-	cvmmap::EncodedCodec codec{cvmmap::EncodedCodec::Unknown};
-	cvmmap::EncodedBitstreamFormat bitstream_format{
-		cvmmap::EncodedBitstreamFormat::Unknown};
-	uint16_t flags{0};
-	uint16_t frame_rate_num{0};
-	uint16_t frame_rate_den{0};
-	uint64_t stream_pts_ns{0};
-	std::span<const uint8_t> bytes{};
-};
-
-} // namespace
 
 FramePublisher::shm_state_t::shm_state_t(std::string name, int shm_fd)
 	: name(std::move(name)), shm_fd(shm_fd) {}
@@ -272,31 +259,22 @@ FramePublisher::TakeEncodedPlane(
 
 std::optional<frame_metadata_v2_t> FramePublisher::BuildV2Metadata(
 	const frame_metadata_t &source_metadata,
-	size_t raw_payload_size,
-	const std::optional<encoded_plane_view_t> &encoded_plane,
-	const DepthUnit depth_unit) const {
-	if (raw_payload_size == 0 || source_metadata.info.width == 0 ||
+	const backends::frame_payload_layout_t &layout,
+	const std::optional<encoded_plane_view_t> &encoded_plane) const {
+	if (layout.payload_size_bytes == 0 || source_metadata.info.width == 0 ||
 		source_metadata.info.height == 0 || source_metadata.info.channels == 0) {
 		return std::nullopt;
 	}
 
 	const size_t encoded_payload_size = encoded_plane ? encoded_plane->bytes.size() : 0;
-	auto payload_size_u32 = to_u32(raw_payload_size + encoded_payload_size);
+	if (encoded_payload_size >
+		std::numeric_limits<size_t>::max() - layout.payload_size_bytes) {
+		return std::nullopt;
+	}
+	auto payload_size_u32 = to_u32(layout.payload_size_bytes + encoded_payload_size);
 	if (!payload_size_u32) {
 		return std::nullopt;
 	}
-
-	auto make_stride = [this](size_t plane_size, uint32_t height, size_t expected_min_stride)
-		-> std::optional<uint32_t> {
-		if (height == 0) {
-			return std::nullopt;
-		}
-		size_t stride = expected_min_stride;
-		if (plane_size % height == 0) {
-			stride = std::max(expected_min_stride, plane_size / height);
-		}
-		return to_u32(stride);
-	};
 
 	frame_metadata_v2_t metadata_v2{};
 	std::memset(&metadata_v2, 0, sizeof(metadata_v2));
@@ -317,111 +295,80 @@ std::optional<frame_metadata_v2_t> FramePublisher::BuildV2Metadata(
 	metadata_v2.header.payload_size_bytes = *payload_size_u32;
 	metadata_v2.header.depth_unit = DepthUnit::Unknown;
 
-	const size_t left_expected_stride =
-		static_cast<size_t>(source_metadata.info.width) *
-		static_cast<size_t>(source_metadata.info.channels) *
-		static_cast<size_t>(size_of(source_metadata.info.depth));
-	const size_t left_compact_size =
-		left_expected_stride * static_cast<size_t>(source_metadata.info.height);
-
-	size_t left_size = raw_payload_size;
-	size_t depth_size = 0;
-	size_t confidence_size = 0;
-	bool depth_plane_active = false;
-	bool confidence_plane_active = false;
-
-	const size_t depth_expected_stride =
-		static_cast<size_t>(source_metadata.info.width) * sizeof(float);
-	const size_t depth_compact_size =
-		depth_expected_stride * static_cast<size_t>(source_metadata.info.height);
-	const size_t packed_extra_size =
-		raw_payload_size >= left_compact_size ? raw_payload_size - left_compact_size : 0;
-	const bool has_exact_depth_tail =
-		left_compact_size > 0 && depth_compact_size > 0 &&
-		raw_payload_size >= left_compact_size &&
-		packed_extra_size == depth_compact_size;
-	const bool has_exact_depth_and_confidence_tail =
-		left_compact_size > 0 && depth_compact_size > 0 &&
-		raw_payload_size >= left_compact_size &&
-		packed_extra_size == (depth_compact_size * 2);
-
-	if (has_exact_depth_and_confidence_tail) {
-		left_size = left_compact_size;
-		depth_size = depth_compact_size;
-		confidence_size = depth_compact_size;
-		depth_plane_active = true;
-		confidence_plane_active = true;
-	} else if (has_exact_depth_tail) {
-		left_size = left_compact_size;
-		depth_size = depth_compact_size;
-		depth_plane_active = true;
-	}
-
-	auto left_size_u32 = to_u32(left_size);
-	auto left_stride_u32 =
-		make_stride(left_size, source_metadata.info.height, left_expected_stride);
-	if (!left_size_u32 || !left_stride_u32) {
+	if (!layout.planes[backends::frame_payload_layout_t::SLOT_LEFT]) {
 		return std::nullopt;
 	}
 
-	auto &left_descriptor = metadata_v2.plane_descriptors[0];
-	left_descriptor.plane_type = FramePlaneType::LEFT;
-	left_descriptor.pixel_format = source_metadata.info.pixel_format;
-	left_descriptor.depth = source_metadata.info.depth;
-	left_descriptor.width = source_metadata.info.width;
-	left_descriptor.height = source_metadata.info.height;
-	left_descriptor.stride_bytes = *left_stride_u32;
-	left_descriptor.offset_bytes = 0;
-	left_descriptor.size_bytes = *left_size_u32;
+	size_t expected_next_offset = 0;
+	uint8_t raw_plane_count = 0;
+	uint8_t raw_presence_mask = 0;
+	for (size_t slot = 0; slot < layout.planes.size(); ++slot) {
+		const auto &plane = layout.planes[slot];
+		if (!plane) {
+			continue;
+		}
 
-	if (depth_plane_active) {
-		auto depth_size_u32 = to_u32(depth_size);
-		auto depth_offset_u32 = to_u32(left_size);
-		auto depth_stride_u32 =
-			make_stride(depth_size, source_metadata.info.height, depth_expected_stride);
-		if (!depth_size_u32 || !depth_offset_u32 || !depth_stride_u32) {
+		const auto expected_type =
+			slot == backends::frame_payload_layout_t::SLOT_LEFT
+				? FramePlaneType::LEFT
+				: slot == backends::frame_payload_layout_t::SLOT_DEPTH
+					? FramePlaneType::DEPTH
+					: FramePlaneType::CONFIDENCE;
+		if (plane->plane_type != expected_type) {
 			return std::nullopt;
 		}
-		auto &depth_descriptor = metadata_v2.plane_descriptors[1];
-		depth_descriptor.plane_type = FramePlaneType::DEPTH;
-		depth_descriptor.pixel_format = PixelFormat::GRAY;
-		depth_descriptor.depth = Depth::F32;
-		depth_descriptor.width = source_metadata.info.width;
-		depth_descriptor.height = source_metadata.info.height;
-		depth_descriptor.stride_bytes = *depth_stride_u32;
-		depth_descriptor.offset_bytes = *depth_offset_u32;
-		depth_descriptor.size_bytes = *depth_size_u32;
-		metadata_v2.header.plane_count = 2;
-		metadata_v2.header.plane_presence_mask = 0x03;
-		metadata_v2.header.depth_unit = depth_unit;
-	}
-
-	if (confidence_plane_active) {
-		auto confidence_size_u32 = to_u32(confidence_size);
-		auto confidence_offset_u32 = to_u32(left_size + depth_size);
-		auto confidence_stride_u32 = make_stride(
-			confidence_size,
-			source_metadata.info.height,
-			depth_expected_stride);
-		if (!confidence_size_u32 || !confidence_offset_u32 ||
-			!confidence_stride_u32) {
+		if (plane->info.width == 0 || plane->info.height == 0 ||
+			plane->info.channels == 0 || plane->size_bytes == 0 ||
+			plane->stride_bytes == 0) {
 			return std::nullopt;
 		}
-		auto &confidence_descriptor = metadata_v2.plane_descriptors[2];
-		confidence_descriptor.plane_type = FramePlaneType::CONFIDENCE;
-		confidence_descriptor.pixel_format = PixelFormat::GRAY;
-		confidence_descriptor.depth = Depth::F32;
-		confidence_descriptor.width = source_metadata.info.width;
-		confidence_descriptor.height = source_metadata.info.height;
-		confidence_descriptor.stride_bytes = *confidence_stride_u32;
-		confidence_descriptor.offset_bytes = *confidence_offset_u32;
-		confidence_descriptor.size_bytes = *confidence_size_u32;
-		metadata_v2.header.plane_count = 3;
-		metadata_v2.header.plane_presence_mask = 0x07;
+		if (plane->offset_bytes != expected_next_offset) {
+			return std::nullopt;
+		}
+		if (plane->offset_bytes > layout.payload_size_bytes ||
+			plane->size_bytes >
+				(layout.payload_size_bytes - plane->offset_bytes)) {
+			return std::nullopt;
+		}
+
+		auto width_u32 = to_u32(plane->info.width);
+		auto height_u32 = to_u32(plane->info.height);
+		auto stride_u32 = to_u32(plane->stride_bytes);
+		auto offset_u32 = to_u32(plane->offset_bytes);
+		auto size_u32 = to_u32(plane->size_bytes);
+		if (!width_u32 || !height_u32 || !stride_u32 || !offset_u32 || !size_u32) {
+			return std::nullopt;
+		}
+
+		auto &descriptor = metadata_v2.plane_descriptors[slot];
+		descriptor.plane_type = plane->plane_type;
+		descriptor.pixel_format = plane->info.pixel_format;
+		descriptor.depth = plane->info.depth;
+		descriptor.width = *width_u32;
+		descriptor.height = *height_u32;
+		descriptor.stride_bytes = *stride_u32;
+		descriptor.offset_bytes = *offset_u32;
+		descriptor.size_bytes = *size_u32;
+
+		expected_next_offset = plane->offset_bytes + plane->size_bytes;
+		raw_plane_count += 1;
+		raw_presence_mask |= static_cast<uint8_t>(1u << slot);
 	}
+	if (expected_next_offset != layout.payload_size_bytes) {
+		return std::nullopt;
+	}
+	if (raw_plane_count == 0 ||
+		raw_presence_mask != static_cast<uint8_t>((1u << raw_plane_count) - 1u)) {
+		return std::nullopt;
+	}
+	if ((raw_presence_mask & (1u << backends::frame_payload_layout_t::SLOT_DEPTH)) != 0) {
+		metadata_v2.header.depth_unit = layout.depth_unit;
+	}
+	metadata_v2.header.plane_count = raw_plane_count;
+	metadata_v2.header.plane_presence_mask = raw_presence_mask;
 
 	if (encoded_plane && !encoded_plane->bytes.empty()) {
-		auto encoded_offset_u32 = to_u32(left_size + depth_size + confidence_size);
+		auto encoded_offset_u32 = to_u32(layout.payload_size_bytes);
 		auto encoded_size_u32 = to_u32(encoded_plane->bytes.size());
 		if (!encoded_offset_u32 || !encoded_size_u32) {
 			return std::nullopt;
@@ -500,7 +447,9 @@ void FramePublisher::EnsureMetadataState(
 	auto initial_metadata = metadata;
 	initial_metadata.frame_count = 0;
 	initial_metadata.timestamp_ns = now_ns();
-	auto initial_metadata_v2 = BuildV2Metadata(initial_metadata, payload_size);
+	const auto initial_layout =
+		backends::make_left_only_payload_layout(initial_metadata, payload_size);
+	auto initial_metadata_v2 = BuildV2Metadata(initial_metadata, initial_layout);
 	if (!initial_metadata_v2) {
 		spdlog::error("initial ABI v2 metadata is invalid");
 		return;
@@ -557,17 +506,30 @@ void FramePublisher::PublishDirectFrame(
 		}
 		frame_state_ = std::move(*resized_frame_state);
 	}
-	auto packed_size = frame.fill_payload(frame_state_->image_buffer);
-	if (!packed_size || *packed_size == 0) {
+	auto fill_result = frame.fill_payload(frame_state_->image_buffer);
+	if (!fill_result || fill_result->payload_size_bytes == 0) {
 		spdlog::error("direct frame publisher received empty payload");
 		return;
 	}
-	frame.metadata.info.buffer_size = static_cast<uint32_t>(*packed_size);
+	if (fill_result->layout.payload_size_bytes != fill_result->payload_size_bytes) {
+		spdlog::error(
+			"direct frame payload layout size ({}) does not match filled size ({})",
+			fill_result->layout.payload_size_bytes,
+			fill_result->payload_size_bytes);
+		return;
+	}
+	auto fill_payload_size_u32 = to_u32(fill_result->payload_size_bytes);
+	if (!fill_payload_size_u32) {
+		spdlog::error(
+			"direct frame payload size ({}) exceeds ABI limits",
+			fill_result->payload_size_bytes);
+		return;
+	}
+	frame.metadata.info.buffer_size = *fill_payload_size_u32;
 	auto metadata_v2 = BuildV2Metadata(
 		frame.metadata,
-		*packed_size,
-		std::nullopt,
-		frame.depth_unit);
+		fill_result->layout,
+		std::nullopt);
 	if (!metadata_v2) {
 		spdlog::error(
 			"ABI v2 metadata is invalid for direct frame@{}",
@@ -587,16 +549,20 @@ void FramePublisher::PublishDirectFrame(
 
 void FramePublisher::PublishFrame(
 	std::span<uint8_t> frame_buffer,
-	const frame_metadata_t &metadata) {
+	const frame_metadata_t &metadata,
+	const backends::frame_payload_layout_t &layout) {
 	if (!frame_state_ || !sync_msg_) {
 		spdlog::error("frame callback ran before metadata initialization");
 		return;
 	}
 
 	std::span<const uint8_t> output_buffer(frame_buffer.data(), frame_buffer.size());
+	auto output_layout = layout;
 	if (undistort_pass_ && !options_.uses_direct_frame) {
 		try {
 			output_buffer = undistort_pass_->apply(output_buffer, metadata.info);
+			output_layout =
+				backends::make_left_only_payload_layout(metadata, output_buffer.size());
 		} catch (const std::exception &e) {
 			spdlog::error("undistort preprocess rejected frame: {}", e.what());
 			return;
@@ -608,11 +574,24 @@ void FramePublisher::PublishFrame(
 		spdlog::error("frame callback received zero-sized buffer");
 		return;
 	}
+	if (output_layout.payload_size_bytes != picture_buffer_size) {
+		spdlog::error(
+			"frame payload layout size ({}) does not match buffer size ({})",
+			output_layout.payload_size_bytes,
+			picture_buffer_size);
+		return;
+	}
 
 	std::vector<uint8_t> encoded_plane_storage{};
 	auto encoded_plane = TakeEncodedPlane(metadata.timestamp_ns, encoded_plane_storage);
+	if (encoded_plane &&
+		encoded_plane->bytes.size() >
+			std::numeric_limits<size_t>::max() - output_layout.payload_size_bytes) {
+		spdlog::error("frame payload size overflows after appending encoded access unit");
+		return;
+	}
 	const size_t total_payload_size =
-		picture_buffer_size +
+		output_layout.payload_size_bytes +
 		(encoded_plane ? encoded_plane->bytes.size() : 0);
 	if (total_payload_size > frame_state_->image_buffer.size()) {
 		auto resized_frame_state = frame_state_t::open(
@@ -627,7 +606,7 @@ void FramePublisher::PublishFrame(
 		frame_state_ = std::move(*resized_frame_state);
 	}
 
-	auto metadata_v2 = BuildV2Metadata(metadata, picture_buffer_size, encoded_plane);
+	auto metadata_v2 = BuildV2Metadata(metadata, output_layout, encoded_plane);
 	if (!metadata_v2) {
 		spdlog::error("ABI v2 metadata is invalid for frame@{}", metadata.frame_count);
 		return;

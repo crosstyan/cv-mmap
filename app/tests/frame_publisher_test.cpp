@@ -220,6 +220,24 @@ private:
 	return {0xAA, 0xBB, 0xCC, 0xDD};
 }
 
+[[nodiscard]] app::backends::frame_payload_layout_t
+make_test_left_only_layout(
+	const app::frame_metadata_t &metadata,
+	const size_t payload_size) {
+	return app::backends::make_left_only_payload_layout(metadata, payload_size);
+}
+
+[[nodiscard]] app::backends::frame_payload_layout_t
+make_test_left_depth_layout(
+	const app::frame_metadata_t &metadata,
+	const app::DepthUnit depth_unit = app::DepthUnit::Meter) {
+	return app::backends::make_left_depth_payload_layout(
+		metadata,
+		2,
+		8,
+		depth_unit);
+}
+
 [[nodiscard]] std::optional<frame_snapshot_t> read_frame_snapshot(
 	const app::Config &config,
 	const size_t payload_size) {
@@ -302,14 +320,16 @@ int test_direct_frame_uses_explicit_depth_unit() {
 	publisher->OnMetadata(metadata);
 	publisher->PublishDirectFrame(app::backends::direct_frame_t{
 		.metadata = metadata,
-		.depth_unit = app::DepthUnit::Meter,
 		.fill_payload = [payload](std::span<uint8_t> output) mutable
-			-> std::optional<size_t> {
+			-> std::optional<app::backends::direct_frame_fill_result_t> {
 			if (output.size() < payload.size()) {
 				return std::nullopt;
 			}
 			std::copy(payload.begin(), payload.end(), output.begin());
-			return payload.size();
+			return app::backends::direct_frame_fill_result_t{
+				.payload_size_bytes = payload.size(),
+				.layout = make_test_left_depth_layout(make_test_metadata()),
+			};
 		},
 	});
 
@@ -320,10 +340,14 @@ int test_direct_frame_uses_explicit_depth_unit() {
 	if (snapshot->metadata.header.depth_unit != cvmmap::DepthUnit::Meter) {
 		return 3;
 	}
+	if (snapshot->metadata.header.plane_count != 2 ||
+		snapshot->metadata.header.plane_presence_mask != 0x03) {
+		return 4;
+	}
 	return 0;
 }
 
-int test_copy_frame_keeps_depth_unit_unknown() {
+int test_copy_frame_left_only_layout_does_not_infer_depth() {
 	auto payload = make_depth_payload();
 	auto config = make_test_config("fpc1");
 
@@ -341,9 +365,11 @@ int test_copy_frame_keeps_depth_unit_unknown() {
 
 	auto metadata = make_test_metadata();
 	publisher->OnMetadata(metadata);
+	const auto layout = make_test_left_only_layout(metadata, payload.size());
 	publisher->PublishFrame(
 		std::span<uint8_t>(payload.data(), payload.size()),
-		metadata);
+		metadata,
+		layout);
 
 	const auto snapshot = read_frame_snapshot(config, payload.size());
 	if (!snapshot) {
@@ -351,6 +377,57 @@ int test_copy_frame_keeps_depth_unit_unknown() {
 	}
 	if (snapshot->metadata.header.depth_unit != cvmmap::DepthUnit::Unknown) {
 		return 3;
+	}
+	if (snapshot->metadata.header.plane_count != 1 ||
+		snapshot->metadata.header.plane_presence_mask != 0x01) {
+		return 4;
+	}
+	if (snapshot->metadata.descriptors[0].size_bytes != payload.size()) {
+		return 5;
+	}
+	return 0;
+}
+
+int test_copy_frame_uses_explicit_depth_layout() {
+	auto payload = make_depth_payload();
+	auto config = make_test_config("fpc2");
+
+	zmq::context_t ctx;
+	zmq::socket_t pub(ctx, zmq::socket_type::pub);
+	pub.bind("inproc://frame-publisher-copy-depth");
+
+	auto publisher = app::FramePublisher::Create(config, pub);
+	if (!publisher) {
+		return 1;
+	}
+	publisher->Configure(app::FramePublisherOptions{
+		.uses_direct_frame = false,
+	});
+
+	auto metadata = make_test_metadata();
+	publisher->OnMetadata(metadata);
+	const auto layout = make_test_left_depth_layout(metadata, app::DepthUnit::Meter);
+	publisher->PublishFrame(
+		std::span<uint8_t>(payload.data(), payload.size()),
+		metadata,
+		layout);
+
+	const auto snapshot = read_frame_snapshot(config, payload.size());
+	if (!snapshot) {
+		return 2;
+	}
+	if (snapshot->metadata.header.depth_unit != cvmmap::DepthUnit::Meter) {
+		return 3;
+	}
+	if (snapshot->metadata.header.plane_count != 2 ||
+		snapshot->metadata.header.plane_presence_mask != 0x03) {
+		return 4;
+	}
+	const auto &depth_descriptor = snapshot->metadata.descriptors[1];
+	if (depth_descriptor.plane_type != cvmmap::FramePlaneType::Depth ||
+		depth_descriptor.offset_bytes != 2 ||
+		depth_descriptor.size_bytes != 8) {
+		return 5;
 	}
 	return 0;
 }
@@ -382,9 +459,12 @@ int test_copy_frame_appends_encoded_access_unit() {
 		.stream_pts_ns = 777,
 		.bytes = encoded_payload,
 	});
+	const auto layout =
+		make_test_left_depth_layout(metadata, app::DepthUnit::Millimeter);
 	publisher->PublishFrame(
 		std::span<uint8_t>(const_cast<uint8_t *>(raw_payload.data()), raw_payload.size()),
-		metadata);
+		metadata,
+		layout);
 
 	const auto total_payload_size = raw_payload.size() + encoded_payload.size();
 	const auto snapshot = read_frame_snapshot(config, total_payload_size);
@@ -449,6 +529,42 @@ int test_copy_frame_appends_encoded_access_unit() {
 		return 10;
 	}
 
+	return 0;
+}
+
+int test_invalid_layout_does_not_publish_frame() {
+	auto payload = make_depth_payload();
+	auto config = make_test_config("fpi1");
+
+	zmq::context_t ctx;
+	zmq::socket_t pub(ctx, zmq::socket_type::pub);
+	pub.bind("inproc://frame-publisher-invalid-layout");
+
+	auto publisher = app::FramePublisher::Create(config, pub);
+	if (!publisher) {
+		return 1;
+	}
+
+	auto metadata = make_test_metadata();
+	publisher->OnMetadata(metadata);
+	auto layout = make_test_left_depth_layout(metadata, app::DepthUnit::Meter);
+	layout.payload_size_bytes += 1;
+	publisher->PublishFrame(
+		std::span<uint8_t>(payload.data(), payload.size()),
+		metadata,
+		layout);
+
+	const auto snapshot = read_frame_snapshot(config, metadata.info.buffer_size);
+	if (!snapshot) {
+		return 2;
+	}
+	if (snapshot->metadata.header.frame_id != 0) {
+		return 3;
+	}
+	if (snapshot->metadata.header.plane_count != 1 ||
+		snapshot->metadata.header.plane_presence_mask != 0x01) {
+		return 4;
+	}
 	return 0;
 }
 
@@ -549,14 +665,20 @@ int main() {
 	if (const auto rc = test_direct_frame_uses_explicit_depth_unit(); rc != 0) {
 		return 10 + rc;
 	}
-	if (const auto rc = test_copy_frame_keeps_depth_unit_unknown(); rc != 0) {
+	if (const auto rc = test_copy_frame_left_only_layout_does_not_infer_depth(); rc != 0) {
 		return 20 + rc;
 	}
-	if (const auto rc = test_copy_frame_appends_encoded_access_unit(); rc != 0) {
+	if (const auto rc = test_copy_frame_uses_explicit_depth_layout(); rc != 0) {
 		return 30 + rc;
 	}
-	if (const auto rc = test_body_tracking_publisher_serializes_over_nats(); rc != 0) {
+	if (const auto rc = test_copy_frame_appends_encoded_access_unit(); rc != 0) {
 		return 40 + rc;
+	}
+	if (const auto rc = test_invalid_layout_does_not_publish_frame(); rc != 0) {
+		return 50 + rc;
+	}
+	if (const auto rc = test_body_tracking_publisher_serializes_over_nats(); rc != 0) {
+		return 60 + rc;
 	}
 	return 0;
 }

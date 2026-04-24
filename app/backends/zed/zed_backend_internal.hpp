@@ -49,6 +49,7 @@ struct ZedBackendImpl {
 	struct PublishedFrame {
 		frame_metadata_t metadata{};
 		std::vector<uint8_t> payload{};
+		frame_payload_layout_t layout{};
 		std::optional<cvmmap::body_tracking_frame_t> body_tracking{};
 	};
 
@@ -133,7 +134,10 @@ struct ZedBackendImpl {
 	~ZedBackendImpl();
 
 	void on_metadata(const frame_metadata_t &m);
-	void on_frame(std::span<uint8_t> frame_buffer, const frame_metadata_t &m);
+	void on_frame(
+		std::span<uint8_t> frame_buffer,
+		const frame_metadata_t &m,
+		const frame_payload_layout_t &layout);
 	void on_direct_frame(direct_frame_t frame);
 	void on_error(error_t error_code, std::string_view message);
 	void on_body_tracking(const cvmmap::body_tracking_frame_t &frame);
@@ -204,7 +208,7 @@ struct ZedBackendImpl {
 	std::optional<cvmmap::body_tracking_frame_t> capture_body_tracking_frame_locked(
 		uint32_t frame_count,
 		uint64_t timestamp_ns);
-	std::optional<size_t> pack_frame_locked(
+	std::optional<direct_frame_fill_result_t> pack_frame_locked(
 		std::span<uint8_t> payload,
 		frame_info_t &info_out,
 		bool direct_output,
@@ -217,6 +221,7 @@ struct ZedBackendImpl {
 	PublishedFrame publish_captured_frame(
 		CapturedFrame captured,
 		std::vector<uint8_t> payload,
+		frame_payload_layout_t layout,
 		uint32_t frame_count,
 		bool log_publish_gap);
 	DirectPublishedFrame publish_captured_frame_direct(

@@ -84,12 +84,13 @@ int test_overlay_modifies_top_left_pixels() {
 	std::vector<uint8_t> first_frame;
 	bool got_frame = false;
 	backend.SetOnFrame(
-		[&](std::span<uint8_t> frame, const auto &metadata) {
+		[&](std::span<uint8_t> frame, const auto &metadata, const auto &layout) {
 			if (!got_frame) {
 				first_frame.assign(frame.begin(), frame.end());
 				got_frame = true;
 			}
 			(void)metadata;
+			(void)layout;
 		});
 	backend.Init();
 	backend.Shutdown();
@@ -121,8 +122,9 @@ int test_reset_rewinds_to_first_finite_frame() {
 	DummyBackend backend(dummy_cfg, video_cfg);
 	FrameCollector collector;
 	backend.SetOnFrame(
-		[&](std::span<uint8_t>, const auto &metadata) {
+		[&](std::span<uint8_t>, const auto &metadata, const auto &layout) {
 			collector.push(metadata.frame_count, metadata.timestamp_ns);
+			(void)layout;
 		});
 	backend.Init();
 	if (!collector.wait_for_count(1, std::chrono::milliseconds(100))) {
@@ -162,8 +164,9 @@ int test_loop_silent_wraps_to_first_finite_frame() {
 	DummyBackend backend(dummy_cfg, video_cfg);
 	FrameCollector collector;
 	backend.SetOnFrame(
-		[&](std::span<uint8_t>, const auto &metadata) {
+		[&](std::span<uint8_t>, const auto &metadata, const auto &layout) {
 			collector.push(metadata.frame_count, metadata.timestamp_ns);
+			(void)layout;
 		});
 	backend.Init();
 	if (!collector.wait_for_count(3, std::chrono::milliseconds(250))) {

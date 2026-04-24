@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <utility>
 
 #include <cvmmap/compat/format.hpp>
 #include <spdlog/spdlog.h>
@@ -646,7 +647,7 @@ bool ZedBackendImpl::retrieve_direct_measure_plane_locked(
 	return false;
 }
 
-std::optional<size_t> ZedBackendImpl::pack_frame_locked(
+std::optional<direct_frame_fill_result_t> ZedBackendImpl::pack_frame_locked(
 	std::span<uint8_t> payload,
 	frame_info_t &info_out,
 	const bool direct_output,
@@ -753,9 +754,33 @@ std::optional<size_t> ZedBackendImpl::pack_frame_locked(
 			}
 		}
 
-		info_out.buffer_size = static_cast<uint32_t>(
-			packed_left_size + packed_depth_size + packed_confidence_size);
-		return static_cast<size_t>(info_out.buffer_size);
+		const auto packed_size =
+			packed_left_size + packed_depth_size + packed_confidence_size;
+		info_out.buffer_size = static_cast<uint32_t>(packed_size);
+		frame_metadata_t metadata_for_layout{};
+		metadata_for_layout.info = info_out;
+		const auto depth_unit =
+			body_tracking_enabled ? DepthUnit::Meter : DepthUnit::Millimeter;
+		auto layout = packed_confidence_size > 0
+			? make_left_depth_confidence_payload_layout(
+				  metadata_for_layout,
+				  packed_left_size,
+				  packed_depth_size,
+				  packed_confidence_size,
+				  depth_unit)
+			: packed_depth_size > 0
+				? make_left_depth_payload_layout(
+					  metadata_for_layout,
+					  packed_left_size,
+					  packed_depth_size,
+					  depth_unit)
+				: make_left_only_payload_layout(
+					  metadata_for_layout,
+					  packed_left_size);
+		return direct_frame_fill_result_t{
+			.payload_size_bytes = packed_size,
+			.layout = std::move(layout),
+		};
 	}
 
 	if (has_depth_payload) {
@@ -900,7 +925,28 @@ std::optional<size_t> ZedBackendImpl::pack_frame_locked(
 
 	info_out.buffer_size = static_cast<uint32_t>(
 		packed_left_size + packed_depth_size + packed_confidence_size);
-	return static_cast<size_t>(info_out.buffer_size);
+	frame_metadata_t metadata_for_layout{};
+	metadata_for_layout.info = info_out;
+	const auto depth_unit =
+		body_tracking_enabled ? DepthUnit::Meter : DepthUnit::Millimeter;
+	auto layout = packed_confidence_size > 0
+		? make_left_depth_confidence_payload_layout(
+			  metadata_for_layout,
+			  packed_left_size,
+			  packed_depth_size,
+			  packed_confidence_size,
+			  depth_unit)
+		: packed_depth_size > 0
+			? make_left_depth_payload_layout(
+				  metadata_for_layout,
+				  packed_left_size,
+				  packed_depth_size,
+				  depth_unit)
+			: make_left_only_payload_layout(metadata_for_layout, packed_left_size);
+	return direct_frame_fill_result_t{
+		.payload_size_bytes = static_cast<size_t>(info_out.buffer_size),
+		.layout = std::move(layout),
+	};
 }
 
 cvmmap::expected<ZedBackendImpl::CapturedFrame, sl::ERROR_CODE>
@@ -1021,6 +1067,7 @@ std::optional<frame_info_t> ZedBackendImpl::make_frame_info(const sl::Mat &frame
 ZedBackendImpl::PublishedFrame ZedBackendImpl::publish_captured_frame(
 	CapturedFrame captured,
 	std::vector<uint8_t> payload,
+	frame_payload_layout_t layout,
 	const uint32_t frame_count,
 	const bool log_publish_gap) {
 	PublishedFrame published_frame{};
@@ -1030,6 +1077,7 @@ ZedBackendImpl::PublishedFrame ZedBackendImpl::publish_captured_frame(
 	published_frame.metadata.info.buffer_size =
 		static_cast<uint32_t>(payload.size());
 	published_frame.payload = std::move(payload);
+	published_frame.layout = std::move(layout);
 	published_frame.body_tracking = std::move(captured.body_tracking);
 
 	std::optional<int64_t> publish_gap_ms;
@@ -1077,7 +1125,7 @@ ZedBackendImpl::publish_captured_frame_direct(
 	published_frame.body_tracking = std::move(captured.body_tracking);
 	published_frame.fill_payload =
 		[this, info = published_frame.metadata.info, depth_requested = captured.depth_requested](
-			std::span<uint8_t> output_buffer) mutable -> std::optional<size_t> {
+			std::span<uint8_t> output_buffer) mutable -> std::optional<direct_frame_fill_result_t> {
 		std::lock_guard lock(camera_mutex);
 		return pack_frame_locked(output_buffer, info, true, depth_requested);
 	};
@@ -1120,7 +1168,8 @@ void ZedBackendImpl::emit_published_frame(PublishedFrame &published_frame) {
 		std::span<uint8_t>(
 			published_frame.payload.data(),
 			published_frame.payload.size()),
-		published_frame.metadata);
+		published_frame.metadata,
+		published_frame.layout);
 	if (published_frame.body_tracking) {
 		on_body_tracking(*published_frame.body_tracking);
 	}
@@ -1130,7 +1179,6 @@ void ZedBackendImpl::emit_published_frame_direct(
 	DirectPublishedFrame published_frame) {
 	on_direct_frame(direct_frame_t{
 		.metadata = published_frame.metadata,
-		.depth_unit = body_tracking_enabled ? DepthUnit::Meter : DepthUnit::Millimeter,
 		.fill_payload = std::move(published_frame.fill_payload),
 	});
 	if (published_frame.body_tracking) {
@@ -1179,19 +1227,19 @@ error_t ZedBackendImpl::ResetFrameCount() {
 	} else {
 		std::vector<uint8_t> payload(
 			published_frame.metadata.info.buffer_size);
-		std::optional<size_t> packed_size;
+		std::optional<direct_frame_fill_result_t> packed_frame;
 		{
 			std::lock_guard lock(camera_mutex);
-			packed_size = pack_frame_locked(
+			packed_frame = pack_frame_locked(
 				std::span<uint8_t>(payload.data(), payload.size()),
 				published_frame.metadata.info,
 				false,
 				capture->depth_requested);
 		}
-		if (!packed_size) {
+		if (!packed_frame) {
 			return -EIO;
 		}
-		payload.resize(*packed_size);
+		payload.resize(packed_frame->payload_size_bytes);
 		auto fallback = publish_captured_frame(
 			CapturedFrame{
 				.info = published_frame.metadata.info,
@@ -1201,6 +1249,7 @@ error_t ZedBackendImpl::ResetFrameCount() {
 				.timestamp_ns = published_frame.metadata.timestamp_ns,
 			},
 			std::move(payload),
+			std::move(packed_frame->layout),
 			0,
 			false);
 		emit_published_frame(fallback);

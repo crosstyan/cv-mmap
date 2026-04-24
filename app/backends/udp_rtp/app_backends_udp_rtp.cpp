@@ -288,7 +288,12 @@ struct UdpRtpBackendImpl {
 			on_encoded_access_unit(encoded->access_unit);
 		}
 		if (on_frame) {
-			on_frame(std::span<uint8_t>(raw->bytes.data(), raw->bytes.size()), raw->metadata);
+			const auto layout =
+				make_left_only_payload_layout(raw->metadata, raw->bytes.size());
+			on_frame(
+				std::span<uint8_t>(raw->bytes.data(), raw->bytes.size()),
+				raw->metadata,
+				layout);
 		}
 	}
 

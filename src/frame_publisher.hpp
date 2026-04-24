@@ -44,7 +44,8 @@ public:
 		direct_buffer_reset_hook_t before_reset = {});
 	void PublishFrame(
 		std::span<uint8_t> frame_buffer,
-		const frame_metadata_t &metadata);
+		const frame_metadata_t &metadata,
+		const backends::frame_payload_layout_t &layout);
 	void PublishDirectFrame(
 		backends::direct_frame_t frame,
 		direct_buffer_reset_hook_t before_reset = {});
@@ -118,9 +119,8 @@ private:
 	TakeEncodedPlane(uint64_t timestamp_ns, std::vector<uint8_t> &storage);
 	[[nodiscard]] std::optional<frame_metadata_v2_t> BuildV2Metadata(
 		const frame_metadata_t &source_metadata,
-		size_t raw_payload_size,
-		const std::optional<encoded_plane_view_t> &encoded_plane = std::nullopt,
-		DepthUnit depth_unit = DepthUnit::Unknown) const;
+		const backends::frame_payload_layout_t &layout,
+		const std::optional<encoded_plane_view_t> &encoded_plane = std::nullopt) const;
 	void EnsureMetadataState(
 		const frame_metadata_t &metadata,
 		size_t payload_size,

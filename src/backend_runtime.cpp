@@ -297,8 +297,9 @@ void BackendRuntime::BindBackendCallbacks() {
 		backend->SetOnFrame(
 			[this](
 				std::span<uint8_t> frame_buffer,
-				const frame_metadata_t &metadata) {
-				frame_publisher_->PublishFrame(frame_buffer, metadata);
+				const frame_metadata_t &metadata,
+				const backends::frame_payload_layout_t &layout) {
+				frame_publisher_->PublishFrame(frame_buffer, metadata, layout);
 			});
 	}
 

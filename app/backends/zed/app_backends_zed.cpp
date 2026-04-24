@@ -41,9 +41,10 @@ void ZedBackendImpl::on_metadata(const frame_metadata_t &m) {
 
 void ZedBackendImpl::on_frame(
 	std::span<uint8_t> frame_buffer,
-	const frame_metadata_t &m) {
+	const frame_metadata_t &m,
+	const frame_payload_layout_t &layout) {
 	if (_on_frame) {
-		_on_frame(frame_buffer, m);
+		_on_frame(frame_buffer, m, layout);
 	}
 }
 

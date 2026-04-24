@@ -59,7 +59,10 @@ struct OpenCVBackendImpl {
 
 	void on_frame(std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata) {
 		if (_on_frame) {
-			_on_frame(frame_buffer, metadata);
+			_on_frame(
+				frame_buffer,
+				metadata,
+				make_left_only_payload_layout(metadata, frame_buffer.size()));
 		}
 	}
 

@@ -77,6 +77,7 @@ namespace {
 	struct PublishPacket {
 		frame_metadata_t metadata{};
 		std::vector<uint8_t> payload{};
+		frame_payload_layout_t layout{};
 		std::vector<cvmmap::body_tracking_frame_t> body_frames{};
 	};
 
@@ -237,16 +238,16 @@ namespace {
 		return false;
 	}
 
-	cvmmap::DepthUnit depth_unit_from_proto(
+	DepthUnit depth_unit_from_proto(
 		const cvmmap_streamer::DepthMap::DepthUnit unit) {
 		switch (unit) {
 		case cvmmap_streamer::DepthMap::DEPTH_UNIT_MILLIMETER:
-			return cvmmap::DepthUnit::Millimeter;
+			return DepthUnit::Millimeter;
 		case cvmmap_streamer::DepthMap::DEPTH_UNIT_METER:
-			return cvmmap::DepthUnit::Meter;
+			return DepthUnit::Meter;
 		case cvmmap_streamer::DepthMap::DEPTH_UNIT_UNKNOWN:
 		default:
-			return cvmmap::DepthUnit::Unknown;
+			return DepthUnit::Unknown;
 		}
 	}
 
@@ -323,7 +324,7 @@ struct McapBackendImpl {
 	size_t current_video_index{0};
 	size_t next_video_index{0};
 	size_t next_body_index{0};
-	cvmmap::DepthUnit depth_unit_hint{cvmmap::DepthUnit::Unknown};
+	DepthUnit depth_unit_hint{DepthUnit::Unknown};
 	DecoderState decoder{};
 	bool metadata_emitted{false};
 	bool position_changed{false};
@@ -341,9 +342,12 @@ struct McapBackendImpl {
 		}
 	}
 
-	void on_frame(std::span<uint8_t> frame_buffer_, const frame_metadata_t &metadata_) {
+	void on_frame(
+		std::span<uint8_t> frame_buffer_,
+		const frame_metadata_t &metadata_,
+		const frame_payload_layout_t &layout) {
 		if (_on_frame) {
-			_on_frame(frame_buffer_, metadata_);
+			_on_frame(frame_buffer_, metadata_, layout);
 		}
 	}
 
@@ -366,7 +370,8 @@ struct McapBackendImpl {
 		}
 		on_frame(
 			std::span<uint8_t>(packet.payload.data(), packet.payload.size()),
-			packet.metadata);
+			packet.metadata,
+			packet.layout);
 		for (const auto &body_frame : packet.body_frames) {
 			on_body_tracking(body_frame);
 		}
@@ -525,11 +530,11 @@ struct McapBackendImpl {
 			video_samples.front().keyframe = true;
 		}
 
-		depth_unit_hint = cvmmap::DepthUnit::Unknown;
+		depth_unit_hint = DepthUnit::Unknown;
 		for (const auto &[timestamp, depth] : depth_by_timestamp) {
 			(void)timestamp;
 			depth_unit_hint = depth_unit_from_proto(depth.source_unit);
-			if (depth_unit_hint != cvmmap::DepthUnit::Unknown) {
+			if (depth_unit_hint != DepthUnit::Unknown) {
 				break;
 			}
 		}
@@ -772,6 +777,9 @@ struct McapBackendImpl {
 			.buffer_size  = static_cast<uint32_t>(decoded_frame->size()),
 		};
 		packet.payload = std::move(*decoded_frame);
+		packet.layout = make_left_only_payload_layout(
+			packet.metadata,
+			packet.payload.size());
 
 		auto depth_it = depth_by_timestamp.find(packet.metadata.timestamp_ns);
 		if (depth_it != depth_by_timestamp.end()) {
@@ -790,7 +798,12 @@ struct McapBackendImpl {
 					depth_bytes,
 					depth_bytes + depth_pixels->size() * sizeof(float));
 				const auto depth_unit = depth_unit_from_proto(depth_it->second.source_unit);
-				if (depth_unit != cvmmap::DepthUnit::Unknown) {
+				packet.layout = make_left_depth_payload_layout(
+					packet.metadata,
+					packet.metadata.info.buffer_size,
+					depth_pixels->size() * sizeof(float),
+					depth_unit);
+				if (depth_unit != DepthUnit::Unknown) {
 					depth_unit_hint = depth_unit;
 				}
 			} else {

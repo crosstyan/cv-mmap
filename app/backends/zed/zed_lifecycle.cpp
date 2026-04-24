@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <thread>
+#include <utility>
 
 #include <cvmmap/compat/expected.hpp>
 #include <cvmmap/compat/format.hpp>
@@ -276,20 +277,20 @@ void ZedBackendImpl::Init() {
 		emit_published_frame_direct(std::move(initial_direct));
 	} else {
 		std::vector<uint8_t> payload(initial_direct.metadata.info.buffer_size);
-		std::optional<size_t> packed_size;
+		std::optional<direct_frame_fill_result_t> packed_frame;
 		{
 			std::lock_guard lock(camera_mutex);
-			packed_size = pack_frame_locked(
+			packed_frame = pack_frame_locked(
 				std::span<uint8_t>(payload.data(), payload.size()),
 				initial_direct.metadata.info,
 				false,
 				initial_capture->depth_requested);
 		}
-		if (!packed_size) {
+		if (!packed_frame) {
 			spdlog::error("bad initial ZED frame payload pack");
 			return;
 		}
-		payload.resize(*packed_size);
+		payload.resize(packed_frame->payload_size_bytes);
 		auto initial_published = publish_captured_frame(
 			CapturedFrame{
 				.info = initial_direct.metadata.info,
@@ -299,6 +300,7 @@ void ZedBackendImpl::Init() {
 				.timestamp_ns = initial_direct.metadata.timestamp_ns,
 			},
 			std::move(payload),
+			std::move(packed_frame->layout),
 			0,
 			false);
 		emit_published_frame(initial_published);
@@ -334,19 +336,20 @@ void ZedBackendImpl::worker_loop(std::stop_token stop_token) {
 				spdlog::debug("frame@{}", frame_count);
 			} else {
 				std::vector<uint8_t> payload(capture->info.buffer_size);
-				auto packed_size = pack_frame_locked(
+				auto packed_frame = pack_frame_locked(
 					std::span<uint8_t>(payload.data(), payload.size()),
 					capture->info,
 					false,
 					capture->depth_requested);
-				if (!packed_size) {
+				if (!packed_frame) {
 					spdlog::error("bad ZED frame payload pack");
 					continue;
 				}
-				payload.resize(*packed_size);
+				payload.resize(packed_frame->payload_size_bytes);
 				auto published_frame = publish_captured_frame(
 					std::move(*capture),
 					std::move(payload),
+					std::move(packed_frame->layout),
 					frame_count,
 					true);
 				emit_published_frame(published_frame);

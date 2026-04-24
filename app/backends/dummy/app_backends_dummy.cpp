@@ -290,7 +290,10 @@ struct DummyBackendImpl {
 
 	void on_frame(std::span<uint8_t> frame_buffer_, const frame_metadata_t &metadata_) {
 		if (_on_frame) {
-			_on_frame(frame_buffer_, metadata_);
+			_on_frame(
+				frame_buffer_,
+				metadata_,
+				make_left_only_payload_layout(metadata_, frame_buffer_.size()));
 		}
 	}
 

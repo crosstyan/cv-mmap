@@ -1,6 +1,9 @@
 #ifndef C56C8359_242F_4112_AFD8_5ED905EF2FA8
 #define C56C8359_242F_4112_AFD8_5ED905EF2FA8
 
+#include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -18,17 +21,164 @@
 
 namespace app::backends {
 
+struct frame_payload_plane_t {
+	FramePlaneType plane_type{FramePlaneType::LEFT};
+	frame_info_t info{};
+	size_t offset_bytes{0};
+	size_t stride_bytes{0};
+	size_t size_bytes{0};
+};
+
+struct frame_payload_layout_t {
+	static constexpr size_t SLOT_LEFT = 0;
+	static constexpr size_t SLOT_DEPTH = 1;
+	static constexpr size_t SLOT_CONFIDENCE = 2;
+	static constexpr size_t SLOT_COUNT = 3;
+
+	std::array<std::optional<frame_payload_plane_t>, SLOT_COUNT> planes{};
+	size_t payload_size_bytes{0};
+	DepthUnit depth_unit{DepthUnit::Unknown};
+};
+
+struct direct_frame_fill_result_t {
+	size_t payload_size_bytes{0};
+	frame_payload_layout_t layout{};
+};
+
+[[nodiscard]]
+inline size_t frame_payload_stride_or_min(
+	const size_t plane_size,
+	const uint32_t height,
+	const size_t expected_min_stride) {
+	if (height == 0) {
+		return expected_min_stride;
+	}
+	if (plane_size % height == 0) {
+		return std::max(expected_min_stride, plane_size / height);
+	}
+	return expected_min_stride;
+}
+
+[[nodiscard]]
+inline size_t frame_info_min_stride_bytes(const frame_info_t &info) {
+	const auto channel_size = size_of(info.depth);
+	if (channel_size <= 0) {
+		return 0;
+	}
+	return static_cast<size_t>(info.width) *
+		   static_cast<size_t>(info.channels) *
+		   static_cast<size_t>(channel_size);
+}
+
+[[nodiscard]]
+inline frame_payload_plane_t make_left_payload_plane(
+	frame_metadata_t metadata,
+	const size_t offset,
+	const size_t size) {
+	metadata.info.buffer_size = static_cast<uint32_t>(size);
+	return frame_payload_plane_t{
+		.plane_type = FramePlaneType::LEFT,
+		.info = metadata.info,
+		.offset_bytes = offset,
+		.stride_bytes = frame_payload_stride_or_min(
+			size,
+			metadata.info.height,
+			frame_info_min_stride_bytes(metadata.info)),
+		.size_bytes = size,
+	};
+}
+
+[[nodiscard]]
+inline frame_payload_plane_t make_aux_f32_payload_plane(
+	const FramePlaneType plane_type,
+	const frame_metadata_t &metadata,
+	const size_t offset,
+	const size_t size) {
+	frame_info_t info{};
+	info.width = metadata.info.width;
+	info.height = metadata.info.height;
+	info.channels = 1;
+	info.depth = Depth::F32;
+	info.pixel_format = PixelFormat::GRAY;
+	info.buffer_size = static_cast<uint32_t>(size);
+	const size_t expected_stride =
+		static_cast<size_t>(metadata.info.width) * sizeof(float);
+	return frame_payload_plane_t{
+		.plane_type = plane_type,
+		.info = info,
+		.offset_bytes = offset,
+		.stride_bytes = frame_payload_stride_or_min(
+			size,
+			metadata.info.height,
+			expected_stride),
+		.size_bytes = size,
+	};
+}
+
+[[nodiscard]]
+inline frame_payload_layout_t make_left_only_payload_layout(
+	const frame_metadata_t &metadata,
+	const size_t payload_size) {
+	frame_payload_layout_t layout{};
+	layout.payload_size_bytes = payload_size;
+	layout.planes[frame_payload_layout_t::SLOT_LEFT] =
+		make_left_payload_plane(metadata, 0, payload_size);
+	return layout;
+}
+
+[[nodiscard]]
+inline frame_payload_layout_t make_left_depth_payload_layout(
+	const frame_metadata_t &metadata,
+	const size_t left_size,
+	const size_t depth_size,
+	const DepthUnit depth_unit) {
+	auto layout = make_left_only_payload_layout(metadata, left_size);
+	layout.payload_size_bytes = left_size + depth_size;
+	layout.depth_unit = depth_unit;
+	layout.planes[frame_payload_layout_t::SLOT_DEPTH] =
+		make_aux_f32_payload_plane(
+			FramePlaneType::DEPTH,
+			metadata,
+			left_size,
+			depth_size);
+	return layout;
+}
+
+[[nodiscard]]
+inline frame_payload_layout_t make_left_depth_confidence_payload_layout(
+	const frame_metadata_t &metadata,
+	const size_t left_size,
+	const size_t depth_size,
+	const size_t confidence_size,
+	const DepthUnit depth_unit) {
+	auto layout = make_left_depth_payload_layout(
+		metadata,
+		left_size,
+		depth_size,
+		depth_unit);
+	layout.payload_size_bytes = left_size + depth_size + confidence_size;
+	layout.planes[frame_payload_layout_t::SLOT_CONFIDENCE] =
+		make_aux_f32_payload_plane(
+			FramePlaneType::CONFIDENCE,
+			metadata,
+			left_size + depth_size,
+			confidence_size);
+	return layout;
+}
+
 using on_metadata_fn_t = cvmmap::move_only_function<void(const frame_metadata_t &metadata)>;
-using on_frame_fn_t = cvmmap::move_only_function<void(std::span<uint8_t> frame_buffer, const frame_metadata_t &metadata)>;
+using on_frame_fn_t = cvmmap::move_only_function<void(
+	std::span<uint8_t> frame_buffer,
+	const frame_metadata_t &metadata,
+	const frame_payload_layout_t &layout)>;
 using on_body_tracking_fn_t = cvmmap::move_only_function<void(const cvmmap::body_tracking_frame_t &frame)>;
 using on_error_fn_t = cvmmap::move_only_function<void(error_t error_code, std::string_view message)>;
 
 using direct_frame_fill_fn_t =
-	cvmmap::move_only_function<std::optional<size_t>(std::span<uint8_t> output_buffer)>;
+	cvmmap::move_only_function<std::optional<direct_frame_fill_result_t>(std::span<uint8_t> output_buffer)>;
 
 struct direct_frame_t {
 	frame_metadata_t metadata{};
-	DepthUnit depth_unit{DepthUnit::Unknown};
 	direct_frame_fill_fn_t fill_payload{};
 };
 
