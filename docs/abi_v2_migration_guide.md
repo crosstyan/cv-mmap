@@ -9,7 +9,7 @@
 
 | Component | Version | Notes |
 |-----------|---------|-------|
-| SHM Metadata | v2 (major=2) | 256-byte header with plane descriptors |
+| SHM Metadata | v2.x (major=2) | 256-byte header with plane descriptors; v2.1 adds optional encoded access-unit plane semantics |
 | Control Wire | v1 (major=1) | Request/response structs unchanged |
 | Sync Wire | v1 (major=1) | ZMQ pub/sub framing unchanged |
 
@@ -52,6 +52,21 @@ Compatibility expectations:
 - Updated consumers must treat `unknown` as "depth present but unit unspecified".
 - Updated producers should set `depth_unit` whenever they publish a depth plane with
   a known metric unit.
+
+### Encoded Access Unit Extension Within SHM v2.1
+
+When `versions_major = 2` and `versions_minor >= 1`, the parser uses sparse
+presence-mask semantics:
+
+- slot `0` LEFT must be present
+- slot `1` DEPTH is optional
+- slot `2` CONFIDENCE is optional
+- slot `3` ENCODED_ACCESS_UNIT is optional
+- `plane_count` must equal `popcount(plane_presence_mask)`
+
+The 19-byte extension at header offset `0x2D` carries encoded access-unit
+metadata when slot 3 is active. The current supported encoded plane uses H.264
+or H.265 Annex B access units.
 
 ---
 

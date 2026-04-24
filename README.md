@@ -9,7 +9,7 @@ This repo also installs the reusable C++ package `cvmmap-core`, which is the can
 - `cv-mmap-gui`
 - any other C++ consumer that needs cvmmap target resolution, ABI structs, metadata parsing, or client access
 
-The Python consumer remains a separate project at `/home/crosstyan/Code/cvmmap-python-client`.
+The Python consumer remains a separate project, `cvmmap-python-client`.
 
 ## Architecture
 
@@ -166,6 +166,9 @@ Normative spec documents live under `docs/`, especially:
 - `docs/abi_v2_contract_checklist.md`
 - `docs/abi_v2_migration_guide.md`
 - `docs/python-client.md`
+
+For the current engineering complexity and refactor review, see
+`docs/project_assessment.md`.
 
 ## ZED Body Tracking Frame Metadata
 
@@ -508,9 +511,9 @@ sudo pacman -S opencv \
 
 ## Related Repositories
 
-- Python client: `/home/crosstyan/Code/cvmmap-python-client`
-- GUI consumer: `/home/crosstyan/Code/cv-mmap-gui`
-- Streamer consumer: `/home/crosstyan/Code/cvmmap-streamer`
+- Python client: `cvmmap-python-client`
+- GUI consumer: `cv-mmap-gui`
+- Streamer consumer: `cvmmap-streamer`
 
 ## TODO
 

@@ -2,8 +2,8 @@
 
 The Python client has been extracted from this repository into a standalone project:
 
-- **Project path (local):** `/home/crosstyan/Code/cvmmap-python-client`
-- **Planned upstream repo:** `cvmmap-python-client` (to be published)
+- **Repository:** `cvmmap-python-client`
+- **Checkout convention:** keep it as a sibling repository when running cross-repo fixture checks locally
 - **Import name:** `cvmmap`
 
 ## Why extracted

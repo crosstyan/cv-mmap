@@ -1,1 +1,0 @@
-- [2026-03-04 15:08:24Z] Prior failed run appended malformed note lines due shell interpolation; entries were not edited per append-only rule. Added corrected recovery notes in learnings/decisions and continued with clean scope.

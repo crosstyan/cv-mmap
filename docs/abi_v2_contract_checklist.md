@@ -1,8 +1,7 @@
 # ABI v2 Contract Checklist
 
 **Source of Truth:** `docs/cvmmap_shm_metadata_v1_v2.ksy`  
-**Contract Version:** v2 (major=2)  
-**Generated:** 2026-03-04
+**Contract Version:** v2.x (major=2)
 
 This document maps ALL v2 header/descriptor invariants to exact target code locations.
 
@@ -13,9 +12,10 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 | Document | Section | Description |
 |----------|------------|-------------|
 | `docs/cvmmap_shm_metadata_v1_v2.ksy` | `types.frame_metadata_v2_header` | `frame_metadata_v2_header` struct definition |
+| `docs/cvmmap_shm_metadata_v1_v2.ksy` | `types.frame_metadata_v2_header_extension` | fixed 19-byte v2.1 encoded access-unit extension |
 | `docs/cvmmap_shm_metadata_v1_v2.ksy` | `types.frame_metadata_v2` | `frame_metadata_v2` struct definition (full metadata) |
 | `docs/cvmmap_shm_metadata_v1_v2.ksy` | `types.frame_plane_descriptor_v2` | `frame_plane_descriptor_v2` struct definition |
-| `core/src/parser.cpp` | v2 parser validation | Deterministic plane ordering rules |
+| `core/src/parser.cpp` | v2 parser validation | v2.0 contiguous and v2.1 sparse-mask validation rules |
 
 ---
 
@@ -27,7 +27,7 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 |--------|-------|------|----------|------------------|
 | 0x00 | `magic[8]` | bytes | `types.frame_metadata_v2_header` | Must be `[67, 86, 45, 77, 77, 65, 80, 0]` ("CV-MMAP\0") |
 | 0x08 | `versions_major` | u1 | `types.frame_metadata_v2_header` | Must equal `2` |
-| 0x09 | `versions_minor` | u1 | `types.frame_metadata_v2_header` | Any u8 value |
+| 0x09 | `versions_minor` | u1 | `types.frame_metadata_v2_header` | `0` for base v2.0; `>=1` enables sparse-mask encoded-AU extension semantics |
 | 0x0A | `flags` | u2 | `types.frame_metadata_v2_header` | Currently reserved (u16) |
 | 0x0C | `frame_id` | u4 | `types.frame_metadata_v2_header` | Any u32 value |
 | 0x10 | `capture_ts_ns` | u8 | `types.frame_metadata_v2_header` | Any u64 value |
@@ -39,14 +39,15 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 | 0x26 | `plane_descriptor_capacity` | u2 | `types.frame_metadata_v2_header` | Must equal `4` |
 | 0x28 | `payload_size_bytes` | u4 | `types.frame_metadata_v2_header` | Must be greater than `0` |
 | 0x2C | `depth_unit` | u1 | `types.frame_metadata_v2_header` | Enum: `unknown=0`, `millimeter=1`, `meter=2` |
-| 0x2D | `reserved_0[19]` | bytes | `types.frame_metadata_v2_header` | Reserved for future use; write zero, ignore on read |
+| 0x2D | `reserved_0[19]` / `frame_metadata_v2_header_extension` | bytes | `types.frame_metadata_v2_header_extension` | v2.0 reserved/zero; v2.1 overlays encoded access-unit metadata |
 
-### KSY Instance Constraints
+### Presence Mask Semantics
 
-| Instance | Expression | Source | Meaning |
-|----------|------------|----------|---------|
-| `contiguous_mask_expected` | `(1 << plane_count) - 1` | producer helper + parser validation | Expected bit pattern for contiguous plane mask |
-| `contiguous_mask_valid` | `plane_presence_mask == contiguous_mask_expected` | producer helper + parser validation | Presence mask must match expected contiguous pattern |
+| Version | Rule | Source | Meaning |
+|---------|------|--------|---------|
+| v2.0 (`versions_minor == 0`) | `plane_presence_mask == ((1 << plane_count) - 1)` | producer helper + parser validation | Active descriptors are contiguous from slot 0 |
+| v2.1+ (`versions_minor >= 1`) | `plane_presence_mask & 0x01 != 0` and `plane_count == popcount(plane_presence_mask)` | parser validation | Slot 0 LEFT is always present; optional slot 3 encoded AU can be present without depth/confidence |
+| all v2.x | `(plane_presence_mask & 0xF0) == 0` | parser validation | Only four descriptor slots are currently defined |
 
 ### `depth_unit` Semantics
 
@@ -55,6 +56,24 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 - `meter` (`2`) means each finite positive `f32` depth sample is expressed in meters.
 - Consumers that require unit-aware downstream processing should skip depth handling when `depth_unit == unknown`.
 - Compatibility rule: older v2 producers that left byte `0x2C` zeroed continue to parse as `unknown`.
+
+### v2.1 Encoded Access-Unit Extension
+
+The 19 bytes at header offset `0x2D` remain ABI-stable. For v2.0 they are
+reserved. For v2.1+ they are interpreted as:
+
+| Relative Offset | Field | Type | Valid/Constraint |
+|-----------------|-------|------|------------------|
+| 0x00 | `encoded_codec` | u1 | `unknown=0`, `h264=1`, `h265=2` |
+| 0x01 | `encoded_bitstream_format` | u1 | `unknown=0`, `annex_b=1` |
+| 0x02 | `encoded_flags` | u2 | bit `0x0001` = keyframe |
+| 0x04 | `encoded_frame_rate_num` | u2 | optional frame-rate numerator |
+| 0x06 | `encoded_frame_rate_den` | u2 | optional frame-rate denominator |
+| 0x08 | `encoded_stream_pts_ns` | u8 | encoded stream PTS in nanoseconds |
+| 0x10 | `reserved_0[3]` | bytes | reserved; write zero, ignore on read |
+
+When slot 3 is active, `encoded_codec` and `encoded_bitstream_format` must not
+be `unknown`.
 
 ---
 
@@ -102,21 +121,22 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 
 ## Deterministic Plane Ordering Rules
 
-**Rule 1:** Active descriptors are contiguous from slot 0.  
-**Rule 2:** Slot 0 is always LEFT plane.  
-**Rule 3:** Slot 1 is DEPTH plane when `plane_count >= 2`.  
-**Rule 4:** Slot 2 is CONFIDENCE plane when `plane_count >= 3`.  
-**Rule 5:** Slots >= plane_count are inactive and must be empty descriptors.  
-**Rule 6:** Active planes are packed in payload order: each next offset equals the previous offset + previous size.
+- Slot 0 is always LEFT plane and starts at payload offset 0.
+- Slot 1 is DEPTH when active.
+- Slot 2 is CONFIDENCE when active.
+- Slot 3 is ENCODED_ACCESS_UNIT when active.
+- Inactive descriptors must be empty.
+- Active planes are packed in payload order: each active descriptor's offset equals the previous active descriptor's offset plus size.
+- v2.0 active descriptors are contiguous from slot 0; v2.1+ active descriptors are selected by `plane_presence_mask`.
 
 ### Plane Slot Semantics
 
 | Slot | Plane Type | Condition |
 |------|------------|-----------|
-| 0 | `left` | Always active (plane_count >= 1) |
-| 1 | `depth` | Active when plane_count >= 2 |
-| 2 | `confidence` | Active when plane_count >= 3 |
-| 3 | Reserved | Active when plane_count == 4 |
+| 0 | `left` | Always active |
+| 1 | `depth` | Optional; in v2.0 active when `plane_count >= 2`, in v2.1+ active when mask bit `0x02` is set |
+| 2 | `confidence` | Optional; in v2.0 active when `plane_count >= 3`, in v2.1+ active when mask bit `0x04` is set |
+| 3 | `encoded_access_unit` | Optional v2.1+ plane, active when mask bit `0x08` is set |
 
 ---
 
@@ -140,7 +160,7 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 | `plane_descriptor_capacity` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
 | `payload_size_bytes` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
 | `depth_unit` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
-| `reserved_0[19]` | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
+| `reserved_0[19]` / encoded extension | `app/models/app_metadata_models.hpp` | `core/include/cvmmap/ipc.hpp` | Implemented |
 
 ### Current v1 `frame_info_t` (12 bytes)
 
@@ -159,7 +179,9 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 | Constant | Current Value | Location | Target v2 |
 |----------|---------------|----------|-----------|
 | `FRAME_METADATA_V2_MAJOR` | `2` | `core/include/cvmmap/ipc.hpp` | `2` |
-| `VERSION_MINOR` | `0` | `app/models/app_common_models.hpp:36` | `0` |
+| `FRAME_METADATA_V2_MINOR_BASE` | `0` | `core/include/cvmmap/ipc.hpp` | base v2.0 |
+| `FRAME_METADATA_V2_MINOR_ENCODED_AU` | `1` | `core/include/cvmmap/ipc.hpp` | v2.1 encoded AU |
+| `VERSION_MINOR` | `0` | `app/models/app_common_models.hpp` | sync/control wire v1 minor |
 
 ---
 
@@ -176,7 +198,8 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 
 - [x] `plane_presence_mask` validation implemented in parser
 - [x] `plane_count` validation implemented in parser
-- [x] contiguous mask validation implemented in parser
+- [x] contiguous v2.0 mask validation implemented in parser
+- [x] sparse v2.1 mask/popcount validation implemented in parser
 - [x] empty-descriptor validation implemented in parser
 - [x] plane bounds validation implemented in parser
 - [x] plane slot ordering validation implemented in parser
@@ -194,6 +217,7 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 - [x] static assertions exist for 256-byte metadata region
 - [x] parser logic validates presence masks and plane ordering invariants
 - [x] parser logic validates and exposes `depth_unit`
+- [x] parser logic validates and exposes v2.1 encoded access-unit metadata
 - [x] `docs/cvmmap_shm_metadata_v1_v2.ksy` is the versioned SHM format document
 
 ---
@@ -207,6 +231,7 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 | 0 | `left` |
 | 1 | `depth` |
 | 2 | `confidence` |
+| 3 | `encoded_access_unit` |
 
 ### `pixel_format` (u1)
 
@@ -233,6 +258,21 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 | 6 | `f64` |
 | 7 | `f16` |
 
+### `encoded_codec` (u1)
+
+| Value | Name |
+|-------|------|
+| 0 | `unknown` |
+| 1 | `h264` |
+| 2 | `h265` |
+
+### `encoded_bitstream_format` (u1)
+
+| Value | Name |
+|-------|------|
+| 0 | `unknown` |
+| 1 | `annex_b` |
+
 ---
 
 ## Verification
@@ -240,11 +280,12 @@ This document maps ALL v2 header/descriptor invariants to exact target code loca
 Run this grep to verify all normative fields are present in ksy:
 
 ```bash
-grep -n "depth_unit\\|plane_descriptor_size\\|plane_descriptor_capacity\\|plane_presence_mask" docs/cvmmap_shm_metadata_v1_v2.ksy
+grep -n "depth_unit\\|encoded_codec\\|encoded_access_unit\\|plane_descriptor_size\\|plane_descriptor_capacity\\|plane_presence_mask" docs/cvmmap_shm_metadata_v1_v2.ksy
 ```
 
 Expected output should include:
 - the `depth_unit` enum and header field
+- `encoded_access_unit`, `encoded_codec`, and `encoded_bitstream_format`
 - `plane_presence_mask`
 - `plane_descriptor_size`
 - `plane_descriptor_capacity`

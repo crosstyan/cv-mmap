@@ -3,6 +3,48 @@
 This document records wire-compatible ABI changes that affect downstream
 parsers, transports, and generated schemas.
 
+## SHM Metadata v2.1 Encoded Access Unit
+
+### 2026-04-24
+
+Status:
+- SHM metadata major version unchanged (`versions_major = 2`)
+- `versions_minor = 1` indicates sparse-mask semantics and optional encoded
+  access-unit metadata
+- fixed metadata region size unchanged (`256` bytes)
+- fixed v2 header and descriptor sizes unchanged (`64` and `24` bytes)
+
+Change:
+- added `FramePlaneType::EncodedAccessUnit` in descriptor slot 3
+- `plane_presence_mask` may be sparse when `versions_minor >= 1`
+- `plane_count` is the popcount of `plane_presence_mask` for v2.1+
+- the fixed 19-byte header extension at offset `0x2D` carries encoded stream
+  metadata:
+  - codec (`unknown`, `h264`, `h265`)
+  - bitstream format (`unknown`, `annex_b`)
+  - flags, currently including `0x0001` for keyframes
+  - frame-rate numerator/denominator
+  - encoded stream PTS in nanoseconds
+
+Reason:
+- the `udp_rtp` backend needs to publish a decoded LEFT plane and a parsed
+  encoded access unit from the same source frame
+- forcing absent DEPTH/CONFIDENCE descriptors just to reach slot 3 would make
+  the descriptor contract lie about available data
+
+Downstream impact:
+- v2.0-only consumers that require contiguous masks should fail closed on v2.1
+  snapshots
+- updated parsers can read the LEFT plane normally and optionally use slot 3 for
+  muxing or forwarding without re-encoding
+- `docs/cvmmap_shm_metadata_v1_v2.ksy` now documents the slot-3 plane type and
+  encoded extension bytes
+
+Compatibility:
+- existing v1 and v2.0 producers are unchanged
+- v2.1 changes the minor version because sparse masks are a semantic extension
+  that older v2.0 consumers must not silently reinterpret
+
 ## Control Wire Recording Commands
 
 ### 2026-03-15

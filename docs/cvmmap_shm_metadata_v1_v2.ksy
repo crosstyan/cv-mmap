@@ -8,6 +8,11 @@ doc: |
   Dedicated Kaitai Struct schema for the 256-byte shared-memory metadata region.
   This schema dispatches on the metadata major version after the 8-byte magic.
 
+  v2.0 uses a contiguous plane presence mask from slot 0.
+  v2.1 keeps the same 256-byte metadata region but allows sparse plane masks
+  so slot 3 can carry an optional encoded access unit without forcing depth or
+  confidence planes to be present.
+
 enums:
   pixel_format:
     0: rgb
@@ -32,6 +37,16 @@ enums:
     0: left
     1: depth
     2: confidence
+    3: encoded_access_unit
+
+  encoded_codec:
+    0: unknown
+    1: h264
+    2: h265
+
+  encoded_bitstream_format:
+    0: unknown
+    1: annex_b
 
   depth_unit:
     0: unknown
@@ -155,7 +170,31 @@ types:
         type: u1
         enum: depth_unit
       - id: reserved_0
-        size: 19
+        type: frame_metadata_v2_header_extension
+
+  frame_metadata_v2_header_extension:
+    doc: |
+      Fixed 19-byte extension space at header offset 0x2D.
+      For v2.0 these bytes are reserved and should be zero.
+      For versions_minor >= 1 they describe the optional slot-3
+      encoded_access_unit plane.
+    seq:
+      - id: encoded_codec
+        type: u1
+        enum: encoded_codec
+      - id: encoded_bitstream_format
+        type: u1
+        enum: encoded_bitstream_format
+      - id: encoded_flags
+        type: u2
+      - id: encoded_frame_rate_num
+        type: u2
+      - id: encoded_frame_rate_den
+        type: u2
+      - id: encoded_stream_pts_ns
+        type: u8
+      - id: reserved_0
+        size: 3
 
   frame_metadata_v2:
     seq:
