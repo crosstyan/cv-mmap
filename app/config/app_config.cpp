@@ -232,13 +232,21 @@ Config Config::from_toml(const std::filesystem::path &path) {
 
 	if (auto udp_rtp = tbl["udp_rtp"].as_table(); udp_rtp) {
 		UdpRtpConfig udp_rtp_cfg{};
-		if (auto val = (*udp_rtp)["multicast_group"].value<std::string>(); val) {
-			udp_rtp_cfg.multicast_group = trim_ascii_spaces(*val);
-		} else {
-			throw invalid_argument("udp_rtp.multicast_group is required when [udp_rtp] section exists");
+		const auto address = (*udp_rtp)["address"].value<std::string>();
+		const auto multicast_group = (*udp_rtp)["multicast_group"].value<std::string>();
+		if (address && multicast_group) {
+			throw invalid_argument("udp_rtp.address and udp_rtp.multicast_group must not both be set");
 		}
-		if (udp_rtp_cfg.multicast_group.empty()) {
-			throw invalid_argument("udp_rtp.multicast_group must not be empty");
+		if (address) {
+			udp_rtp_cfg.address = trim_ascii_spaces(*address);
+			if (udp_rtp_cfg.address.empty()) {
+				throw invalid_argument("udp_rtp.address must not be empty when set");
+			}
+		} else if (multicast_group) {
+			udp_rtp_cfg.address = trim_ascii_spaces(*multicast_group);
+			if (udp_rtp_cfg.address.empty()) {
+				throw invalid_argument("udp_rtp.multicast_group must not be empty when set");
+			}
 		}
 		if (auto val = (*udp_rtp)["port"].value<int64_t>(); val) {
 			if (*val <= 0 || *val > std::numeric_limits<uint16_t>::max()) {

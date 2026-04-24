@@ -2,7 +2,7 @@
 
 ## Summary
 
-The `udp_rtp` backend ingests an H.264 or H.265 RTP multicast stream, parses it once, and publishes:
+The `udp_rtp` backend ingests an H.264 or H.265 RTP stream, parses it once, and publishes:
 
 - the decoded left image plane as raw BGR
 - the parsed encoded access unit as an optional ABI v2.1 plane
@@ -41,13 +41,17 @@ Use `video.backend = "udp_rtp"` and add an `[udp_rtp]` section:
 backend = "udp_rtp"
 
 [udp_rtp]
-multicast_group = "224.0.0.123"
+address = "224.0.0.123"
 port = 5602
 payload_type = 96
 auto_multicast = true
 codec = "h265"
 decoder = "auto"
 ```
+
+`address` is optional. When it is omitted, `udpsrc` uses its default bind address (`0.0.0.0`).
+Use a multicast group address here for multicast RTP, or a local interface address for unicast RTP.
+The older `multicast_group` key is still accepted as a compatibility alias.
 
 `codec` accepts:
 

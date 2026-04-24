@@ -44,7 +44,7 @@ struct GStreamerConfig {
 };
 
 struct UdpRtpConfig {
-	std::string multicast_group{};
+	std::string address{};
 	uint16_t port{5602};
 	uint8_t payload_type{96};
 	bool auto_multicast{true};

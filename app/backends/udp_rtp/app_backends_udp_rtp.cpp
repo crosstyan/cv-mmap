@@ -168,13 +168,14 @@ namespace {
 									 const UdpRtpCodec codec,
 									 const std::string &decoder_name) {
 		const auto traits = codec_traits(codec);
+		const auto address_property = config.address.empty() ? std::string{} : cvmmap::format("address={} ", config.address);
 		return cvmmap::format(
-			"udpsrc auto-multicast={} multicast-group={} port={} caps=\"application/x-rtp,media=video,clock-rate=90000,encoding-name={},payload={}\" ! "
+			"udpsrc auto-multicast={} {}port={} caps=\"application/x-rtp,media=video,clock-rate=90000,encoding-name={},payload={}\" ! "
 			"{} ! {} config-interval=-1 disable-passthrough=true ! tee name=parsed_tee "
 			"parsed_tee. ! queue ! {} ! appsink name={} emit-signals=true sync=false max-buffers=8 drop=true "
 			"parsed_tee. ! queue ! {} ! videoconvert ! video/x-raw,format=BGR ! appsink name={} emit-signals=true sync=false max-buffers=2 drop=true",
 			config.auto_multicast ? "true" : "false",
-			config.multicast_group,
+			address_property,
 			config.port,
 			traits.encoding_name,
 			static_cast<unsigned>(config.payload_type),

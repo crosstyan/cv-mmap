@@ -290,7 +290,6 @@ void test_udp_rtp_defaults_to_h265_codec() {
 	write_file(
 		path,
 		udp_rtp_config_toml(
-			"multicast_group = \"224.0.0.123\"\n"
 			"port = 5602\n"
 			"payload_type = 96\n"
 			"auto_multicast = true\n"
@@ -298,24 +297,53 @@ void test_udp_rtp_defaults_to_h265_codec() {
 
 	const auto config = app::Config::from_toml(path);
 	expect(config.udp_rtp.has_value(), "udp_rtp config should populate udp_rtp section");
+	expect(config.udp_rtp->address.empty(), "udp_rtp address should be optional");
 	expect(config.udp_rtp->codec == "h265", "udp_rtp codec should default to h265");
 	expect(config.udp_rtp->decoder == "auto", "udp_rtp decoder should parse");
 }
 
-void test_udp_rtp_accepts_h264_codec_and_decoder() {
+void test_udp_rtp_accepts_address_h264_codec_and_decoder() {
 	TempDir dir;
 	const auto path = dir.path() / "udp-h264.toml";
 	write_file(
 		path,
 		udp_rtp_config_toml(
-			"multicast_group = \"224.0.0.123\"\n"
+			"address = \"192.168.1.10\"\n"
 			"codec = \"h264\"\n"
 			"decoder = \"avdec_h264\"\n"));
 
 	const auto config = app::Config::from_toml(path);
 	expect(config.udp_rtp.has_value(), "udp_rtp config should populate udp_rtp section");
+	expect(config.udp_rtp->address == "192.168.1.10", "udp_rtp address should parse");
 	expect(config.udp_rtp->codec == "h264", "udp_rtp codec should parse h264");
 	expect(config.udp_rtp->decoder == "avdec_h264", "udp_rtp decoder should parse avdec_h264");
+}
+
+void test_udp_rtp_accepts_legacy_multicast_group() {
+	TempDir dir;
+	const auto path = dir.path() / "udp-legacy-multicast.toml";
+	write_file(
+		path,
+		udp_rtp_config_toml(
+			"multicast_group = \"224.0.0.123\"\n"));
+
+	const auto config = app::Config::from_toml(path);
+	expect(config.udp_rtp.has_value(), "udp_rtp config should populate udp_rtp section");
+	expect(config.udp_rtp->address == "224.0.0.123", "udp_rtp multicast_group should parse as address");
+}
+
+void test_udp_rtp_rejects_address_and_legacy_multicast_group() {
+	TempDir dir;
+	const auto path = dir.path() / "udp-duplicate-address.toml";
+	write_file(
+		path,
+		udp_rtp_config_toml(
+			"address = \"192.168.1.10\"\n"
+			"multicast_group = \"224.0.0.123\"\n"));
+
+	expect_throws_contains(
+		[&] { (void)app::Config::from_toml(path); },
+		"udp_rtp.address and udp_rtp.multicast_group must not both be set");
 }
 
 void test_udp_rtp_rejects_unknown_codec() {
@@ -324,7 +352,7 @@ void test_udp_rtp_rejects_unknown_codec() {
 	write_file(
 		path,
 		udp_rtp_config_toml(
-			"multicast_group = \"224.0.0.123\"\n"
+			"address = \"224.0.0.123\"\n"
 			"codec = \"vp9\"\n"));
 
 	expect_throws_contains(
@@ -338,7 +366,7 @@ void test_udp_rtp_rejects_decoder_that_does_not_match_codec() {
 	write_file(
 		path,
 		udp_rtp_config_toml(
-			"multicast_group = \"224.0.0.123\"\n"
+			"address = \"224.0.0.123\"\n"
 			"codec = \"h264\"\n"
 			"decoder = \"nvh265dec\"\n"));
 
@@ -759,7 +787,9 @@ int main() {
 	ok &= run_test("inheritance_cycle_fails_with_readable_error", test_inheritance_cycle_fails_with_readable_error);
 	ok &= run_test("bad_extends_type_fails", test_bad_extends_type_fails);
 	ok &= run_test("udp_rtp_defaults_to_h265_codec", test_udp_rtp_defaults_to_h265_codec);
-	ok &= run_test("udp_rtp_accepts_h264_codec_and_decoder", test_udp_rtp_accepts_h264_codec_and_decoder);
+	ok &= run_test("udp_rtp_accepts_address_h264_codec_and_decoder", test_udp_rtp_accepts_address_h264_codec_and_decoder);
+	ok &= run_test("udp_rtp_accepts_legacy_multicast_group", test_udp_rtp_accepts_legacy_multicast_group);
+	ok &= run_test("udp_rtp_rejects_address_and_legacy_multicast_group", test_udp_rtp_rejects_address_and_legacy_multicast_group);
 	ok &= run_test("udp_rtp_rejects_unknown_codec", test_udp_rtp_rejects_unknown_codec);
 	ok &= run_test("udp_rtp_rejects_decoder_that_does_not_match_codec", test_udp_rtp_rejects_decoder_that_does_not_match_codec);
 	ok &= run_test("mcap_playlist_parses_and_round_trips", test_mcap_playlist_parses_and_round_trips);

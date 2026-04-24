@@ -35,7 +35,9 @@ std::string Config::to_toml() const {
 
 	if (udp_rtp) {
 		ss << "\n[udp_rtp]\n";
-		ss << "multicast_group = \"" << udp_rtp->multicast_group << "\"\n";
+		if (!udp_rtp->address.empty()) {
+			ss << "address = \"" << udp_rtp->address << "\"\n";
+		}
 		ss << "port = " << udp_rtp->port << "\n";
 		ss << "payload_type = " << static_cast<unsigned>(udp_rtp->payload_type) << "\n";
 		ss << "auto_multicast = " << (udp_rtp->auto_multicast ? "true" : "false") << "\n";
