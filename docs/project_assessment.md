@@ -133,7 +133,7 @@ These are ordered by expected payoff.
    `cvmmap_ipc` and wiring parser, parser fixtures, and producer metadata
    construction through them.
 
-4. [ ] Continue shrinking ZED capture policy.
+4. [x] Continue shrinking ZED capture policy.
 
    `zed_capture_pipeline.cpp` is already separated from lifecycle, but it still
    contains several policies:
@@ -147,6 +147,10 @@ These are ordered by expected payoff.
 
    Splitting the depth/confidence packing and fallback policy into a small
    testable component would reduce risk without changing the backend facade.
+
+   Completed in this wave by moving depth cadence and fallback state into a
+   SDK-free policy with focused tests, and by splitting ZED frame packing and
+   direct SHM binding out of the capture pipeline.
 
 5. [ ] Split NATS client/service by API area.
 

@@ -19,6 +19,7 @@
 #include "app_backends_facade.hpp"
 #include "app_config.hpp"
 #include "app_enum_models.hpp"
+#include "zed_depth_policy.hpp"
 #include "zed_sdk_utils.hpp"
 
 namespace app::backends {
@@ -100,18 +101,13 @@ struct ZedBackendImpl {
 	sl::Mat left_frame;
 	sl::Mat depth_frame;
 	sl::Mat confidence_frame;
-	std::vector<uint8_t> last_good_depth_plane;
+	ZedDepthCadencePolicy depth_cadence{};
+	ZedDepthFallbackPolicy depth_fallback{};
 	DirectOutputBindingState direct_output_binding{};
-	const uint8_t *last_direct_depth_payload_ptr{nullptr};
-	size_t last_direct_depth_payload_size{0};
 	sl::REFERENCE_FRAME body_reference_frame{sl::REFERENCE_FRAME::CAMERA};
 	std::string active_recording_path{};
 	bool svo_mode{false};
 	int total_svo_frames{0};
-	double effective_source_fps{0.0};
-	uint32_t depth_publish_period_frames{1};
-	uint32_t frames_since_last_depth_request{0};
-	bool force_depth_on_next_capture{true};
 	sl::ERROR_CODE last_grab_error{sl::ERROR_CODE::SUCCESS};
 	uint64_t timeline_start_ns{0};
 	uint64_t timeline_end_ns{0};
@@ -188,6 +184,7 @@ struct ZedBackendImpl {
 	bool open_camera_locked();
 
 	std::optional<size_t> expected_row_bytes(const sl::Mat &frame) const;
+	std::optional<frame_info_t> make_direct_frame_info_locked() const;
 	bool copy_compact_plane(
 		const sl::Mat &src,
 		size_t row_bytes,

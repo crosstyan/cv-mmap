@@ -249,6 +249,10 @@ else()
 endif()
 
 ####### BACKENDS #######
+add_library(app_zed_depth_policy STATIC backends/zed/zed_depth_policy.cpp)
+target_include_directories(app_zed_depth_policy PUBLIC backends)
+target_link_libraries(app_zed_depth_policy PUBLIC cvmmap_target)
+
 if (WITH_BACKEND_MCAP)
 	add_library(app_mcap_headers INTERFACE)
 	target_include_directories(app_mcap_headers INTERFACE "${_MCAP_INCLUDE_DIR}")
@@ -329,10 +333,11 @@ if (WITH_BACKEND_ZED)
 			backends/zed/app_backends_zed.cpp
 			backends/zed/zed_sdk_utils.cpp
 			backends/zed/zed_capture_pipeline.cpp
+			backends/zed/zed_frame_packing.cpp
 			backends/zed/zed_camera_controls.cpp
 			backends/zed/zed_recording.cpp
 			backends/zed/zed_lifecycle.cpp)
-        target_link_libraries(app_video_backends PRIVATE ${ZED_LIBS})
+        target_link_libraries(app_video_backends PRIVATE app_zed_depth_policy ${ZED_LIBS})
 endif()
 
 target_link_libraries(app_video_backends PUBLIC app_models)

@@ -60,3 +60,14 @@ target_link_libraries(app_playlist_controller_tests
 add_test(
 	NAME app_playlist_controller_tests
 	COMMAND app_playlist_controller_tests)
+
+add_executable(app_zed_depth_policy_tests
+	zed_depth_policy_test.cpp)
+
+target_link_libraries(app_zed_depth_policy_tests
+	PRIVATE
+		app_zed_depth_policy)
+
+add_test(
+	NAME app_zed_depth_policy_tests
+	COMMAND app_zed_depth_policy_tests)
