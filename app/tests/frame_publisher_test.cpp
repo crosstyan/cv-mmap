@@ -14,6 +14,7 @@
 #include <string_view>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -267,6 +268,27 @@ make_test_left_depth_layout(
 	munmap(mapping, total_size);
 	close(fd);
 	return snapshot;
+}
+
+[[nodiscard]] std::optional<size_t> read_shared_payload_capacity(
+	const app::Config &config) {
+	const auto shm_name = config.shm_name();
+	const int fd = shm_open(shm_name.c_str(), O_RDONLY, 0);
+	if (fd == -1) {
+		return std::nullopt;
+	}
+
+	struct stat stat_buf {};
+	if (fstat(fd, &stat_buf) == -1 ||
+		stat_buf.st_size < static_cast<off_t>(cvmmap::SHM_PAYLOAD_OFFSET)) {
+		close(fd);
+		return std::nullopt;
+	}
+
+	const auto capacity = static_cast<size_t>(stat_buf.st_size) -
+						  cvmmap::SHM_PAYLOAD_OFFSET;
+	close(fd);
+	return capacity;
 }
 
 [[nodiscard]] cvmmap::body_tracking_frame_t make_body_tracking_frame() {
@@ -532,6 +554,91 @@ int test_copy_frame_appends_encoded_access_unit() {
 	return 0;
 }
 
+int test_encoded_payload_growth_reuses_bucket_capacity() {
+	auto raw_payload = make_depth_payload();
+	const auto first_encoded_payload = make_encoded_payload();
+	std::vector<uint8_t> second_encoded_payload(128, 0x5A);
+	auto config = make_test_config("fpe2");
+
+	zmq::context_t ctx;
+	zmq::socket_t pub(ctx, zmq::socket_type::pub);
+	pub.bind("inproc://frame-publisher-encoded-growth");
+
+	auto publisher = app::FramePublisher::Create(config, pub);
+	if (!publisher) {
+		return 1;
+	}
+
+	auto metadata = make_test_metadata();
+	metadata.info.buffer_size = static_cast<uint32_t>(raw_payload.size());
+	publisher->OnMetadata(metadata);
+	publisher->OnEncodedAccessUnit(app::backends::encoded_access_unit_t{
+		.codec = cvmmap::EncodedCodec::H265,
+		.bitstream_format = cvmmap::EncodedBitstreamFormat::AnnexB,
+		.source_timestamp_ns = metadata.timestamp_ns,
+		.stream_pts_ns = metadata.timestamp_ns,
+		.bytes = first_encoded_payload,
+	});
+	auto layout = make_test_left_depth_layout(metadata, app::DepthUnit::Millimeter);
+	publisher->PublishFrame(
+		std::span<uint8_t>(raw_payload.data(), raw_payload.size()),
+		metadata,
+		layout);
+
+	const auto first_capacity = read_shared_payload_capacity(config);
+	if (!first_capacity) {
+		return 2;
+	}
+
+	auto second_metadata = metadata;
+	second_metadata.frame_count = 2;
+	second_metadata.timestamp_ns += 1;
+	publisher->OnEncodedAccessUnit(app::backends::encoded_access_unit_t{
+		.codec = cvmmap::EncodedCodec::H265,
+		.bitstream_format = cvmmap::EncodedBitstreamFormat::AnnexB,
+		.source_timestamp_ns = second_metadata.timestamp_ns,
+		.stream_pts_ns = second_metadata.timestamp_ns,
+		.bytes = second_encoded_payload,
+	});
+	layout = make_test_left_depth_layout(second_metadata, app::DepthUnit::Millimeter);
+	publisher->PublishFrame(
+		std::span<uint8_t>(raw_payload.data(), raw_payload.size()),
+		second_metadata,
+		layout);
+
+	const auto second_capacity = read_shared_payload_capacity(config);
+	if (!second_capacity) {
+		return 3;
+	}
+	if (*second_capacity != *first_capacity) {
+		return 4;
+	}
+
+	const auto second_payload_size =
+		raw_payload.size() + second_encoded_payload.size();
+	const auto snapshot = read_frame_snapshot(config, second_payload_size);
+	if (!snapshot) {
+		return 5;
+	}
+	if (snapshot->metadata.header.payload_size_bytes != second_payload_size) {
+		return 6;
+	}
+	const auto &encoded_descriptor = snapshot->metadata.descriptors[3];
+	if (encoded_descriptor.offset_bytes != raw_payload.size() ||
+		encoded_descriptor.size_bytes != second_encoded_payload.size()) {
+		return 7;
+	}
+	if (!std::equal(
+			second_encoded_payload.begin(),
+			second_encoded_payload.end(),
+			snapshot->payload.begin() +
+				static_cast<std::ptrdiff_t>(raw_payload.size()))) {
+		return 8;
+	}
+
+	return 0;
+}
+
 int test_invalid_layout_does_not_publish_frame() {
 	auto payload = make_depth_payload();
 	auto config = make_test_config("fpi1");
@@ -674,11 +781,14 @@ int main() {
 	if (const auto rc = test_copy_frame_appends_encoded_access_unit(); rc != 0) {
 		return 40 + rc;
 	}
-	if (const auto rc = test_invalid_layout_does_not_publish_frame(); rc != 0) {
+	if (const auto rc = test_encoded_payload_growth_reuses_bucket_capacity(); rc != 0) {
 		return 50 + rc;
 	}
-	if (const auto rc = test_body_tracking_publisher_serializes_over_nats(); rc != 0) {
+	if (const auto rc = test_invalid_layout_does_not_publish_frame(); rc != 0) {
 		return 60 + rc;
+	}
+	if (const auto rc = test_body_tracking_publisher_serializes_over_nats(); rc != 0) {
+		return 70 + rc;
 	}
 	return 0;
 }

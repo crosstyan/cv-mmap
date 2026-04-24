@@ -103,6 +103,10 @@ The encoded descriptor itself is a byte payload descriptor, not an image plane:
 - `height = 1`
 - `width = stride_bytes = size_bytes = encoded AU byte length`
 
+Because H.264/H.265 access units vary in size, `payload_size_bytes` also varies by frame when the encoded plane is present.
+It still records the exact payload byte count for the current snapshot.
+The shared-memory mapping is allocated in binary capacity buckets so normal encoded-size variation does not force consumers to remap on every slightly larger access unit.
+
 ## Consumer expectations
 
 Updated consumers can use the same snapshot in two ways:

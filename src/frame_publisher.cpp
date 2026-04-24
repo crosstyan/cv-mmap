@@ -19,6 +19,26 @@ namespace app {
 
 namespace {
 
+constexpr size_t MIN_SHARED_PAYLOAD_CAPACITY = 1024 * 1024;
+constexpr size_t MAX_SHARED_PAYLOAD_CAPACITY =
+	std::numeric_limits<uint32_t>::max();
+
+std::optional<size_t> shared_payload_capacity_for(size_t payload_size) {
+	if (payload_size == 0 ||
+		payload_size > MAX_SHARED_PAYLOAD_CAPACITY) {
+		return std::nullopt;
+	}
+
+	size_t capacity = MIN_SHARED_PAYLOAD_CAPACITY;
+	while (capacity < payload_size) {
+		if (capacity > MAX_SHARED_PAYLOAD_CAPACITY / 2) {
+			return MAX_SHARED_PAYLOAD_CAPACITY;
+		}
+		capacity *= 2;
+	}
+	return capacity;
+}
+
 cvmmap::Depth to_core_depth(const Depth depth) {
 	return static_cast<cvmmap::Depth>(static_cast<uint8_t>(depth));
 }
@@ -414,7 +434,14 @@ void FramePublisher::EnsureMetadataState(
 		spdlog::error("metadata callback produced zero-sized picture buffer");
 		return;
 	}
-	const auto total_buffer_size = SHM_PAYLOAD_OFFSET + payload_size;
+	const auto payload_capacity = shared_payload_capacity_for(payload_size);
+	if (!payload_capacity) {
+		spdlog::error(
+			"metadata callback payload size ({}) exceeds ABI limits",
+			payload_size);
+		return;
+	}
+	const auto total_buffer_size = SHM_PAYLOAD_OFFSET + *payload_capacity;
 	if (frame_state_ && before_reset) {
 		before_reset(frame_state_->image_buffer);
 	}
@@ -470,11 +497,19 @@ void FramePublisher::PublishDirectFrame(
 		return;
 	}
 	if (frame.metadata.info.buffer_size > frame_state_->image_buffer.size()) {
+		const auto payload_capacity =
+			shared_payload_capacity_for(frame.metadata.info.buffer_size);
+		if (!payload_capacity) {
+			spdlog::error(
+				"direct frame payload size ({}) exceeds ABI limits",
+				frame.metadata.info.buffer_size);
+			return;
+		}
 		if (before_reset) {
 			before_reset(frame_state_->image_buffer);
 		}
 		const auto total_buffer_size =
-			SHM_PAYLOAD_OFFSET + static_cast<size_t>(frame.metadata.info.buffer_size);
+			SHM_PAYLOAD_OFFSET + *payload_capacity;
 		auto resized_frame_state =
 			frame_state_t::open(shm_state_->shm_fd, total_buffer_size);
 		if (!resized_frame_state) {
@@ -573,9 +608,17 @@ void FramePublisher::PublishFrame(
 		output_layout.payload_size_bytes +
 		(encoded_plane ? encoded_plane->bytes.size() : 0);
 	if (total_payload_size > frame_state_->image_buffer.size()) {
+		const auto payload_capacity =
+			shared_payload_capacity_for(total_payload_size);
+		if (!payload_capacity) {
+			spdlog::error(
+				"frame payload size ({}) exceeds ABI limits",
+				total_payload_size);
+			return;
+		}
 		auto resized_frame_state = frame_state_t::open(
 			shm_state_->shm_fd,
-			SHM_PAYLOAD_OFFSET + total_payload_size);
+			SHM_PAYLOAD_OFFSET + *payload_capacity);
 		if (!resized_frame_state) {
 			spdlog::error(
 				"resizing shared memory for frame payload: {}",
